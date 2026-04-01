@@ -3099,7 +3099,7 @@ mod tests {
         execute_tool, final_assistant_text, mvp_tool_specs, persist_agent_terminal_state,
         AgentInput, AgentJob, GlobalToolRegistry, SubagentToolExecutor,
     };
-    use plugins::{PluginTool, PluginToolDefinition};
+    use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
     use runtime::{ApiRequest, AssistantEvent, ConversationRuntime, RuntimeError, Session};
     use serde_json::json;
 
@@ -3181,7 +3181,7 @@ mod tests {
             },
             script.display().to_string(),
             Vec::new(),
-            "workspace-write",
+            PluginToolPermission::WorkspaceWrite,
             script.parent().map(PathBuf::from),
         )])
         .expect("registry should build");
@@ -3217,7 +3217,7 @@ mod tests {
             },
             "echo".to_string(),
             Vec::new(),
-            "read-only",
+            PluginToolPermission::ReadOnly,
             None,
         )])
         .expect_err("conflicting plugin tool should fail");

@@ -301,9 +301,7 @@ fn resolve_model_alias(model: &str) -> &str {
 }
 
 fn normalize_allowed_tools(values: &[String]) -> Result<Option<AllowedToolSet>, String> {
-    current_tool_registry()
-        .unwrap_or_else(|_| GlobalToolRegistry::builtin())
-        .normalize_allowed_tools(values)
+    current_tool_registry()?.normalize_allowed_tools(values)
 }
 
 fn current_tool_registry() -> Result<GlobalToolRegistry, String> {
@@ -3292,16 +3290,41 @@ mod tests {
         filter_tool_specs, format_compact_report, format_cost_report, format_model_report,
         format_model_switch_report, format_permissions_report, format_permissions_switch_report,
         format_resume_report, format_status_report, format_tool_call_start, format_tool_result,
-        normalize_permission_mode, parse_args, parse_git_status_metadata, print_help_to,
-        push_output_block, render_config_report, render_memory_report, render_repl_help,
-        resolve_model_alias, response_to_events, resume_supported_slash_commands, status_context,
-        CliAction, CliOutputFormat, SlashCommand, StatusUsage, DEFAULT_MODEL,
+        normalize_permission_mode, parse_args, parse_git_status_metadata, permission_policy,
+        print_help_to, push_output_block, render_config_report, render_memory_report,
+        render_repl_help, resolve_model_alias, response_to_events, resume_supported_slash_commands,
+        status_context, CliAction, CliOutputFormat, SlashCommand, StatusUsage, DEFAULT_MODEL,
     };
     use api::{MessageResponse, OutputContentBlock, Usage};
+    use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
     use runtime::{AssistantEvent, ContentBlock, ConversationMessage, MessageRole, PermissionMode};
     use serde_json::json;
     use std::path::PathBuf;
     use tools::GlobalToolRegistry;
+
+    fn registry_with_plugin_tool() -> GlobalToolRegistry {
+        GlobalToolRegistry::with_plugin_tools(vec![PluginTool::new(
+            "plugin-demo@external",
+            "plugin-demo",
+            PluginToolDefinition {
+                name: "plugin_echo".to_string(),
+                description: Some("Echo plugin payload".to_string()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" }
+                    },
+                    "required": ["message"],
+                    "additionalProperties": false
+                }),
+            },
+            "echo".to_string(),
+            Vec::new(),
+            PluginToolPermission::WorkspaceWrite,
+            None,
+        )])
+        .expect("plugin tool registry should build")
+    }
 
     #[test]
     fn defaults_to_repl_when_no_args() {
@@ -3521,6 +3544,24 @@ mod tests {
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["read_file", "grep_search"]);
+    }
+
+    #[test]
+    fn filtered_tool_specs_include_plugin_tools() {
+        let filtered = filter_tool_specs(&registry_with_plugin_tool(), None);
+        let names = filtered
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"bash".to_string()));
+        assert!(names.contains(&"plugin_echo".to_string()));
+    }
+
+    #[test]
+    fn permission_policy_uses_plugin_tool_permissions() {
+        let policy = permission_policy(PermissionMode::ReadOnly, &registry_with_plugin_tool());
+        let required = policy.required_mode_for("plugin_echo");
+        assert_eq!(required, PermissionMode::WorkspaceWrite);
     }
 
     #[test]
