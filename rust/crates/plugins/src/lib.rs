@@ -1095,10 +1095,11 @@ impl PluginManager {
     }
 
     fn discover_installed_plugins(&self) -> Result<Vec<PluginDefinition>, PluginError> {
-        let registry = self.load_registry()?;
+        let mut registry = self.load_registry()?;
         let mut plugins = Vec::new();
         let mut seen_ids = BTreeSet::<String>::new();
         let mut seen_paths = BTreeSet::<PathBuf>::new();
+        let mut stale_registry_ids = Vec::new();
 
         for install_path in discover_plugin_dirs(&self.install_root())? {
             let matched_record = registry
@@ -1121,6 +1122,11 @@ impl PluginManager {
             if seen_paths.contains(&record.install_path) {
                 continue;
             }
+            if !record.install_path.exists() || plugin_manifest_path(&record.install_path).is_err()
+            {
+                stale_registry_ids.push(record.id.clone());
+                continue;
+            }
             let plugin = load_plugin_definition(
                 &record.install_path,
                 record.kind,
@@ -1131,6 +1137,13 @@ impl PluginManager {
                 seen_paths.insert(record.install_path.clone());
                 plugins.push(plugin);
             }
+        }
+
+        if !stale_registry_ids.is_empty() {
+            for plugin_id in stale_registry_ids {
+                registry.plugins.remove(&plugin_id);
+            }
+            self.store_registry(&registry)?;
         }
 
         Ok(plugins)
@@ -2625,6 +2638,51 @@ mod tests {
         let _ = fs::remove_dir_all(config_home);
         let _ = fs::remove_dir_all(bundled_root);
         let _ = fs::remove_dir_all(external_install_path);
+    }
+
+    #[test]
+    fn installed_plugin_discovery_prunes_stale_registry_entries() {
+        let config_home = temp_dir("registry-prune-home");
+        let bundled_root = temp_dir("registry-prune-bundled");
+        let install_root = config_home.join("plugins").join("installed");
+        let missing_install_path = temp_dir("registry-prune-missing");
+
+        let mut config = PluginManagerConfig::new(&config_home);
+        config.bundled_root = Some(bundled_root.clone());
+        config.install_root = Some(install_root);
+        let manager = PluginManager::new(config);
+
+        let mut registry = InstalledPluginRegistry::default();
+        registry.plugins.insert(
+            "stale-external@external".to_string(),
+            InstalledPluginRecord {
+                kind: PluginKind::External,
+                id: "stale-external@external".to_string(),
+                name: "stale-external".to_string(),
+                version: "1.0.0".to_string(),
+                description: "stale external plugin".to_string(),
+                install_path: missing_install_path.clone(),
+                source: PluginInstallSource::LocalPath {
+                    path: missing_install_path.clone(),
+                },
+                installed_at_unix_ms: 1,
+                updated_at_unix_ms: 1,
+            },
+        );
+        manager.store_registry(&registry).expect("store registry");
+
+        let installed = manager
+            .list_installed_plugins()
+            .expect("stale registry entries should be pruned");
+        assert!(!installed
+            .iter()
+            .any(|plugin| plugin.metadata.id == "stale-external@external"));
+
+        let registry = manager.load_registry().expect("load registry");
+        assert!(!registry.plugins.contains_key("stale-external@external"));
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(bundled_root);
     }
 
     #[test]
