@@ -71,7 +71,11 @@ async fn send_message_posts_json_and_parses_response() {
     );
     assert_eq!(
         request.headers.get("user-agent").map(String::as_str),
-        Some("clawd-code/0.1.0 (rust)")
+        Some("claude-code/0.1.0")
+    );
+    assert_eq!(
+        request.headers.get("anthropic-beta").map(String::as_str),
+        Some("claude-code-20250219")
     );
     let body: serde_json::Value =
         serde_json::from_str(&request.body).expect("request body should be json");
@@ -82,6 +86,7 @@ async fn send_message_posts_json_and_parses_response() {
     assert!(body.get("stream").is_none());
     assert_eq!(body["tools"][0]["name"], json!("get_weather"));
     assert_eq!(body["tool_choice"]["type"], json!("auto"));
+    assert_eq!(body["betas"], json!(["claude-code-20250219"]));
 }
 
 #[tokio::test]
@@ -112,7 +117,7 @@ async fn send_message_applies_request_profile_and_records_telemetry() {
 
     let client = AnthropicClient::new("test-key")
         .with_base_url(server.base_url())
-        .with_client_identity(ClientIdentity::new("clawd-code", "9.9.9").with_runtime("rust-cli"))
+        .with_client_identity(ClientIdentity::new("claude-code", "9.9.9").with_runtime("rust-cli"))
         .with_beta("tools-2026-04-01")
         .with_extra_body_param("metadata", json!({"source": "clawd-code"}))
         .with_session_tracer(SessionTracer::new("session-telemetry", sink.clone()));
@@ -128,15 +133,19 @@ async fn send_message_applies_request_profile_and_records_telemetry() {
     let request = captured.first().expect("server should capture request");
     assert_eq!(
         request.headers.get("anthropic-beta").map(String::as_str),
-        Some("tools-2026-04-01")
+        Some("claude-code-20250219,tools-2026-04-01")
     );
     assert_eq!(
         request.headers.get("user-agent").map(String::as_str),
-        Some("clawd-code/9.9.9 (rust-cli)")
+        Some("claude-code/9.9.9")
     );
     let body: serde_json::Value =
         serde_json::from_str(&request.body).expect("request body should be json");
     assert_eq!(body["metadata"]["source"], json!("clawd-code"));
+    assert_eq!(
+        body["betas"],
+        json!(["claude-code-20250219", "tools-2026-04-01"])
+    );
 
     let events = sink.events();
     assert_eq!(events.len(), 4);
