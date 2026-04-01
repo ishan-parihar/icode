@@ -75,7 +75,7 @@ async fn send_message_posts_json_and_parses_response() {
     );
     assert_eq!(
         request.headers.get("anthropic-beta").map(String::as_str),
-        Some("claude-code-20250219")
+        Some("claude-code-20250219,prompt-caching-scope-2026-01-05")
     );
     let body: serde_json::Value =
         serde_json::from_str(&request.body).expect("request body should be json");
@@ -86,7 +86,10 @@ async fn send_message_posts_json_and_parses_response() {
     assert!(body.get("stream").is_none());
     assert_eq!(body["tools"][0]["name"], json!("get_weather"));
     assert_eq!(body["tool_choice"]["type"], json!("auto"));
-    assert_eq!(body["betas"], json!(["claude-code-20250219"]));
+    assert_eq!(
+        body["betas"],
+        json!(["claude-code-20250219", "prompt-caching-scope-2026-01-05"])
+    );
 }
 
 #[tokio::test]
@@ -133,7 +136,7 @@ async fn send_message_applies_request_profile_and_records_telemetry() {
     let request = captured.first().expect("server should capture request");
     assert_eq!(
         request.headers.get("anthropic-beta").map(String::as_str),
-        Some("claude-code-20250219,tools-2026-04-01")
+        Some("claude-code-20250219,prompt-caching-scope-2026-01-05,tools-2026-04-01")
     );
     assert_eq!(
         request.headers.get("user-agent").map(String::as_str),
@@ -144,7 +147,11 @@ async fn send_message_applies_request_profile_and_records_telemetry() {
     assert_eq!(body["metadata"]["source"], json!("clawd-code"));
     assert_eq!(
         body["betas"],
-        json!(["claude-code-20250219", "tools-2026-04-01"])
+        json!([
+            "claude-code-20250219",
+            "prompt-caching-scope-2026-01-05",
+            "tools-2026-04-01"
+        ])
     );
 
     let events = sink.events();

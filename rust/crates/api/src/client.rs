@@ -439,6 +439,19 @@ impl AnthropicClient {
             "beta_count".to_string(),
             Value::from(u64::try_from(self.request_profile.betas.len()).unwrap_or(u64::MAX)),
         );
+        if !self.request_profile.betas.is_empty() {
+            attributes.insert(
+                "betas".to_string(),
+                Value::Array(
+                    self.request_profile
+                        .betas
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
         if !self.request_profile.extra_body.is_empty() {
             attributes.insert(
                 "extra_body_keys".to_string(),
