@@ -732,7 +732,9 @@ fn parse_install_source(source: &str) -> Result<PluginInstallSource, PluginError
     if source.starts_with("http://")
         || source.starts_with("https://")
         || source.starts_with("git@")
-        || source.ends_with(".git")
+        || Path::new(source)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("git"))
     {
         Ok(PluginInstallSource::GitUrl {
             url: source.to_string(),
@@ -963,8 +965,8 @@ mod tests {
             .iter()
             .any(|plugin| plugin.metadata.id == "demo@external"));
 
-        fs::remove_dir_all(config_home).expect("cleanup home");
-        fs::remove_dir_all(source_root).expect("cleanup source");
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(source_root);
     }
 
     #[test]
@@ -977,7 +979,7 @@ mod tests {
             .validate_plugin_source(source_root.to_str().expect("utf8 path"))
             .expect("manifest should validate");
         assert_eq!(manifest.name, "validator");
-        fs::remove_dir_all(config_home).expect("cleanup home");
-        fs::remove_dir_all(source_root).expect("cleanup source");
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(source_root);
     }
 }

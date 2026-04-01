@@ -4,6 +4,7 @@ mod render;
 
 use std::collections::BTreeSet;
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
@@ -22,7 +23,7 @@ use commands::{
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
-use plugins::{PluginListEntry, PluginManager};
+use plugins::{PluginKind, PluginManager, PluginManagerConfig, PluginSummary};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
@@ -30,7 +31,7 @@ use runtime::{
     AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
     ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
     OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
-    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    RuntimeHookConfig, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde_json::json;
 use tools::{execute_tool, mvp_tool_specs, ToolSpec};
@@ -1490,21 +1491,30 @@ impl LiveCli {
         target: Option<&str>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let cwd = env::current_dir()?;
-        let runtime_config = ConfigLoader::default_for(&cwd).load()?;
-        let manager = PluginManager::default_for(&cwd);
+        let loader = ConfigLoader::default_for(&cwd);
+        let runtime_config = loader.load()?;
+        let mut manager = build_plugin_manager(&cwd, &loader, &runtime_config);
 
         match action {
             None | Some("list") => {
-                let plugins = manager.list_plugins(&runtime_config)?;
+                let plugins = manager.list_plugins()?;
                 println!("{}", render_plugins_report(&plugins));
             }
             Some("install") => {
                 let Some(target) = target else {
-                    println!("Usage: /plugins install <path>");
+                    println!("Usage: /plugins install <path-or-git-url>");
                     return Ok(false);
                 };
-                let result = manager.install_plugin(PathBuf::from(target))?;
-                println!("Plugins\n  Result           {}", result.message);
+                let result = manager.install(target)?;
+                println!(
+                    "Plugins
+  Result           installed {}
+  Version          {}
+  Path             {}",
+                    result.plugin_id,
+                    result.version,
+                    result.install_path.display(),
+                );
                 self.reload_runtime_features()?;
             }
             Some("enable") => {
@@ -1512,8 +1522,11 @@ impl LiveCli {
                     println!("Usage: /plugins enable <plugin-id>");
                     return Ok(false);
                 };
-                let result = manager.enable_plugin(target)?;
-                println!("Plugins\n  Result           {}", result.message);
+                manager.enable(target)?;
+                println!(
+                    "Plugins
+  Result           enabled {target}"
+                );
                 self.reload_runtime_features()?;
             }
             Some("disable") => {
@@ -1521,8 +1534,11 @@ impl LiveCli {
                     println!("Usage: /plugins disable <plugin-id>");
                     return Ok(false);
                 };
-                let result = manager.disable_plugin(target)?;
-                println!("Plugins\n  Result           {}", result.message);
+                manager.disable(target)?;
+                println!(
+                    "Plugins
+  Result           disabled {target}"
+                );
                 self.reload_runtime_features()?;
             }
             Some("uninstall") => {
@@ -1530,8 +1546,11 @@ impl LiveCli {
                     println!("Usage: /plugins uninstall <plugin-id>");
                     return Ok(false);
                 };
-                let result = manager.uninstall_plugin(target)?;
-                println!("Plugins\n  Result           {}", result.message);
+                manager.uninstall(target)?;
+                println!(
+                    "Plugins
+  Result           uninstalled {target}"
+                );
                 self.reload_runtime_features()?;
             }
             Some("update") => {
@@ -1539,8 +1558,18 @@ impl LiveCli {
                     println!("Usage: /plugins update <plugin-id>");
                     return Ok(false);
                 };
-                let result = manager.update_plugin(target)?;
-                println!("Plugins\n  Result           {}", result.message);
+                let result = manager.update(target)?;
+                println!(
+                    "Plugins
+  Result           updated {}
+  Old version      {}
+  New version      {}
+  Path             {}",
+                    result.plugin_id,
+                    result.old_version,
+                    result.new_version,
+                    result.install_path.display(),
+                );
                 self.reload_runtime_features()?;
             }
             Some(other) => {
@@ -1858,19 +1887,22 @@ fn render_repl_help() -> String {
     )
 }
 
-fn render_plugins_report(plugins: &[PluginListEntry]) -> String {
+fn render_plugins_report(plugins: &[PluginSummary]) -> String {
     let mut lines = vec!["Plugins".to_string()];
     if plugins.is_empty() {
         lines.push("  No plugins discovered.".to_string());
         return lines.join("\n");
     }
     for plugin in plugins {
-        let kind = format!("{:?}", plugin.plugin.source_kind).to_lowercase();
-        let location = plugin
-            .plugin
-            .root
-            .as_ref()
-            .map_or_else(|| kind.clone(), |root| root.display().to_string());
+        let kind = match plugin.metadata.kind {
+            PluginKind::Builtin => "builtin",
+            PluginKind::Bundled => "bundled",
+            PluginKind::External => "external",
+        };
+        let location = plugin.metadata.root.as_ref().map_or_else(
+            || plugin.metadata.source.clone(),
+            |root| root.display().to_string(),
+        );
         let enabled = if plugin.enabled {
             "enabled"
         } else {
@@ -1878,9 +1910,9 @@ fn render_plugins_report(plugins: &[PluginListEntry]) -> String {
         };
         lines.push(format!(
             "  {id:<24} {kind:<8} {enabled:<8} v{version:<8} {location}",
-            id = plugin.plugin.id,
+            id = plugin.metadata.id,
             kind = kind,
-            version = plugin.plugin.manifest.version,
+            version = plugin.metadata.version,
         ));
     }
     lines.join("\n")
@@ -2429,12 +2461,51 @@ fn build_runtime_feature_config(
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let runtime_config = loader.load()?;
-    let plugin_manager = PluginManager::default_for(&cwd);
-    let plugin_hooks = plugin_manager.active_hook_config(&runtime_config)?;
+    let plugin_manager = build_plugin_manager(&cwd, &loader, &runtime_config);
+    let plugin_hooks = plugin_manager.aggregated_hooks()?;
     Ok(runtime_config
         .feature_config()
         .clone()
-        .with_hooks(runtime_config.hooks().merged(&plugin_hooks)))
+        .with_hooks(runtime_config.hooks().merged(&RuntimeHookConfig::new(
+            plugin_hooks.pre_tool_use,
+            plugin_hooks.post_tool_use,
+        ))))
+}
+
+fn build_plugin_manager(
+    cwd: &Path,
+    loader: &ConfigLoader,
+    runtime_config: &runtime::RuntimeConfig,
+) -> PluginManager {
+    let plugin_settings = runtime_config.plugins();
+    let mut plugin_config = PluginManagerConfig::new(loader.config_home().to_path_buf());
+    plugin_config.enabled_plugins = plugin_settings.enabled_plugins().clone();
+    plugin_config.external_dirs = plugin_settings
+        .external_directories()
+        .iter()
+        .map(|path| resolve_plugin_path(cwd, loader.config_home(), path))
+        .collect();
+    plugin_config.install_root = plugin_settings
+        .install_root()
+        .map(|path| resolve_plugin_path(cwd, loader.config_home(), path));
+    plugin_config.registry_path = plugin_settings
+        .registry_path()
+        .map(|path| resolve_plugin_path(cwd, loader.config_home(), path));
+    plugin_config.bundled_root = plugin_settings
+        .bundled_root()
+        .map(|path| resolve_plugin_path(cwd, loader.config_home(), path));
+    PluginManager::new(plugin_config)
+}
+
+fn resolve_plugin_path(cwd: &Path, config_home: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else if value.starts_with('.') {
+        cwd.join(path)
+    } else {
+        config_home.join(path)
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -2890,13 +2961,13 @@ fn format_bash_result(icon: &str, parsed: &serde_json::Value) -> String {
         .get("backgroundTaskId")
         .and_then(|value| value.as_str())
     {
-        lines[0].push_str(&format!(" backgrounded ({task_id})"));
+        write!(&mut lines[0], " backgrounded ({task_id})").expect("write to string");
     } else if let Some(status) = parsed
         .get("returnCodeInterpretation")
         .and_then(|value| value.as_str())
         .filter(|status| !status.is_empty())
     {
-        lines[0].push_str(&format!(" {status}"));
+        write!(&mut lines[0], " {status}").expect("write to string");
     }
 
     if let Some(stdout) = parsed.get("stdout").and_then(|value| value.as_str()) {
@@ -2918,15 +2989,15 @@ fn format_read_result(icon: &str, parsed: &serde_json::Value) -> String {
     let path = extract_tool_path(file);
     let start_line = file
         .get("startLine")
-        .and_then(|value| value.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(1);
     let num_lines = file
         .get("numLines")
-        .and_then(|value| value.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let total_lines = file
         .get("totalLines")
-        .and_then(|value| value.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(num_lines);
     let content = file
         .get("content")
@@ -2952,8 +3023,7 @@ fn format_write_result(icon: &str, parsed: &serde_json::Value) -> String {
     let line_count = parsed
         .get("content")
         .and_then(|value| value.as_str())
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
+        .map_or(0, |content| content.lines().count());
     format!(
         "{icon} \x1b[1;32m✏️ {} {path}\x1b[0m \x1b[2m({line_count} lines)\x1b[0m",
         if kind == "create" { "Wrote" } else { "Updated" },
@@ -2984,7 +3054,7 @@ fn format_edit_result(icon: &str, parsed: &serde_json::Value) -> String {
     let path = extract_tool_path(parsed);
     let suffix = if parsed
         .get("replaceAll")
-        .and_then(|value| value.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
     {
         " (replace all)"
@@ -3012,7 +3082,7 @@ fn format_edit_result(icon: &str, parsed: &serde_json::Value) -> String {
 fn format_glob_result(icon: &str, parsed: &serde_json::Value) -> String {
     let num_files = parsed
         .get("numFiles")
-        .and_then(|value| value.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let filenames = parsed
         .get("filenames")
@@ -3036,11 +3106,11 @@ fn format_glob_result(icon: &str, parsed: &serde_json::Value) -> String {
 fn format_grep_result(icon: &str, parsed: &serde_json::Value) -> String {
     let num_matches = parsed
         .get("numMatches")
-        .and_then(|value| value.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let num_files = parsed
         .get("numFiles")
-        .and_then(|value| value.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let content = parsed
         .get("content")

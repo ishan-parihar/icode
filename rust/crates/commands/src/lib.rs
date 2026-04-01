@@ -297,7 +297,10 @@ impl SlashCommand {
             },
             "plugins" => Self::Plugins {
                 action: parts.next().map(ToOwned::to_owned),
-                target: parts.next().map(ToOwned::to_owned),
+                target: {
+                    let remainder = parts.collect::<Vec<_>>().join(" ");
+                    (!remainder.is_empty()).then_some(remainder)
+                },
             },
             other => Self::Unknown(other.to_string()),
         })
