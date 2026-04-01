@@ -1259,15 +1259,7 @@ fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
     if todos.is_empty() {
         return Err(String::from("todos must not be empty"));
     }
-    let in_progress = todos
-        .iter()
-        .filter(|todo| matches!(todo.status, TodoStatus::InProgress))
-        .count();
-    if in_progress > 1 {
-        return Err(String::from(
-            "exactly zero or one todo items may be in_progress",
-        ));
-    }
+    // Allow multiple in_progress items for parallel workflows
     if todos.iter().any(|todo| todo.content.trim().is_empty()) {
         return Err(String::from("todo content must not be empty"));
     }
@@ -2654,7 +2646,8 @@ mod tests {
             .expect_err("empty todos should fail");
         assert!(empty.contains("todos must not be empty"));
 
-        let too_many_active = execute_tool(
+        // Multiple in_progress items are now allowed for parallel workflows
+        let _multi_active = execute_tool(
             "TodoWrite",
             &json!({
                 "todos": [
@@ -2663,8 +2656,7 @@ mod tests {
                 ]
             }),
         )
-        .expect_err("multiple in-progress todos should fail");
-        assert!(too_many_active.contains("zero or one todo items may be in_progress"));
+        .expect("multiple in-progress todos should succeed");
 
         let blank_content = execute_tool(
             "TodoWrite",
