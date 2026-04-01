@@ -2046,7 +2046,7 @@ impl ApiClient for ProviderRuntimeClient {
             let renderer = TerminalRenderer::new();
             let mut markdown_stream = MarkdownStreamState::default();
             let mut events = Vec::new();
-            let mut pending_tool: Option<(String, String, String)> = None;
+            let mut pending_tools: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
             let mut saw_stop = false;
 
             while let Some(event) = stream
@@ -2057,15 +2057,23 @@ impl ApiClient for ProviderRuntimeClient {
                 match event {
                     ApiStreamEvent::MessageStart(start) => {
                         for block in start.message.content {
-                            push_output_block(block, out, &mut events, &mut pending_tool, true)?;
+                            push_output_block(
+                                block,
+                                0,
+                                out,
+                                &mut events,
+                                &mut pending_tools,
+                                true,
+                            )?;
                         }
                     }
                     ApiStreamEvent::ContentBlockStart(start) => {
                         push_output_block(
                             start.content_block,
+                            start.index,
                             out,
                             &mut events,
-                            &mut pending_tool,
+                            &mut pending_tools,
                             true,
                         )?;
                     }
@@ -2081,18 +2089,18 @@ impl ApiClient for ProviderRuntimeClient {
                             }
                         }
                         ContentBlockDelta::InputJsonDelta { partial_json } => {
-                            if let Some((_, _, input)) = &mut pending_tool {
+                            if let Some((_, _, input)) = pending_tools.get_mut(&delta.index) {
                                 input.push_str(&partial_json);
                             }
                         }
                     },
-                    ApiStreamEvent::ContentBlockStop(_) => {
+                    ApiStreamEvent::ContentBlockStop(stop) => {
                         if let Some(rendered) = markdown_stream.flush(&renderer) {
                             write!(out, "{rendered}")
                                 .and_then(|()| out.flush())
                                 .map_err(|error| RuntimeError::new(error.to_string()))?;
                         }
-                        if let Some((id, name, input)) = pending_tool.take() {
+                        if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
                             // Display tool call now that input is fully accumulated
                             writeln!(out, "\n{}", format_tool_call_start(&name, &input))
                                 .and_then(|()| out.flush())
@@ -2556,9 +2564,10 @@ fn truncate_for_summary(value: &str, limit: usize) -> String {
 
 fn push_output_block(
     block: OutputContentBlock,
+    block_index: u32,
     out: &mut (impl Write + ?Sized),
     events: &mut Vec<AssistantEvent>,
-    pending_tool: &mut Option<(String, String, String)>,
+    pending_tools: &mut BTreeMap<u32, (String, String, String)>,
     streaming_tool_input: bool,
 ) -> Result<(), RuntimeError> {
     match block {
@@ -2583,7 +2592,7 @@ fn push_output_block(
             } else {
                 input.to_string()
             };
-            *pending_tool = Some((id, name, initial_input));
+            pending_tools.insert(block_index, (id, name, initial_input));
         }
     }
     Ok(())
@@ -2594,11 +2603,13 @@ fn response_to_events(
     out: &mut (impl Write + ?Sized),
 ) -> Result<Vec<AssistantEvent>, RuntimeError> {
     let mut events = Vec::new();
-    let mut pending_tool = None;
+    let mut pending_tools = BTreeMap::new();
 
-    for block in response.content {
-        push_output_block(block, out, &mut events, &mut pending_tool, false)?;
-        if let Some((id, name, input)) = pending_tool.take() {
+    for (index, block) in response.content.into_iter().enumerate() {
+        let index =
+            u32::try_from(index).map_err(|_| RuntimeError::new("response block index overflow"))?;
+        push_output_block(block, index, out, &mut events, &mut pending_tools, false)?;
+        if let Some((id, name, input)) = pending_tools.remove(&index) {
             events.push(AssistantEvent::ToolUse { id, name, input });
         }
     }
@@ -2824,6 +2835,7 @@ mod tests {
     use api::{MessageResponse, OutputContentBlock, Usage};
     use runtime::{AssistantEvent, ContentBlock, ConversationMessage, MessageRole, PermissionMode};
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     #[test]
@@ -3373,15 +3385,16 @@ mod tests {
     fn push_output_block_renders_markdown_text() {
         let mut out = Vec::new();
         let mut events = Vec::new();
-        let mut pending_tool = None;
+        let mut pending_tools = BTreeMap::new();
 
         push_output_block(
             OutputContentBlock::Text {
                 text: "# Heading".to_string(),
             },
+            0,
             &mut out,
             &mut events,
-            &mut pending_tool,
+            &mut pending_tools,
             false,
         )
         .expect("text block should render");
@@ -3395,7 +3408,7 @@ mod tests {
     fn push_output_block_skips_empty_object_prefix_for_tool_streams() {
         let mut out = Vec::new();
         let mut events = Vec::new();
-        let mut pending_tool = None;
+        let mut pending_tools = BTreeMap::new();
 
         push_output_block(
             OutputContentBlock::ToolUse {
@@ -3403,17 +3416,80 @@ mod tests {
                 name: "read_file".to_string(),
                 input: json!({}),
             },
+            1,
             &mut out,
             &mut events,
-            &mut pending_tool,
+            &mut pending_tools,
             true,
         )
         .expect("tool block should accumulate");
 
         assert!(events.is_empty());
         assert_eq!(
-            pending_tool,
+            pending_tools.remove(&1),
             Some(("tool-1".to_string(), "read_file".to_string(), String::new(),))
+        );
+    }
+
+    #[test]
+    fn pending_tools_preserve_multiple_streaming_tool_calls_by_index() {
+        let mut out = Vec::new();
+        let mut events = Vec::new();
+        let mut pending_tools = BTreeMap::new();
+
+        push_output_block(
+            OutputContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "read_file".to_string(),
+                input: json!({}),
+            },
+            1,
+            &mut out,
+            &mut events,
+            &mut pending_tools,
+            true,
+        )
+        .expect("first tool should accumulate");
+        push_output_block(
+            OutputContentBlock::ToolUse {
+                id: "tool-2".to_string(),
+                name: "grep_search".to_string(),
+                input: json!({}),
+            },
+            2,
+            &mut out,
+            &mut events,
+            &mut pending_tools,
+            true,
+        )
+        .expect("second tool should accumulate");
+
+        pending_tools
+            .get_mut(&1)
+            .expect("first tool pending")
+            .2
+            .push_str("{\"path\":\"src/main.rs\"}");
+        pending_tools
+            .get_mut(&2)
+            .expect("second tool pending")
+            .2
+            .push_str("{\"pattern\":\"TODO\"}");
+
+        assert_eq!(
+            pending_tools.remove(&1),
+            Some((
+                "tool-1".to_string(),
+                "read_file".to_string(),
+                "{\"path\":\"src/main.rs\"}".to_string(),
+            ))
+        );
+        assert_eq!(
+            pending_tools.remove(&2),
+            Some((
+                "tool-2".to_string(),
+                "grep_search".to_string(),
+                "{\"pattern\":\"TODO\"}".to_string(),
+            ))
         );
     }
 
