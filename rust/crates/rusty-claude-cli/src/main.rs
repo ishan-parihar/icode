@@ -2770,6 +2770,13 @@ fn format_tool_result(name: &str, output: &str, is_error: bool) -> String {
     }
 }
 
+const DISPLAY_TRUNCATION_NOTICE: &str =
+    "\x1b[2m… output truncated for display; full result preserved in session.\x1b[0m";
+const READ_DISPLAY_MAX_LINES: usize = 80;
+const READ_DISPLAY_MAX_CHARS: usize = 6_000;
+const TOOL_OUTPUT_DISPLAY_MAX_LINES: usize = 60;
+const TOOL_OUTPUT_DISPLAY_MAX_CHARS: usize = 4_000;
+
 fn extract_tool_path(parsed: &serde_json::Value) -> String {
     parsed
         .get("file_path")
@@ -2841,12 +2848,23 @@ fn format_bash_result(icon: &str, parsed: &serde_json::Value) -> String {
 
     if let Some(stdout) = parsed.get("stdout").and_then(|value| value.as_str()) {
         if !stdout.trim().is_empty() {
-            lines.push(stdout.trim_end().to_string());
+            lines.push(truncate_output_for_display(
+                stdout,
+                TOOL_OUTPUT_DISPLAY_MAX_LINES,
+                TOOL_OUTPUT_DISPLAY_MAX_CHARS,
+            ));
         }
     }
     if let Some(stderr) = parsed.get("stderr").and_then(|value| value.as_str()) {
         if !stderr.trim().is_empty() {
-            lines.push(format!("\x1b[38;5;203m{}\x1b[0m", stderr.trim_end()));
+            lines.push(format!(
+                "\x1b[38;5;203m{}\x1b[0m",
+                truncate_output_for_display(
+                    stderr,
+                    TOOL_OUTPUT_DISPLAY_MAX_LINES,
+                    TOOL_OUTPUT_DISPLAY_MAX_CHARS,
+                )
+            ));
         }
     }
 
@@ -2879,7 +2897,7 @@ fn format_read_result(icon: &str, parsed: &serde_json::Value) -> String {
         start_line,
         end_line.max(start_line),
         total_lines,
-        content
+        truncate_output_for_display(content, READ_DISPLAY_MAX_LINES, READ_DISPLAY_MAX_CHARS)
     )
 }
 
@@ -3001,7 +3019,14 @@ fn format_grep_result(icon: &str, parsed: &serde_json::Value) -> String {
         "{icon} \x1b[38;5;245mgrep_search\x1b[0m {num_matches} matches across {num_files} files"
     );
     if !content.trim().is_empty() {
-        format!("{summary}\n{}", content.trim_end())
+        format!(
+            "{summary}\n{}",
+            truncate_output_for_display(
+                content,
+                TOOL_OUTPUT_DISPLAY_MAX_LINES,
+                TOOL_OUTPUT_DISPLAY_MAX_CHARS,
+            )
+        )
     } else if !filenames.is_empty() {
         format!("{summary}\n{filenames}")
     } else {
@@ -3025,6 +3050,50 @@ fn truncate_for_summary(value: &str, limit: usize) -> String {
     } else {
         truncated
     }
+}
+
+fn truncate_output_for_display(content: &str, max_lines: usize, max_chars: usize) -> String {
+    let original = content.trim_end_matches('\n');
+    if original.is_empty() {
+        return String::new();
+    }
+
+    let mut preview_lines = Vec::new();
+    let mut used_chars = 0usize;
+    let mut truncated = false;
+
+    for (index, line) in original.lines().enumerate() {
+        if index >= max_lines {
+            truncated = true;
+            break;
+        }
+
+        let newline_cost = usize::from(!preview_lines.is_empty());
+        let available = max_chars.saturating_sub(used_chars + newline_cost);
+        if available == 0 {
+            truncated = true;
+            break;
+        }
+
+        let line_chars = line.chars().count();
+        if line_chars > available {
+            preview_lines.push(line.chars().take(available).collect::<String>());
+            truncated = true;
+            break;
+        }
+
+        preview_lines.push(line.to_string());
+        used_chars += newline_cost + line_chars;
+    }
+
+    let mut preview = preview_lines.join("\n");
+    if truncated {
+        if !preview.is_empty() {
+            preview.push('\n');
+        }
+        preview.push_str(DISPLAY_TRUNCATION_NOTICE);
+    }
+    preview
 }
 
 fn push_output_block(
@@ -3891,6 +3960,54 @@ mod tests {
         );
         assert!(done.contains("📄 Read src/main.rs"));
         assert!(done.contains("hello"));
+    }
+
+    #[test]
+    fn tool_rendering_truncates_large_read_output_for_display_only() {
+        let content = (0..200)
+            .map(|index| format!("line {index:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = json!({
+            "file": {
+                "filePath": "src/main.rs",
+                "content": content,
+                "numLines": 200,
+                "startLine": 1,
+                "totalLines": 200
+            }
+        })
+        .to_string();
+
+        let rendered = format_tool_result("read_file", &output, false);
+
+        assert!(rendered.contains("line 000"));
+        assert!(rendered.contains("line 079"));
+        assert!(!rendered.contains("line 199"));
+        assert!(rendered.contains("full result preserved in session"));
+        assert!(output.contains("line 199"));
+    }
+
+    #[test]
+    fn tool_rendering_truncates_large_bash_output_for_display_only() {
+        let stdout = (0..120)
+            .map(|index| format!("stdout {index:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = json!({
+            "stdout": stdout,
+            "stderr": "",
+            "returnCodeInterpretation": "completed successfully"
+        })
+        .to_string();
+
+        let rendered = format_tool_result("bash", &output, false);
+
+        assert!(rendered.contains("stdout 000"));
+        assert!(rendered.contains("stdout 059"));
+        assert!(!rendered.contains("stdout 119"));
+        assert!(rendered.contains("full result preserved in session"));
+        assert!(output.contains("stdout 119"));
     }
 
     #[test]
