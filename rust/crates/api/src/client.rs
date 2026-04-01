@@ -2,12 +2,12 @@ use std::collections::VecDeque;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use runtime::{
-    load_oauth_credentials, save_oauth_credentials, OAuthConfig, OAuthRefreshRequest,
-    OAuthTokenExchangeRequest,
+    format_usd, load_oauth_credentials, pricing_for_model, save_oauth_credentials, OAuthConfig,
+    OAuthRefreshRequest, OAuthTokenExchangeRequest,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use telemetry::{AnthropicRequestProfile, ClientIdentity, SessionTracer};
+use telemetry::{AnalyticsEvent, AnthropicRequestProfile, ClientIdentity, SessionTracer};
 
 use crate::error::ApiError;
 use crate::sse::SseParser;
@@ -252,6 +252,7 @@ impl AnthropicClient {
         if response.request_id.is_none() {
             response.request_id = request_id;
         }
+        self.record_response_usage(&response);
         Ok(response)
     }
 
@@ -418,6 +419,75 @@ impl AnthropicClient {
                 self.error_attributes(request, error),
             );
         }
+    }
+
+    fn record_response_usage(&self, response: &MessageResponse) {
+        let Some(tracer) = &self.session_tracer else {
+            return;
+        };
+
+        let cost = response.usage.estimated_cost_usd(&response.model);
+        let pricing_source = if pricing_for_model(&response.model).is_some() {
+            "model-specific"
+        } else {
+            "default-sonnet"
+        };
+
+        let mut properties = Map::new();
+        properties.insert("model".to_string(), Value::String(response.model.clone()));
+        properties.insert(
+            "pricing_source".to_string(),
+            Value::String(pricing_source.to_string()),
+        );
+        properties.insert(
+            "input_tokens".to_string(),
+            Value::from(response.usage.input_tokens),
+        );
+        properties.insert(
+            "output_tokens".to_string(),
+            Value::from(response.usage.output_tokens),
+        );
+        properties.insert(
+            "cache_creation_input_tokens".to_string(),
+            Value::from(response.usage.cache_creation_input_tokens),
+        );
+        properties.insert(
+            "cache_read_input_tokens".to_string(),
+            Value::from(response.usage.cache_read_input_tokens),
+        );
+        properties.insert(
+            "total_tokens".to_string(),
+            Value::from(response.usage.total_tokens()),
+        );
+        properties.insert(
+            "estimated_cost_usd".to_string(),
+            Value::String(format_usd(cost.total_cost_usd())),
+        );
+        properties.insert(
+            "estimated_input_cost_usd".to_string(),
+            Value::String(format_usd(cost.input_cost_usd)),
+        );
+        properties.insert(
+            "estimated_output_cost_usd".to_string(),
+            Value::String(format_usd(cost.output_cost_usd)),
+        );
+        properties.insert(
+            "estimated_cache_creation_cost_usd".to_string(),
+            Value::String(format_usd(cost.cache_creation_cost_usd)),
+        );
+        properties.insert(
+            "estimated_cache_read_cost_usd".to_string(),
+            Value::String(format_usd(cost.cache_read_cost_usd)),
+        );
+        if let Some(request_id) = &response.request_id {
+            properties.insert("request_id".to_string(), Value::String(request_id.clone()));
+        }
+
+        tracer.record_analytics(AnalyticsEvent {
+            namespace: "api".to_string(),
+            action: "message_usage".to_string(),
+            properties,
+        });
     }
 
     fn request_attributes(&self, request: &MessageRequest) -> Map<String, Value> {

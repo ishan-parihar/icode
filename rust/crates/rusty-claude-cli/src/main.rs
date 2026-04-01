@@ -2154,12 +2154,7 @@ impl ApiClient for AnthropicRuntimeClient {
                         }
                     }
                     ApiStreamEvent::MessageDelta(delta) => {
-                        events.push(AssistantEvent::Usage(TokenUsage {
-                            input_tokens: delta.usage.input_tokens,
-                            output_tokens: delta.usage.output_tokens,
-                            cache_creation_input_tokens: 0,
-                            cache_read_input_tokens: 0,
-                        }));
+                        events.push(AssistantEvent::Usage(delta.usage.token_usage()));
                     }
                     ApiStreamEvent::MessageStop(_) => {
                         saw_stop = true;
@@ -2655,12 +2650,7 @@ fn response_to_events(
         }
     }
 
-    events.push(AssistantEvent::Usage(TokenUsage {
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-        cache_creation_input_tokens: response.usage.cache_creation_input_tokens,
-        cache_read_input_tokens: response.usage.cache_read_input_tokens,
-    }));
+    events.push(AssistantEvent::Usage(response.usage.token_usage()));
     events.push(AssistantEvent::MessageStop);
     Ok(events)
 }
