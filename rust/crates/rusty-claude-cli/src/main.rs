@@ -27,8 +27,8 @@ use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
     parse_oauth_callback_request_target, save_oauth_credentials, ApiClient, ApiRequest,
     AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
-    ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest,
-    OAuthConfig, OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
+    ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
+    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
     Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde_json::json;
@@ -1903,6 +1903,15 @@ fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     )?)
 }
 
+fn build_runtime_feature_config(
+) -> Result<runtime::RuntimeFeatureConfig, Box<dyn std::error::Error>> {
+    let cwd = env::current_dir()?;
+    Ok(ConfigLoader::default_for(cwd)
+        .load()?
+        .feature_config()
+        .clone())
+}
+
 fn build_runtime(
     session: Session,
     model: String,
@@ -1913,12 +1922,13 @@ fn build_runtime(
     permission_mode: PermissionMode,
 ) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
 {
-    Ok(ConversationRuntime::new(
+    Ok(ConversationRuntime::new_with_features(
         session,
         AnthropicRuntimeClient::new(model, enable_tools, emit_output, allowed_tools.clone())?,
         CliToolExecutor::new(allowed_tools, emit_output),
         permission_policy(permission_mode),
         system_prompt,
+        build_runtime_feature_config()?,
     ))
 }
 

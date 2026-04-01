@@ -37,11 +37,18 @@ pub struct RuntimeConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimeFeatureConfig {
+    hooks: RuntimeHookConfig,
     mcp: McpConfigCollection,
     oauth: Option<OAuthConfig>,
     model: Option<String>,
     permission_mode: Option<ResolvedPermissionMode>,
     sandbox: SandboxConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuntimeHookConfig {
+    pre_tool_use: Vec<String>,
+    post_tool_use: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -221,6 +228,7 @@ impl ConfigLoader {
         let merged_value = JsonValue::Object(merged.clone());
 
         let feature_config = RuntimeFeatureConfig {
+            hooks: parse_optional_hooks_config(&merged_value)?,
             mcp: McpConfigCollection {
                 servers: mcp_servers,
             },
@@ -279,6 +287,11 @@ impl RuntimeConfig {
     }
 
     #[must_use]
+    pub fn hooks(&self) -> &RuntimeHookConfig {
+        &self.feature_config.hooks
+    }
+
+    #[must_use]
     pub fn oauth(&self) -> Option<&OAuthConfig> {
         self.feature_config.oauth.as_ref()
     }
@@ -300,6 +313,17 @@ impl RuntimeConfig {
 }
 
 impl RuntimeFeatureConfig {
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: RuntimeHookConfig) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    #[must_use]
+    pub fn hooks(&self) -> &RuntimeHookConfig {
+        &self.hooks
+    }
+
     #[must_use]
     pub fn mcp(&self) -> &McpConfigCollection {
         &self.mcp
@@ -323,6 +347,26 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn sandbox(&self) -> &SandboxConfig {
         &self.sandbox
+    }
+}
+
+impl RuntimeHookConfig {
+    #[must_use]
+    pub fn new(pre_tool_use: Vec<String>, post_tool_use: Vec<String>) -> Self {
+        Self {
+            pre_tool_use,
+            post_tool_use,
+        }
+    }
+
+    #[must_use]
+    pub fn pre_tool_use(&self) -> &[String] {
+        &self.pre_tool_use
+    }
+
+    #[must_use]
+    pub fn post_tool_use(&self) -> &[String] {
+        &self.post_tool_use
     }
 }
 
@@ -422,6 +466,22 @@ fn parse_optional_model(root: &JsonValue) -> Option<String> {
         .and_then(|object| object.get("model"))
         .and_then(JsonValue::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn parse_optional_hooks_config(root: &JsonValue) -> Result<RuntimeHookConfig, ConfigError> {
+    let Some(object) = root.as_object() else {
+        return Ok(RuntimeHookConfig::default());
+    };
+    let Some(hooks_value) = object.get("hooks") else {
+        return Ok(RuntimeHookConfig::default());
+    };
+    let hooks = expect_object(hooks_value, "merged settings.hooks")?;
+    Ok(RuntimeHookConfig {
+        pre_tool_use: optional_string_array(hooks, "PreToolUse", "merged settings.hooks")?
+            .unwrap_or_default(),
+        post_tool_use: optional_string_array(hooks, "PostToolUse", "merged settings.hooks")?
+            .unwrap_or_default(),
+    })
 }
 
 fn parse_optional_permission_mode(
@@ -836,6 +896,8 @@ mod tests {
             .and_then(JsonValue::as_object)
             .expect("hooks object")
             .contains_key("PostToolUse"));
+        assert_eq!(loaded.hooks().pre_tool_use(), &["base".to_string()]);
+        assert_eq!(loaded.hooks().post_tool_use(), &["project".to_string()]);
         assert!(loaded.mcp().get("home").is_some());
         assert!(loaded.mcp().get("project").is_some());
 
