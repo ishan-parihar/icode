@@ -317,6 +317,11 @@ impl RuntimeConfig {
     }
 
     #[must_use]
+    pub fn permission_rules(&self) -> &RuntimePermissionRuleConfig {
+        &self.feature_config.permission_rules
+    }
+
+    #[must_use]
     pub fn sandbox(&self) -> &SandboxConfig {
         &self.feature_config.sandbox
     }
@@ -916,7 +921,7 @@ mod tests {
         .expect("write user compat config");
         fs::write(
             home.join("settings.json"),
-            r#"{"model":"sonnet","env":{"A2":"1"},"hooks":{"PreToolUse":["base"]},"permissions":{"defaultMode":"plan"}}"#,
+            r#"{"model":"sonnet","env":{"A2":"1"},"hooks":{"PreToolUse":["base"]},"permissions":{"defaultMode":"plan","allow":["Read"],"deny":["Bash(rm -rf)"]}}"#,
         )
         .expect("write user settings");
         fs::write(
@@ -926,7 +931,7 @@ mod tests {
         .expect("write project compat config");
         fs::write(
             cwd.join(".claude").join("settings.json"),
-            r#"{"env":{"C":"3"},"hooks":{"PostToolUse":["project"]},"mcpServers":{"project":{"command":"uvx","args":["project"]}}}"#,
+            r#"{"env":{"C":"3"},"hooks":{"PostToolUse":["project"],"PostToolUseFailure":["project-failure"]},"permissions":{"ask":["Edit"]},"mcpServers":{"project":{"command":"uvx","args":["project"]}}}"#,
         )
         .expect("write project settings");
         fs::write(
@@ -971,6 +976,16 @@ mod tests {
             .contains_key("PostToolUse"));
         assert_eq!(loaded.hooks().pre_tool_use(), &["base".to_string()]);
         assert_eq!(loaded.hooks().post_tool_use(), &["project".to_string()]);
+        assert_eq!(
+            loaded.hooks().post_tool_use_failure(),
+            &["project-failure".to_string()]
+        );
+        assert_eq!(loaded.permission_rules().allow(), &["Read".to_string()]);
+        assert_eq!(
+            loaded.permission_rules().deny(),
+            &["Bash(rm -rf)".to_string()]
+        );
+        assert_eq!(loaded.permission_rules().ask(), &["Edit".to_string()]);
         assert!(loaded.mcp().get("home").is_some());
         assert!(loaded.mcp().get("project").is_some());
 

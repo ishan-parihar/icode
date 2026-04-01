@@ -5,8 +5,10 @@ use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
 use crate::config::RuntimeFeatureConfig;
-use crate::hooks::{HookRunResult, HookRunner};
-use crate::permissions::{PermissionOutcome, PermissionPolicy, PermissionPrompter};
+use crate::hooks::{HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner};
+use crate::permissions::{
+    PermissionContext, PermissionOutcome, PermissionPolicy, PermissionPrompter,
+};
 use crate::session::{ContentBlock, ConversationMessage, Session};
 use crate::usage::{TokenUsage, UsageTracker};
 
@@ -97,6 +99,8 @@ pub struct ConversationRuntime<C, T> {
     max_iterations: usize,
     usage_tracker: UsageTracker,
     hook_runner: HookRunner,
+    hook_abort_signal: HookAbortSignal,
+    hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -118,7 +122,7 @@ where
             tool_executor,
             permission_policy,
             system_prompt,
-            RuntimeFeatureConfig::default(),
+            &RuntimeFeatureConfig::default(),
         )
     }
 
@@ -129,7 +133,7 @@ where
         tool_executor: T,
         permission_policy: PermissionPolicy,
         system_prompt: Vec<String>,
-        feature_config: RuntimeFeatureConfig,
+        feature_config: &RuntimeFeatureConfig,
     ) -> Self {
         let usage_tracker = UsageTracker::from_session(&session);
         Self {
@@ -140,7 +144,8 @@ where
             system_prompt,
             max_iterations: usize::MAX,
             usage_tracker,
-            hook_runner: HookRunner::from_feature_config(&feature_config),
+            hook_runner: HookRunner::from_feature_config(feature_config),
+            hook_abort_signal: HookAbortSignal::default(),
         }
     }
 
@@ -150,6 +155,22 @@ where
         self
     }
 
+    #[must_use]
+    pub fn with_hook_abort_signal(mut self, hook_abort_signal: HookAbortSignal) -> Self {
+        self.hook_abort_signal = hook_abort_signal;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hook_progress_reporter(
+        mut self,
+        hook_progress_reporter: Box<dyn HookProgressReporter>,
+    ) -> Self {
+        self.hook_progress_reporter = Some(hook_progress_reporter);
+        self
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub fn run_turn(
         &mut self,
         user_input: impl Into<String>,
@@ -199,55 +220,94 @@ where
             }
 
             for (tool_use_id, tool_name, input) in pending_tool_uses {
-                let permission_outcome = if let Some(prompt) = prompter.as_mut() {
-                    self.permission_policy
-                        .authorize(&tool_name, &input, Some(*prompt))
+                let pre_hook_result = self.hook_runner.run_pre_tool_use_with_context(
+                    &tool_name,
+                    &input,
+                    Some(&self.hook_abort_signal),
+                    self.hook_progress_reporter.as_deref_mut(),
+                );
+                let effective_input = pre_hook_result
+                    .updated_input_json()
+                    .map_or_else(|| input.clone(), ToOwned::to_owned);
+                let permission_context = PermissionContext::new(
+                    pre_hook_result.permission_decision(),
+                    pre_hook_result.permission_reason().map(ToOwned::to_owned),
+                );
+
+                let permission_outcome = if pre_hook_result.is_cancelled() {
+                    PermissionOutcome::Deny {
+                        reason: format_hook_message(
+                            &pre_hook_result,
+                            &format!("PreToolUse hook cancelled tool `{tool_name}`"),
+                        ),
+                    }
+                } else if pre_hook_result.is_denied() {
+                    PermissionOutcome::Deny {
+                        reason: format_hook_message(
+                            &pre_hook_result,
+                            &format!("PreToolUse hook denied tool `{tool_name}`"),
+                        ),
+                    }
+                } else if let Some(prompt) = prompter.as_mut() {
+                    self.permission_policy.authorize_with_context(
+                        &tool_name,
+                        &effective_input,
+                        &permission_context,
+                        Some(*prompt),
+                    )
                 } else {
-                    self.permission_policy.authorize(&tool_name, &input, None)
+                    self.permission_policy.authorize_with_context(
+                        &tool_name,
+                        &effective_input,
+                        &permission_context,
+                        None,
+                    )
                 };
 
                 let result_message = match permission_outcome {
                     PermissionOutcome::Allow => {
-                        let pre_hook_result = self.hook_runner.run_pre_tool_use(&tool_name, &input);
-                        if pre_hook_result.is_denied() {
-                            let deny_message = format!("PreToolUse hook denied tool `{tool_name}`");
-                            ConversationMessage::tool_result(
-                                tool_use_id,
-                                tool_name,
-                                format_hook_message(&pre_hook_result, &deny_message),
-                                true,
+                        let (mut output, mut is_error) =
+                            match self.tool_executor.execute(&tool_name, &effective_input) {
+                                Ok(output) => (output, false),
+                                Err(error) => (error.to_string(), true),
+                            };
+                        output = merge_hook_feedback(pre_hook_result.messages(), output, false);
+
+                        let post_hook_result = if is_error {
+                            self.hook_runner.run_post_tool_use_failure_with_context(
+                                &tool_name,
+                                &effective_input,
+                                &output,
+                                Some(&self.hook_abort_signal),
+                                self.hook_progress_reporter.as_deref_mut(),
                             )
                         } else {
-                            let (mut output, mut is_error) =
-                                match self.tool_executor.execute(&tool_name, &input) {
-                                    Ok(output) => (output, false),
-                                    Err(error) => (error.to_string(), true),
-                                };
-                            output = merge_hook_feedback(pre_hook_result.messages(), output, false);
-
-                            let post_hook_result = self
-                                .hook_runner
-                                .run_post_tool_use(&tool_name, &input, &output, is_error);
-                            if post_hook_result.is_denied() {
-                                is_error = true;
-                            }
-                            output = merge_hook_feedback(
-                                post_hook_result.messages(),
-                                output,
-                                post_hook_result.is_denied(),
-                            );
-
-                            ConversationMessage::tool_result(
-                                tool_use_id,
-                                tool_name,
-                                output,
-                                is_error,
+                            self.hook_runner.run_post_tool_use_with_context(
+                                &tool_name,
+                                &effective_input,
+                                &output,
+                                false,
+                                Some(&self.hook_abort_signal),
+                                self.hook_progress_reporter.as_deref_mut(),
                             )
+                        };
+                        if post_hook_result.is_denied() || post_hook_result.is_cancelled() {
+                            is_error = true;
                         }
+                        output = merge_hook_feedback(
+                            post_hook_result.messages(),
+                            output,
+                            post_hook_result.is_denied() || post_hook_result.is_cancelled(),
+                        );
+
+                        ConversationMessage::tool_result(tool_use_id, tool_name, output, is_error)
                     }
-                    PermissionOutcome::Deny { reason } => {
-                        ConversationMessage::tool_result(tool_use_id, tool_name, reason, true)
-                    }
+                    PermissionOutcome::Deny { reason } => ConversationMessage::tool_result(
+                        tool_use_id,
+                        tool_name,
+                        merge_hook_feedback(pre_hook_result.messages(), reason, true),
+                        true,
+                    ),
                 };
                 self.session.messages.push(result_message.clone());
                 tool_results.push(result_message);
@@ -609,8 +669,9 @@ mod tests {
             }),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-            RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
+            &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'blocked by hook'; exit 2")],
+                Vec::new(),
                 Vec::new(),
             )),
         );
@@ -675,9 +736,10 @@ mod tests {
             StaticToolExecutor::new().register("add", |_input| Ok("4".to_string())),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-            RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
+            &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'pre hook ran'")],
                 vec![shell_snippet("printf 'post hook ran'")],
+                Vec::new(),
             )),
         );
 
@@ -697,7 +759,7 @@ mod tests {
             "post hook should preserve non-error result: {output:?}"
         );
         assert!(
-            output.contains("4"),
+            output.contains('4'),
             "tool output missing value: {output:?}"
         );
         assert!(
