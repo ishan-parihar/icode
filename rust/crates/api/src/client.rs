@@ -520,6 +520,7 @@ fn read_auth_token() -> Option<String> {
         .and_then(std::convert::identity)
 }
 
+#[must_use]
 pub fn read_base_url() -> String {
     std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
 }

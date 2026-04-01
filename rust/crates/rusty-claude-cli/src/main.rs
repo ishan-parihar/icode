@@ -157,11 +157,11 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| "missing value for --model".to_string())?;
-                model.clone_from(value);
+                model = resolve_model_alias(value).to_string();
                 index += 2;
             }
             flag if flag.starts_with("--model=") => {
-                model = flag[8..].to_string();
+                model = resolve_model_alias(&flag[8..]).to_string();
                 index += 1;
             }
             "--output-format" => {
@@ -256,6 +256,15 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             permission_mode,
         }),
         other => Err(format!("unknown subcommand: {other}")),
+    }
+}
+
+fn resolve_model_alias(model: &str) -> &str {
+    match model {
+        "opus" => "claude-opus-4-6",
+        "sonnet" => "claude-sonnet-4-6",
+        "haiku" => "claude-haiku-3-5-20241022",
+        _ => model,
     }
 }
 
@@ -1033,7 +1042,8 @@ impl LiveCli {
     }
 
     fn run_prompt_json(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let client = AnthropicClient::from_auth(resolve_cli_auth_source()?).with_base_url(api::read_base_url());
+        let client = AnthropicClient::from_auth(resolve_cli_auth_source()?)
+            .with_base_url(api::read_base_url());
         let request = MessageRequest {
             model: self.model.clone(),
             max_tokens: DEFAULT_MAX_TOKENS,
@@ -1171,6 +1181,8 @@ impl LiveCli {
             );
             return Ok(false);
         };
+
+        let model = resolve_model_alias(&model).to_string();
 
         if model == self.model {
             println!(
@@ -1934,7 +1946,8 @@ impl AnthropicRuntimeClient {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
-            client: AnthropicClient::from_auth(resolve_cli_auth_source()?).with_base_url(api::read_base_url()),
+            client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
+                .with_base_url(api::read_base_url()),
             model,
             enable_tools,
             allowed_tools,
@@ -2307,10 +2320,7 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(out, "  claw dump-manifests")?;
     writeln!(out, "  claw bootstrap-plan")?;
-    writeln!(
-        out,
-        "  claw system-prompt [--cwd PATH] [--date YYYY-MM-DD]"
-    )?;
+    writeln!(out, "  claw system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
     writeln!(out, "  claw login")?;
     writeln!(out, "  claw logout")?;
     writeln!(out, "  claw init")?;
@@ -2347,10 +2357,7 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         .join(", ");
     writeln!(out, "Resume-safe commands: {resume_commands}")?;
     writeln!(out, "Examples:")?;
-    writeln!(
-        out,
-        "  claw --model claude-opus \"summarize this repo\""
-    )?;
+    writeln!(out, "  claw --model claude-opus \"summarize this repo\"")?;
     writeln!(
         out,
         "  claw --output-format json prompt \"explain src/main.rs\""
@@ -2379,7 +2386,7 @@ mod tests {
         format_model_switch_report, format_permissions_report, format_permissions_switch_report,
         format_resume_report, format_status_report, format_tool_call_start, format_tool_result,
         normalize_permission_mode, parse_args, parse_git_status_metadata, print_help_to,
-        render_config_report, render_memory_report, render_repl_help,
+        render_config_report, render_memory_report, render_repl_help, resolve_model_alias,
         resume_supported_slash_commands, status_context, CliAction, CliOutputFormat, SlashCommand,
         StatusUsage, DEFAULT_MODEL,
     };
@@ -2436,6 +2443,34 @@ mod tests {
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
+    }
+
+    #[test]
+    fn resolves_model_aliases_in_args() {
+        let args = vec![
+            "--model".to_string(),
+            "opus".to_string(),
+            "explain".to_string(),
+            "this".to_string(),
+        ];
+        assert_eq!(
+            parse_args(&args).expect("args should parse"),
+            CliAction::Prompt {
+                prompt: "explain this".to_string(),
+                model: "claude-opus-4-6".to_string(),
+                output_format: CliOutputFormat::Text,
+                allowed_tools: None,
+                permission_mode: PermissionMode::WorkspaceWrite,
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_known_model_aliases() {
+        assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6");
+        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
+        assert_eq!(resolve_model_alias("haiku"), "claude-haiku-3-5-20241022");
+        assert_eq!(resolve_model_alias("claude-opus"), "claude-opus");
     }
 
     #[test]
