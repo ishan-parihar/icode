@@ -84,6 +84,7 @@ async fn send_message_posts_json_and_parses_response() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn stream_message_parses_sse_events_with_tool_use() {
     let _guard = env_lock();
     let temp_root = std::env::temp_dir().join(format!(
@@ -180,12 +181,15 @@ async fn stream_message_parses_sse_events_with_tool_use() {
     let request = captured.first().expect("server should capture request");
     assert!(request.body.contains("\"stream\":true"));
 
-    let stats = client
+    let cache_stats = client
         .prompt_cache_stats()
         .expect("prompt cache stats should exist");
-    assert_eq!(stats.tracked_requests, 1);
-    assert_eq!(stats.last_cache_read_input_tokens, Some(0));
-    assert_eq!(stats.last_cache_source.as_deref(), Some("api-response"));
+    assert_eq!(cache_stats.tracked_requests, 1);
+    assert_eq!(cache_stats.last_cache_read_input_tokens, Some(0));
+    assert_eq!(
+        cache_stats.last_cache_source.as_deref(),
+        Some("api-response")
+    );
 
     std::fs::remove_dir_all(temp_root).expect("cleanup temp root");
     std::env::remove_var("CLAUDE_CONFIG_HOME");
@@ -273,6 +277,7 @@ async fn surfaces_retry_exhaustion_for_persistent_retryable_errors() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn send_message_reuses_recent_completion_cache_entries() {
     let _guard = env_lock();
     let temp_root = std::env::temp_dir().join(format!(
@@ -312,18 +317,19 @@ async fn send_message_reuses_recent_completion_cache_entries() {
     assert_eq!(first.content, second.content);
     assert_eq!(state.lock().await.len(), 1);
 
-    let stats = client
+    let cache_stats = client
         .prompt_cache_stats()
         .expect("prompt cache stats should exist");
-    assert_eq!(stats.completion_cache_hits, 1);
-    assert_eq!(stats.completion_cache_misses, 1);
-    assert_eq!(stats.completion_cache_writes, 1);
+    assert_eq!(cache_stats.completion_cache_hits, 1);
+    assert_eq!(cache_stats.completion_cache_misses, 1);
+    assert_eq!(cache_stats.completion_cache_writes, 1);
 
     std::fs::remove_dir_all(temp_root).expect("cleanup temp root");
     std::env::remove_var("CLAUDE_CONFIG_HOME");
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn send_message_tracks_unexpected_prompt_cache_breaks() {
     let _guard = env_lock();
     let temp_root = std::env::temp_dir().join(format!(
@@ -372,12 +378,12 @@ async fn send_message_tracks_unexpected_prompt_cache_breaks() {
         .await
         .expect("second response should succeed");
 
-    let stats = client
+    let cache_stats = client
         .prompt_cache_stats()
         .expect("prompt cache stats should exist");
-    assert_eq!(stats.unexpected_cache_breaks, 1);
+    assert_eq!(cache_stats.unexpected_cache_breaks, 1);
     assert_eq!(
-        stats.last_break_reason.as_deref(),
+        cache_stats.last_break_reason.as_deref(),
         Some("cache read tokens dropped while prompt fingerprint remained stable")
     );
 
