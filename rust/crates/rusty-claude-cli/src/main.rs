@@ -49,7 +49,7 @@ fn main() {
         eprintln!(
             "error: {error}
 
-Run `rusty-claude-cli --help` for usage."
+Run `claw --help` for usage."
         );
         std::process::exit(1);
     }
@@ -878,7 +878,7 @@ fn run_repl(
     permission_mode: PermissionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cli = LiveCli::new(model, true, allowed_tools, permission_mode)?;
-    let mut editor = input::LineEditor::new("› ", slash_command_completion_candidates());
+    let mut editor = input::LineEditor::new("🦞 ", slash_command_completion_candidates());
     println!("{}", cli.startup_banner());
 
     loop {
@@ -965,14 +965,26 @@ impl LiveCli {
     }
 
     fn startup_banner(&self) -> String {
+        let cwd = env::current_dir().map_or_else(
+            |_| "<unknown>".to_string(),
+            |path| path.display().to_string(),
+        );
         format!(
-            "Rusty Claude CLI\n  Model            {}\n  Permission mode  {}\n  Working directory {}\n  Session          {}\n\nType /help for commands. Shift+Enter or Ctrl+J inserts a newline.",
+            "\x1b[38;5;196m\
+ ██████╗██╗      █████╗ ██╗    ██╗\n\
+██╔════╝██║     ██╔══██╗██║    ██║\n\
+██║     ██║     ███████║██║ █╗ ██║\n\
+██║     ██║     ██╔══██║██║███╗██║\n\
+╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
+ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
+  \x1b[2mModel\x1b[0m            {}\n\
+  \x1b[2mPermissions\x1b[0m      {}\n\
+  \x1b[2mDirectory\x1b[0m        {}\n\
+  \x1b[2mSession\x1b[0m          {}\n\n\
+  Type \x1b[1m/help\x1b[0m for commands · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
             self.permission_mode.as_str(),
-            env::current_dir().map_or_else(
-                |_| "<unknown>".to_string(),
-                |path| path.display().to_string(),
-            ),
+            cwd,
             self.session.id,
         )
     }
@@ -981,7 +993,7 @@ impl LiveCli {
         let mut spinner = Spinner::new();
         let mut stdout = io::stdout();
         spinner.tick(
-            "Waiting for Claude",
+            "🦀 Thinking...",
             TerminalRenderer::new().color_theme(),
             &mut stdout,
         )?;
@@ -990,7 +1002,7 @@ impl LiveCli {
         match result {
             Ok(_) => {
                 spinner.finish(
-                    "Claude response complete",
+                    "✨ Done",
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
@@ -1000,7 +1012,7 @@ impl LiveCli {
             }
             Err(error) => {
                 spinner.fail(
-                    "Claude request failed",
+                    "❌ Request failed",
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
@@ -1742,7 +1754,7 @@ fn render_version_report() -> String {
     let git_sha = GIT_SHA.unwrap_or("unknown");
     let target = BUILD_TARGET.unwrap_or("unknown");
     format!(
-        "Version\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}"
+        "Claw Code\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}"
     )
 }
 
@@ -2267,41 +2279,41 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
 }
 
 fn print_help_to(out: &mut impl Write) -> io::Result<()> {
-    writeln!(out, "rusty-claude-cli v{VERSION}")?;
+    writeln!(out, "claw v{VERSION}")?;
     writeln!(out)?;
     writeln!(out, "Usage:")?;
     writeln!(
         out,
-        "  rusty-claude-cli [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
+        "  claw [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
     )?;
     writeln!(out, "      Start the interactive REPL")?;
     writeln!(
         out,
-        "  rusty-claude-cli [--model MODEL] [--output-format text|json] prompt TEXT"
+        "  claw [--model MODEL] [--output-format text|json] prompt TEXT"
     )?;
     writeln!(out, "      Send one prompt and exit")?;
     writeln!(
         out,
-        "  rusty-claude-cli [--model MODEL] [--output-format text|json] TEXT"
+        "  claw [--model MODEL] [--output-format text|json] TEXT"
     )?;
     writeln!(out, "      Shorthand non-interactive prompt mode")?;
     writeln!(
         out,
-        "  rusty-claude-cli --resume SESSION.json [/status] [/compact] [...]"
+        "  claw --resume SESSION.json [/status] [/compact] [...]"
     )?;
     writeln!(
         out,
         "      Inspect or maintain a saved session without entering the REPL"
     )?;
-    writeln!(out, "  rusty-claude-cli dump-manifests")?;
-    writeln!(out, "  rusty-claude-cli bootstrap-plan")?;
+    writeln!(out, "  claw dump-manifests")?;
+    writeln!(out, "  claw bootstrap-plan")?;
     writeln!(
         out,
-        "  rusty-claude-cli system-prompt [--cwd PATH] [--date YYYY-MM-DD]"
+        "  claw system-prompt [--cwd PATH] [--date YYYY-MM-DD]"
     )?;
-    writeln!(out, "  rusty-claude-cli login")?;
-    writeln!(out, "  rusty-claude-cli logout")?;
-    writeln!(out, "  rusty-claude-cli init")?;
+    writeln!(out, "  claw login")?;
+    writeln!(out, "  claw logout")?;
+    writeln!(out, "  claw init")?;
     writeln!(out)?;
     writeln!(out, "Flags:")?;
     writeln!(
@@ -2337,22 +2349,22 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Examples:")?;
     writeln!(
         out,
-        "  rusty-claude-cli --model claude-opus \"summarize this repo\""
+        "  claw --model claude-opus \"summarize this repo\""
     )?;
     writeln!(
         out,
-        "  rusty-claude-cli --output-format json prompt \"explain src/main.rs\""
+        "  claw --output-format json prompt \"explain src/main.rs\""
     )?;
     writeln!(
         out,
-        "  rusty-claude-cli --allowedTools read,glob \"summarize Cargo.toml\""
+        "  claw --allowedTools read,glob \"summarize Cargo.toml\""
     )?;
     writeln!(
         out,
-        "  rusty-claude-cli --resume session.json /status /diff /export notes.txt"
+        "  claw --resume session.json /status /diff /export notes.txt"
     )?;
-    writeln!(out, "  rusty-claude-cli login")?;
-    writeln!(out, "  rusty-claude-cli init")?;
+    writeln!(out, "  claw login")?;
+    writeln!(out, "  claw init")?;
     Ok(())
 }
 
@@ -2670,7 +2682,7 @@ mod tests {
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("rusty-claude-cli init"));
+        assert!(help.contains("claw init"));
     }
 
     #[test]
