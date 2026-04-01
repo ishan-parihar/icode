@@ -246,8 +246,6 @@ struct RawPluginToolManifest {
     pub required_permission: String,
 }
 
-type PluginPackageManifest = PluginManifest;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginTool {
     plugin_id: String,
@@ -982,7 +980,7 @@ impl PluginManager {
         let temp_root = self.install_root().join(".tmp");
         let staged_source = materialize_source(&install_source, &temp_root)?;
         let cleanup_source = matches!(install_source, PluginInstallSource::GitUrl { .. });
-        let manifest = load_validated_package_manifest_from_root(&staged_source)?;
+        let manifest = load_plugin_from_directory(&staged_source)?;
 
         let plugin_id = plugin_id(&manifest.name, EXTERNAL_MARKETPLACE);
         let install_path = self.install_root().join(sanitize_plugin_id(&plugin_id));
@@ -1067,7 +1065,7 @@ impl PluginManager {
         let temp_root = self.install_root().join(".tmp");
         let staged_source = materialize_source(&record.source, &temp_root)?;
         let cleanup_source = matches!(record.source, PluginInstallSource::GitUrl { .. });
-        let manifest = load_validated_package_manifest_from_root(&staged_source)?;
+        let manifest = load_plugin_from_directory(&staged_source)?;
 
         if record.install_path.exists() {
             fs::remove_dir_all(&record.install_path)?;
@@ -1098,18 +1096,26 @@ impl PluginManager {
 
     fn discover_installed_plugins(&self) -> Result<Vec<PluginDefinition>, PluginError> {
         let registry = self.load_registry()?;
-        registry
-            .plugins
-            .values()
-            .map(|record| {
-                load_plugin_definition(
-                    &record.install_path,
-                    record.kind,
-                    describe_install_source(&record.source),
-                    record.kind.marketplace(),
-                )
-            })
-            .collect()
+        let mut plugins = Vec::new();
+        let mut seen_ids = BTreeSet::<String>::new();
+
+        for install_path in discover_plugin_dirs(&self.install_root())? {
+            let matched_record = registry
+                .plugins
+                .values()
+                .find(|record| record.install_path == install_path);
+            let kind = matched_record.map_or(PluginKind::External, |record| record.kind);
+            let source = matched_record.map_or_else(
+                || install_path.display().to_string(),
+                |record| describe_install_source(&record.source),
+            );
+            let plugin = load_plugin_definition(&install_path, kind, source, kind.marketplace())?;
+            if seen_ids.insert(plugin.metadata().id.clone()) {
+                plugins.push(plugin);
+            }
+        }
+
+        Ok(plugins)
     }
 
     fn discover_external_directory_plugins(
@@ -1168,7 +1174,7 @@ impl PluginManager {
         let install_root = self.install_root();
 
         for source_root in bundled_plugins {
-            let manifest = load_validated_package_manifest_from_root(&source_root)?;
+            let manifest = load_plugin_from_directory(&source_root)?;
             let plugin_id = plugin_id(&manifest.name, BUNDLED_MARKETPLACE);
             let install_path = install_root.join(sanitize_plugin_id(&plugin_id));
             let now = unix_time_ms();
@@ -1302,7 +1308,7 @@ fn load_plugin_definition(
     source: String,
     marketplace: &str,
 ) -> Result<PluginDefinition, PluginError> {
-    let manifest = load_validated_package_manifest_from_root(root)?;
+    let manifest = load_plugin_from_directory(root)?;
     let metadata = PluginMetadata {
         id: plugin_id(&manifest.name, marketplace),
         name: manifest.name,
@@ -1342,24 +1348,16 @@ pub fn load_plugin_from_directory(root: &Path) -> Result<PluginManifest, PluginE
     load_manifest_from_directory(root)
 }
 
-fn load_validated_package_manifest_from_root(
-    root: &Path,
-) -> Result<PluginPackageManifest, PluginError> {
-    load_package_manifest_from_root(root)
-}
-
 fn load_manifest_from_directory(root: &Path) -> Result<PluginManifest, PluginError> {
     let manifest_path = plugin_manifest_path(root)?;
     load_manifest_from_path(root, &manifest_path)
 }
 
-fn load_package_manifest_from_root(root: &Path) -> Result<PluginPackageManifest, PluginError> {
-    let manifest_path = root.join(MANIFEST_RELATIVE_PATH);
-    load_manifest_from_path(root, &manifest_path)
-}
-
-fn load_manifest_from_path(root: &Path, manifest_path: &Path) -> Result<PluginManifest, PluginError> {
-    let contents = fs::read_to_string(&manifest_path).map_err(|error| {
+fn load_manifest_from_path(
+    root: &Path,
+    manifest_path: &Path,
+) -> Result<PluginManifest, PluginError> {
+    let contents = fs::read_to_string(manifest_path).map_err(|error| {
         PluginError::NotFound(format!(
             "plugin manifest not found at {}: {error}",
             manifest_path.display()
@@ -1387,7 +1385,10 @@ fn plugin_manifest_path(root: &Path) -> Result<PathBuf, PluginError> {
     )))
 }
 
-fn build_plugin_manifest(root: &Path, raw: RawPluginManifest) -> Result<PluginManifest, PluginError> {
+fn build_plugin_manifest(
+    root: &Path,
+    raw: RawPluginManifest,
+) -> Result<PluginManifest, PluginError> {
     let mut errors = Vec::new();
 
     validate_required_manifest_field("name", &raw.name, &mut errors);
@@ -1397,7 +1398,12 @@ fn build_plugin_manifest(root: &Path, raw: RawPluginManifest) -> Result<PluginMa
     let permissions = build_manifest_permissions(&raw.permissions, &mut errors);
     validate_command_entries(root, raw.hooks.pre_tool_use.iter(), "hook", &mut errors);
     validate_command_entries(root, raw.hooks.post_tool_use.iter(), "hook", &mut errors);
-    validate_command_entries(root, raw.lifecycle.init.iter(), "lifecycle command", &mut errors);
+    validate_command_entries(
+        root,
+        raw.lifecycle.init.iter(),
+        "lifecycle command",
+        &mut errors,
+    );
     validate_command_entries(
         root,
         raw.lifecycle.shutdown.iter(),
@@ -1487,10 +1493,7 @@ fn build_manifest_tools(
             continue;
         }
         if !seen.insert(name.clone()) {
-            errors.push(PluginManifestValidationError::DuplicateEntry {
-                kind: "tool",
-                name,
-            });
+            errors.push(PluginManifestValidationError::DuplicateEntry { kind: "tool", name });
             continue;
         }
         if tool.description.trim().is_empty() {
@@ -1514,11 +1517,15 @@ fn build_manifest_tools(
                 tool_name: name.clone(),
             });
         }
-        let Some(required_permission) = PluginToolPermission::parse(tool.required_permission.trim()) else {
-            errors.push(PluginManifestValidationError::InvalidToolRequiredPermission {
-                tool_name: name.clone(),
-                permission: tool.required_permission.trim().to_string(),
-            });
+        let Some(required_permission) =
+            PluginToolPermission::parse(tool.required_permission.trim())
+        else {
+            errors.push(
+                PluginManifestValidationError::InvalidToolRequiredPermission {
+                    tool_name: name.clone(),
+                    permission: tool.required_permission.trim().to_string(),
+                },
+            );
             continue;
         };
 
@@ -1618,40 +1625,6 @@ fn validate_command_entry(
     };
     if !path.exists() {
         errors.push(PluginManifestValidationError::MissingPath { kind, path });
-    }
-}
-
-trait NamedCommand {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn command(&self) -> &str;
-}
-
-impl NamedCommand for PluginToolManifest {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn command(&self) -> &str {
-        &self.command
-    }
-}
-
-impl NamedCommand for PluginCommandManifest {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn command(&self) -> &str {
-        &self.command
     }
 }
 
@@ -1890,10 +1863,11 @@ fn discover_plugin_dirs(root: &Path) -> Result<Vec<PathBuf>, PluginError> {
             let mut paths = Vec::new();
             for entry in entries {
                 let path = entry?.path();
-                if path.join(MANIFEST_RELATIVE_PATH).exists() {
+                if path.is_dir() && plugin_manifest_path(&path).is_ok() {
                     paths.push(path);
                 }
             }
+            paths.sort();
             Ok(paths)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -2171,6 +2145,10 @@ mod tests {
         assert_eq!(manifest.hooks.pre_tool_use, vec!["./hooks/pre.sh"]);
         assert_eq!(manifest.tools.len(), 1);
         assert_eq!(manifest.tools[0].name, "echo_tool");
+        assert_eq!(
+            manifest.tools[0].required_permission,
+            PluginToolPermission::WorkspaceWrite
+        );
         assert_eq!(manifest.commands.len(), 1);
         assert_eq!(manifest.commands[0].name, "sync");
 
@@ -2233,9 +2211,21 @@ mod tests {
         );
 
         let error = load_plugin_from_directory(&root).expect_err("duplicates should fail");
-        assert!(error
-            .to_string()
-            .contains("permission `read` is duplicated"));
+        match error {
+            PluginError::ManifestValidation(errors) => {
+                assert!(errors.iter().any(|error| matches!(
+                    error,
+                    PluginManifestValidationError::DuplicatePermission { permission }
+                    if permission == "read"
+                )));
+                assert!(errors.iter().any(|error| matches!(
+                    error,
+                    PluginManifestValidationError::DuplicateEntry { kind, name }
+                    if *kind == "command" && name == "sync"
+                )));
+            }
+            other => panic!("expected manifest validation errors, got {other}"),
+        }
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2262,6 +2252,34 @@ mod tests {
 
         let error = load_plugin_from_directory(&root).expect_err("missing paths should fail");
         assert!(error.to_string().contains("does not exist"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_plugin_from_directory_rejects_invalid_permissions() {
+        let root = temp_dir("manifest-invalid-permissions");
+        write_file(
+            root.join(MANIFEST_FILE_NAME).as_path(),
+            r#"{
+  "name": "invalid-permissions",
+  "version": "1.0.0",
+  "description": "Invalid permission validation",
+  "permissions": ["admin"]
+}"#,
+        );
+
+        let error = load_plugin_from_directory(&root).expect_err("invalid permissions should fail");
+        match error {
+            PluginError::ManifestValidation(errors) => {
+                assert!(errors.iter().any(|error| matches!(
+                    error,
+                    PluginManifestValidationError::InvalidPermission { permission }
+                    if permission == "admin"
+                )));
+            }
+            other => panic!("expected manifest validation errors, got {other}"),
+        }
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2502,5 +2520,36 @@ mod tests {
 
         let _ = fs::remove_dir_all(config_home);
         let _ = fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn list_installed_plugins_scans_install_root_without_registry_entries() {
+        let config_home = temp_dir("installed-scan-home");
+        let bundled_root = temp_dir("installed-scan-bundled");
+        let install_root = config_home.join("plugins").join("installed");
+        let installed_plugin_root = install_root.join("scan-demo");
+        write_file(
+            installed_plugin_root.join(MANIFEST_FILE_NAME).as_path(),
+            r#"{
+  "name": "scan-demo",
+  "version": "1.0.0",
+  "description": "Scanned from install root"
+}"#,
+        );
+
+        let mut config = PluginManagerConfig::new(&config_home);
+        config.bundled_root = Some(bundled_root.clone());
+        config.install_root = Some(install_root);
+        let manager = PluginManager::new(config);
+
+        let installed = manager
+            .list_installed_plugins()
+            .expect("installed plugins should scan directories");
+        assert!(installed
+            .iter()
+            .any(|plugin| plugin.metadata.id == "scan-demo@external"));
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(bundled_root);
     }
 }
