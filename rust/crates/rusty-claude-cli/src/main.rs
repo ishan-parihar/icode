@@ -196,6 +196,25 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 permission_mode = PermissionMode::DangerFullAccess;
                 index += 1;
             }
+            "-p" => {
+                // Claude Code compat: -p "prompt" = one-shot prompt
+                let prompt = args[index + 1..].join(" ");
+                if prompt.trim().is_empty() {
+                    return Err("-p requires a prompt string".to_string());
+                }
+                return Ok(CliAction::Prompt {
+                    prompt,
+                    model: resolve_model_alias(&model).to_string(),
+                    output_format,
+                    allowed_tools: normalize_allowed_tools(&allowed_tool_values)?,
+                    permission_mode,
+                });
+            }
+            "--print" => {
+                // Claude Code compat: --print makes output non-interactive
+                output_format = CliOutputFormat::Text;
+                index += 1;
+            }
             "--allowedTools" | "--allowed-tools" => {
                 let value = args
                     .get(index + 1)
