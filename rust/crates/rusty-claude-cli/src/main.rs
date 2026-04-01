@@ -23,7 +23,7 @@ use commands::{
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
-use plugins::{PluginKind, PluginManager, PluginManagerConfig, PluginSummary};
+use plugins::{PluginKind, PluginManager, PluginManagerConfig, PluginRegistry, PluginSummary};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
@@ -2456,20 +2456,22 @@ fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     )?)
 }
 
-fn build_runtime_feature_config(
-) -> Result<runtime::RuntimeFeatureConfig, Box<dyn std::error::Error>> {
+fn build_runtime_plugin_state(
+) -> Result<(runtime::RuntimeFeatureConfig, PluginRegistry), Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let runtime_config = loader.load()?;
     let plugin_manager = build_plugin_manager(&cwd, &loader, &runtime_config);
-    let plugin_hooks = plugin_manager.aggregated_hooks()?;
-    Ok(runtime_config
+    let plugin_registry = plugin_manager.plugin_registry()?;
+    let plugin_hooks = plugin_registry.aggregated_hooks()?;
+    let feature_config = runtime_config
         .feature_config()
         .clone()
         .with_hooks(runtime_config.hooks().merged(&RuntimeHookConfig::new(
             plugin_hooks.pre_tool_use,
             plugin_hooks.post_tool_use,
-        ))))
+        )));
+    Ok((feature_config, plugin_registry))
 }
 
 fn build_plugin_manager(
@@ -2519,14 +2521,16 @@ fn build_runtime(
     permission_mode: PermissionMode,
 ) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
 {
-    Ok(ConversationRuntime::new_with_features(
+    let (feature_config, plugin_registry) = build_runtime_plugin_state()?;
+    Ok(ConversationRuntime::new_with_plugins(
         session,
         AnthropicRuntimeClient::new(model, enable_tools, emit_output, allowed_tools.clone())?,
         CliToolExecutor::new(allowed_tools, emit_output),
         permission_policy(permission_mode),
         system_prompt,
-        build_runtime_feature_config()?,
-    ))
+        feature_config,
+        plugin_registry,
+    )?)
 }
 
 struct CliPermissionPrompter {

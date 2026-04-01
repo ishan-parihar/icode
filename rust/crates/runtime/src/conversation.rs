@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 
+use plugins::PluginRegistry;
+
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
@@ -107,6 +109,8 @@ pub struct ConversationRuntime<C, T> {
     usage_tracker: UsageTracker,
     hook_runner: HookRunner,
     auto_compaction_input_tokens_threshold: u32,
+    plugin_registry: Option<PluginRegistry>,
+    plugins_shutdown: bool,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -140,7 +144,7 @@ where
         tool_executor: T,
         permission_policy: PermissionPolicy,
         system_prompt: Vec<String>,
-        feature_config: RuntimeFeatureConfig,
+            feature_config: RuntimeFeatureConfig,
     ) -> Self {
         let usage_tracker = UsageTracker::from_session(&session);
         Self {
@@ -153,7 +157,34 @@ where
             usage_tracker,
             hook_runner: HookRunner::from_feature_config(&feature_config),
             auto_compaction_input_tokens_threshold: auto_compaction_threshold_from_env(),
+            plugin_registry: None,
+            plugins_shutdown: false,
         }
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn new_with_plugins(
+        session: Session,
+        api_client: C,
+        tool_executor: T,
+        permission_policy: PermissionPolicy,
+        system_prompt: Vec<String>,
+        feature_config: RuntimeFeatureConfig,
+        plugin_registry: PluginRegistry,
+    ) -> Result<Self, RuntimeError> {
+        plugin_registry
+            .initialize()
+            .map_err(|error| RuntimeError::new(format!("plugin initialization failed: {error}")))?;
+        let mut runtime = Self::new_with_features(
+            session,
+            api_client,
+            tool_executor,
+            permission_policy,
+            system_prompt,
+            feature_config,
+        );
+        runtime.plugin_registry = Some(plugin_registry);
+        Ok(runtime)
     }
 
     #[must_use]
@@ -304,8 +335,22 @@ where
     }
 
     #[must_use]
-    pub fn into_session(self) -> Session {
-        self.session
+    pub fn into_session(mut self) -> Session {
+        let _ = self.shutdown_plugins();
+        std::mem::take(&mut self.session)
+    }
+
+    pub fn shutdown_plugins(&mut self) -> Result<(), RuntimeError> {
+        if self.plugins_shutdown {
+            return Ok(());
+        }
+        if let Some(registry) = &self.plugin_registry {
+            registry
+                .shutdown()
+                .map_err(|error| RuntimeError::new(format!("plugin shutdown failed: {error}")))?;
+        }
+        self.plugins_shutdown = true;
+        Ok(())
     }
 
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
@@ -331,6 +376,12 @@ where
         Some(AutoCompactionEvent {
             removed_message_count: result.removed_message_count,
         })
+    }
+}
+
+impl<C, T> Drop for ConversationRuntime<C, T> {
+    fn drop(&mut self) {
+        let _ = self.shutdown_plugins();
     }
 }
 
@@ -472,7 +523,11 @@ mod tests {
     use crate::prompt::{ProjectContext, SystemPromptBuilder};
     use crate::session::{ContentBlock, MessageRole, Session};
     use crate::usage::TokenUsage;
+    use plugins::{PluginManager, PluginManagerConfig};
+    use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct ScriptedApiClient {
         call_count: usize,
@@ -532,6 +587,38 @@ mod tests {
             assert_eq!(request.tool_name, "add");
             PermissionPromptDecision::Allow
         }
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("runtime-plugin-{label}-{nanos}"))
+    }
+
+    fn write_lifecycle_plugin(root: &Path, name: &str) -> PathBuf {
+        fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        fs::create_dir_all(root.join("lifecycle")).expect("lifecycle dir");
+        let log_path = root.join("lifecycle.log");
+        fs::write(
+            root.join("lifecycle").join("init.sh"),
+            "#!/bin/sh\nprintf 'init\\n' >> \"$(dirname \"$0\")/../lifecycle.log\"\n",
+        )
+        .expect("write init script");
+        fs::write(
+            root.join("lifecycle").join("shutdown.sh"),
+            "#!/bin/sh\nprintf 'shutdown\\n' >> \"$(dirname \"$0\")/../lifecycle.log\"\n",
+        )
+        .expect("write shutdown script");
+        fs::write(
+            root.join(".claude-plugin").join("plugin.json"),
+            format!(
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"runtime lifecycle plugin\",\n  \"lifecycle\": {{\n    \"Init\": [\"./lifecycle/init.sh\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.sh\"]\n  }}\n}}"
+            ),
+        )
+        .expect("write plugin manifest");
+        log_path
     }
 
     #[test]
@@ -773,6 +860,42 @@ mod tests {
             output.contains("post hook ran"),
             "tool output missing post hook feedback: {output:?}"
         );
+    }
+
+    #[test]
+    fn initializes_and_shuts_down_plugins_with_runtime_lifecycle() {
+        let config_home = temp_dir("config");
+        let source_root = temp_dir("source");
+        let log_path = write_lifecycle_plugin(&source_root, "runtime-lifecycle");
+
+        let mut manager = PluginManager::new(PluginManagerConfig::new(&config_home));
+        manager
+            .install(source_root.to_str().expect("utf8 path"))
+            .expect("install should succeed");
+        let registry = manager.plugin_registry().expect("registry should load");
+
+        {
+            let runtime = ConversationRuntime::new_with_plugins(
+                Session::new(),
+                ScriptedApiClient { call_count: 0 },
+                StaticToolExecutor::new().register("add", |_input| Ok("4".to_string())),
+                PermissionPolicy::new(PermissionMode::WorkspaceWrite),
+                vec!["system".to_string()],
+                RuntimeFeatureConfig::default(),
+                registry,
+            )
+            .expect("runtime should initialize plugins");
+
+            let log = fs::read_to_string(&log_path).expect("init log should exist");
+            assert_eq!(log, "init\n");
+            drop(runtime);
+        }
+
+        let log = fs::read_to_string(&log_path).expect("shutdown log should exist");
+        assert_eq!(log, "init\nshutdown\n");
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(source_root);
     }
 
     #[test]

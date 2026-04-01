@@ -72,6 +72,21 @@ impl PluginHooks {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginLifecycle {
+    #[serde(rename = "Init", default)]
+    pub init: Vec<String>,
+    #[serde(rename = "Shutdown", default)]
+    pub shutdown: Vec<String>,
+}
+
+impl PluginLifecycle {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.init.is_empty() && self.shutdown.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub name: String,
@@ -81,6 +96,8 @@ pub struct PluginManifest {
     pub default_enabled: bool,
     #[serde(default)]
     pub hooks: PluginHooks,
+    #[serde(default)]
+    pub lifecycle: PluginLifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,24 +129,30 @@ pub struct InstalledPluginRegistry {
 pub struct BuiltinPlugin {
     metadata: PluginMetadata,
     hooks: PluginHooks,
+    lifecycle: PluginLifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundledPlugin {
     metadata: PluginMetadata,
     hooks: PluginHooks,
+    lifecycle: PluginLifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalPlugin {
     metadata: PluginMetadata,
     hooks: PluginHooks,
+    lifecycle: PluginLifecycle,
 }
 
 pub trait Plugin {
     fn metadata(&self) -> &PluginMetadata;
     fn hooks(&self) -> &PluginHooks;
+    fn lifecycle(&self) -> &PluginLifecycle;
     fn validate(&self) -> Result<(), PluginError>;
+    fn initialize(&self) -> Result<(), PluginError>;
+    fn shutdown(&self) -> Result<(), PluginError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,7 +171,19 @@ impl Plugin for BuiltinPlugin {
         &self.hooks
     }
 
+    fn lifecycle(&self) -> &PluginLifecycle {
+        &self.lifecycle
+    }
+
     fn validate(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn initialize(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn shutdown(&self) -> Result<(), PluginError> {
         Ok(())
     }
 }
@@ -162,8 +197,26 @@ impl Plugin for BundledPlugin {
         &self.hooks
     }
 
+    fn lifecycle(&self) -> &PluginLifecycle {
+        &self.lifecycle
+    }
+
     fn validate(&self) -> Result<(), PluginError> {
-        validate_hook_paths(self.metadata.root.as_deref(), &self.hooks)
+        validate_hook_paths(self.metadata.root.as_deref(), &self.hooks)?;
+        validate_lifecycle_paths(self.metadata.root.as_deref(), &self.lifecycle)
+    }
+
+    fn initialize(&self) -> Result<(), PluginError> {
+        run_lifecycle_commands(self.metadata(), self.lifecycle(), "init", &self.lifecycle.init)
+    }
+
+    fn shutdown(&self) -> Result<(), PluginError> {
+        run_lifecycle_commands(
+            self.metadata(),
+            self.lifecycle(),
+            "shutdown",
+            &self.lifecycle.shutdown,
+        )
     }
 }
 
@@ -176,8 +229,26 @@ impl Plugin for ExternalPlugin {
         &self.hooks
     }
 
+    fn lifecycle(&self) -> &PluginLifecycle {
+        &self.lifecycle
+    }
+
     fn validate(&self) -> Result<(), PluginError> {
-        validate_hook_paths(self.metadata.root.as_deref(), &self.hooks)
+        validate_hook_paths(self.metadata.root.as_deref(), &self.hooks)?;
+        validate_lifecycle_paths(self.metadata.root.as_deref(), &self.lifecycle)
+    }
+
+    fn initialize(&self) -> Result<(), PluginError> {
+        run_lifecycle_commands(self.metadata(), self.lifecycle(), "init", &self.lifecycle.init)
+    }
+
+    fn shutdown(&self) -> Result<(), PluginError> {
+        run_lifecycle_commands(
+            self.metadata(),
+            self.lifecycle(),
+            "shutdown",
+            &self.lifecycle.shutdown,
+        )
     }
 }
 
@@ -198,11 +269,35 @@ impl Plugin for PluginDefinition {
         }
     }
 
+    fn lifecycle(&self) -> &PluginLifecycle {
+        match self {
+            Self::Builtin(plugin) => plugin.lifecycle(),
+            Self::Bundled(plugin) => plugin.lifecycle(),
+            Self::External(plugin) => plugin.lifecycle(),
+        }
+    }
+
     fn validate(&self) -> Result<(), PluginError> {
         match self {
             Self::Builtin(plugin) => plugin.validate(),
             Self::Bundled(plugin) => plugin.validate(),
             Self::External(plugin) => plugin.validate(),
+        }
+    }
+
+    fn initialize(&self) -> Result<(), PluginError> {
+        match self {
+            Self::Builtin(plugin) => plugin.initialize(),
+            Self::Bundled(plugin) => plugin.initialize(),
+            Self::External(plugin) => plugin.initialize(),
+        }
+    }
+
+    fn shutdown(&self) -> Result<(), PluginError> {
+        match self {
+            Self::Builtin(plugin) => plugin.shutdown(),
+            Self::Bundled(plugin) => plugin.shutdown(),
+            Self::External(plugin) => plugin.shutdown(),
         }
     }
 }
@@ -239,6 +334,14 @@ impl RegisteredPlugin {
 
     pub fn validate(&self) -> Result<(), PluginError> {
         self.definition.validate()
+    }
+
+    pub fn initialize(&self) -> Result<(), PluginError> {
+        self.definition.initialize()
+    }
+
+    pub fn shutdown(&self) -> Result<(), PluginError> {
+        self.definition.shutdown()
     }
 
     #[must_use]
@@ -298,6 +401,21 @@ impl PluginRegistry {
                 plugin.validate()?;
                 Ok(acc.merged_with(plugin.hooks()))
             })
+    }
+
+    pub fn initialize(&self) -> Result<(), PluginError> {
+        for plugin in self.plugins.iter().filter(|plugin| plugin.is_enabled()) {
+            plugin.validate()?;
+            plugin.initialize()?;
+        }
+        Ok(())
+    }
+
+    pub fn shutdown(&self) -> Result<(), PluginError> {
+        for plugin in self.plugins.iter().rev().filter(|plugin| plugin.is_enabled()) {
+            plugin.shutdown()?;
+        }
+        Ok(())
     }
 }
 
@@ -687,6 +805,7 @@ pub fn builtin_plugins() -> Vec<PluginDefinition> {
             root: None,
         },
         hooks: PluginHooks::default(),
+        lifecycle: PluginLifecycle::default(),
     })]
 }
 
@@ -708,10 +827,23 @@ fn load_plugin_definition(
         root: Some(root.to_path_buf()),
     };
     let hooks = resolve_hooks(root, &manifest.hooks);
+    let lifecycle = resolve_lifecycle(root, &manifest.lifecycle);
     Ok(match kind {
-        PluginKind::Builtin => PluginDefinition::Builtin(BuiltinPlugin { metadata, hooks }),
-        PluginKind::Bundled => PluginDefinition::Bundled(BundledPlugin { metadata, hooks }),
-        PluginKind::External => PluginDefinition::External(ExternalPlugin { metadata, hooks }),
+        PluginKind::Builtin => PluginDefinition::Builtin(BuiltinPlugin {
+            metadata,
+            hooks,
+            lifecycle,
+        }),
+        PluginKind::Bundled => PluginDefinition::Bundled(BundledPlugin {
+            metadata,
+            hooks,
+            lifecycle,
+        }),
+        PluginKind::External => PluginDefinition::External(ExternalPlugin {
+            metadata,
+            hooks,
+            lifecycle,
+        }),
     })
 }
 
@@ -719,6 +851,7 @@ fn load_validated_manifest_from_root(root: &Path) -> Result<PluginManifest, Plug
     let manifest = load_manifest_from_root(root)?;
     validate_manifest(&manifest)?;
     validate_hook_paths(Some(root), &manifest.hooks)?;
+    validate_lifecycle_paths(Some(root), &manifest.lifecycle)?;
     Ok(manifest)
 }
 
@@ -767,25 +900,58 @@ fn resolve_hooks(root: &Path, hooks: &PluginHooks) -> PluginHooks {
     }
 }
 
+fn resolve_lifecycle(root: &Path, lifecycle: &PluginLifecycle) -> PluginLifecycle {
+    PluginLifecycle {
+        init: lifecycle
+            .init
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+        shutdown: lifecycle
+            .shutdown
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+    }
+}
+
 fn validate_hook_paths(root: Option<&Path>, hooks: &PluginHooks) -> Result<(), PluginError> {
     let Some(root) = root else {
         return Ok(());
     };
     for entry in hooks.pre_tool_use.iter().chain(hooks.post_tool_use.iter()) {
-        if is_literal_command(entry) {
-            continue;
-        }
-        let path = if Path::new(entry).is_absolute() {
-            PathBuf::from(entry)
-        } else {
-            root.join(entry)
-        };
-        if !path.exists() {
-            return Err(PluginError::InvalidManifest(format!(
-                "hook path `{}` does not exist",
-                path.display()
-            )));
-        }
+        validate_command_path(root, entry, "hook")?;
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_paths(
+    root: Option<&Path>,
+    lifecycle: &PluginLifecycle,
+) -> Result<(), PluginError> {
+    let Some(root) = root else {
+        return Ok(());
+    };
+    for entry in lifecycle.init.iter().chain(lifecycle.shutdown.iter()) {
+        validate_command_path(root, entry, "lifecycle command")?;
+    }
+    Ok(())
+}
+
+fn validate_command_path(root: &Path, entry: &str, kind: &str) -> Result<(), PluginError> {
+    if is_literal_command(entry) {
+        return Ok(());
+    }
+    let path = if Path::new(entry).is_absolute() {
+        PathBuf::from(entry)
+    } else {
+        root.join(entry)
+    };
+    if !path.exists() {
+        return Err(PluginError::InvalidManifest(format!(
+            "{kind} path `{}` does not exist",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -800,6 +966,48 @@ fn resolve_hook_entry(root: &Path, entry: &str) -> String {
 
 fn is_literal_command(entry: &str) -> bool {
     !entry.starts_with("./") && !entry.starts_with("../")
+}
+
+fn run_lifecycle_commands(
+    metadata: &PluginMetadata,
+    lifecycle: &PluginLifecycle,
+    phase: &str,
+    commands: &[String],
+) -> Result<(), PluginError> {
+    if lifecycle.is_empty() || commands.is_empty() {
+        return Ok(());
+    }
+
+    for command in commands {
+        let output = if Path::new(command).exists() {
+            if cfg!(windows) {
+                Command::new("cmd").arg("/C").arg(command).output()?
+            } else {
+                Command::new("sh").arg(command).output()?
+            }
+        } else if cfg!(windows) {
+            Command::new("cmd").arg("/C").arg(command).output()?
+        } else {
+            Command::new("sh").arg("-lc").arg(command).output()?
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(PluginError::CommandFailed(format!(
+                "plugin `{}` {} failed for `{}`: {}",
+                metadata.id,
+                phase,
+                command,
+                if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                }
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_local_source(source: &str) -> Result<PathBuf, PluginError> {
@@ -992,6 +1200,30 @@ mod tests {
         .expect("write broken manifest");
     }
 
+    fn write_lifecycle_plugin(root: &Path, name: &str, version: &str) -> PathBuf {
+        fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        fs::create_dir_all(root.join("lifecycle")).expect("lifecycle dir");
+        let log_path = root.join("lifecycle.log");
+        fs::write(
+            root.join("lifecycle").join("init.sh"),
+            "#!/bin/sh\nprintf 'init\\n' >> \"$(dirname \"$0\")/../lifecycle.log\"\n",
+        )
+        .expect("write init hook");
+        fs::write(
+            root.join("lifecycle").join("shutdown.sh"),
+            "#!/bin/sh\nprintf 'shutdown\\n' >> \"$(dirname \"$0\")/../lifecycle.log\"\n",
+        )
+        .expect("write shutdown hook");
+        fs::write(
+            root.join(MANIFEST_RELATIVE_PATH),
+            format!(
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"lifecycle plugin\",\n  \"lifecycle\": {{\n    \"Init\": [\"./lifecycle/init.sh\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.sh\"]\n  }}\n}}"
+            ),
+        )
+        .expect("write manifest");
+        log_path
+    }
+
     #[test]
     fn validates_manifest_shape() {
         let error = validate_manifest(&PluginManifest {
@@ -1123,6 +1355,28 @@ mod tests {
             .install(source_root.to_str().expect("utf8 path"))
             .expect_err("install should reject invalid hook paths");
         assert!(install_error.to_string().contains("does not exist"));
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn plugin_registry_runs_initialize_and_shutdown_for_enabled_plugins() {
+        let config_home = temp_dir("lifecycle-home");
+        let source_root = temp_dir("lifecycle-source");
+        let log_path = write_lifecycle_plugin(&source_root, "lifecycle-demo", "1.0.0");
+
+        let mut manager = PluginManager::new(PluginManagerConfig::new(&config_home));
+        manager
+            .install(source_root.to_str().expect("utf8 path"))
+            .expect("install should succeed");
+
+        let registry = manager.plugin_registry().expect("registry should build");
+        registry.initialize().expect("init should succeed");
+        registry.shutdown().expect("shutdown should succeed");
+
+        let log = fs::read_to_string(&log_path).expect("lifecycle log should exist");
+        assert_eq!(log, "init\nshutdown\n");
 
         let _ = fs::remove_dir_all(config_home);
         let _ = fs::remove_dir_all(source_root);
