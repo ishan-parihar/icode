@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
-    resolve_startup_auth_source, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
+    resolve_startup_auth_source, ApiHttpClient, AuthSource, ContentBlockDelta, InputContentBlock,
     InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
@@ -305,7 +305,13 @@ fn resolve_model_alias(model: &str) -> &str {
 }
 
 fn normalize_allowed_tools(values: &[String]) -> Result<Option<AllowedToolSet>, String> {
-    current_tool_registry()?.normalize_allowed_tools(values)
+    if values.is_empty() {
+        return Ok(None);
+    }
+    match current_tool_registry() {
+        Ok(registry) => registry.normalize_allowed_tools(values),
+        Err(_) => GlobalToolRegistry::builtin().normalize_allowed_tools(values),
+    }
 }
 
 fn current_tool_registry() -> Result<GlobalToolRegistry, String> {
@@ -473,7 +479,7 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "oauth state mismatch").into());
     }
 
-    let client = AnthropicClient::from_auth(AuthSource::None).with_base_url(api::read_base_url());
+    let client = ApiHttpClient::from_auth(AuthSource::None).with_base_url(api::read_base_url());
     let exchange_request =
         OAuthTokenExchangeRequest::from_config(oauth, code, state, pkce.verifier, redirect_uri);
     let runtime = tokio::runtime::Runtime::new()?;
@@ -1697,7 +1703,7 @@ impl LiveCli {
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let path = cwd.join(".claude").join("sessions");
+    let path = cwd.join(".claw").join("sessions");
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -2811,7 +2817,7 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
 
 struct AnthropicRuntimeClient {
     runtime: tokio::runtime::Runtime,
-    client: AnthropicClient,
+    client: ApiHttpClient,
     model: String,
     enable_tools: bool,
     emit_output: bool,
@@ -2831,7 +2837,7 @@ impl AnthropicRuntimeClient {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
-            client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
+            client: ApiHttpClient::from_auth(resolve_cli_auth_source()?)
                 .with_base_url(api::read_base_url()),
             model,
             enable_tools,

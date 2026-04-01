@@ -113,6 +113,7 @@ version = "0.1.0"
 dependencies = [
  "plugins",
  "runtime",
+ "serde_json",
 ]
 
 [[package]]

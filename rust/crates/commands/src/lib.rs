@@ -48,138 +48,161 @@ pub struct SlashCommandSpec {
 const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "help",
+        aliases: &[],
         summary: "Show available slash commands",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "status",
+        aliases: &[],
         summary: "Show current session status",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "compact",
+        aliases: &[],
         summary: "Compact local session history",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "model",
+        aliases: &[],
         summary: "Show or switch the active model",
         argument_hint: Some("[model]"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "permissions",
+        aliases: &[],
         summary: "Show or switch the active permission mode",
         argument_hint: Some("[read-only|workspace-write|danger-full-access]"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "clear",
+        aliases: &[],
         summary: "Start a fresh local session",
         argument_hint: Some("[--confirm]"),
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "cost",
+        aliases: &[],
         summary: "Show cumulative token usage for this session",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "resume",
+        aliases: &[],
         summary: "Load a saved session into the REPL",
         argument_hint: Some("<session-path>"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "config",
+        aliases: &[],
         summary: "Inspect Claude config files or merged sections",
         argument_hint: Some("[env|hooks|model|plugins]"),
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "memory",
+        aliases: &[],
         summary: "Inspect loaded Claude instruction memory files",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "init",
+        aliases: &[],
         summary: "Create a starter CLAUDE.md for this repo",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "diff",
+        aliases: &[],
         summary: "Show git diff for current workspace changes",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "version",
+        aliases: &[],
         summary: "Show CLI version and build information",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "bughunter",
+        aliases: &[],
         summary: "Inspect the codebase for likely bugs",
         argument_hint: Some("[scope]"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "commit",
+        aliases: &[],
         summary: "Generate a commit message and create a git commit",
         argument_hint: None,
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "pr",
+        aliases: &[],
         summary: "Draft or create a pull request from the conversation",
         argument_hint: Some("[context]"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "issue",
+        aliases: &[],
         summary: "Draft or create a GitHub issue from the conversation",
         argument_hint: Some("[context]"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "ultraplan",
+        aliases: &[],
         summary: "Run a deep planning prompt with multi-step reasoning",
         argument_hint: Some("[task]"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "teleport",
+        aliases: &[],
         summary: "Jump to a file or symbol by searching the workspace",
         argument_hint: Some("<symbol-or-path>"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "debug-tool-call",
+        aliases: &[],
         summary: "Replay the last tool call with debug details",
         argument_hint: None,
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "export",
+        aliases: &[],
         summary: "Export the current conversation to a file",
         argument_hint: Some("[file]"),
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "session",
+        aliases: &[],
         summary: "List or switch managed local sessions",
         argument_hint: Some("[list|switch <session-id>]"),
         resume_supported: false,
     },
     SlashCommandSpec {
         name: "plugins",
+        aliases: &[],
         summary: "List or manage plugins",
         argument_hint: Some(
             "[list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]",
@@ -584,6 +607,210 @@ pub fn handle_slash_command(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefinitionSource {
+    ProjectCodex,
+    UserCodex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentDef {
+    pub name: String,
+    pub description: String,
+    pub model: String,
+    pub temperature: String,
+    pub source: DefinitionSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillDef {
+    pub name: String,
+    pub description: String,
+    pub source: DefinitionSource,
+}
+
+pub fn load_agents_from_roots(
+    roots: &[(DefinitionSource, std::path::PathBuf)],
+) -> Result<Vec<AgentDef>, String> {
+    let mut agents = Vec::new();
+    let mut seen: std::collections::HashMap<String, DefinitionSource> =
+        std::collections::HashMap::new();
+
+    for (source, path) in roots {
+        if !path.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let file_path = entry.path();
+            if file_path.extension().map_or(false, |ext| ext == "json") {
+                let name = file_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let content = std::fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+                let json: serde_json::Value =
+                    serde_json::from_str(&content).map_err(|e| e.to_string())?;
+                let description = json
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = json
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let temperature = json
+                    .get("temperature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("medium")
+                    .to_string();
+
+                let shadowed_by = seen.get(&name).copied();
+                seen.insert(name.clone(), *source);
+                let final_name = if let Some(shadow_source) = shadowed_by {
+                    let source_name = match shadow_source {
+                        DefinitionSource::ProjectCodex => "Project (.codex)",
+                        DefinitionSource::UserCodex => "User (~/.codex)",
+                    };
+                    format!("(shadowed by {}) {}", source_name, name)
+                } else {
+                    name
+                };
+                agents.push(AgentDef {
+                    name: final_name,
+                    description,
+                    model,
+                    temperature,
+                    source: *source,
+                });
+            }
+        }
+    }
+    Ok(agents)
+}
+
+pub fn load_skills_from_roots(
+    roots: &[(DefinitionSource, std::path::PathBuf)],
+) -> Result<Vec<SkillDef>, String> {
+    let mut skills = Vec::new();
+    let mut seen: std::collections::HashMap<String, DefinitionSource> =
+        std::collections::HashMap::new();
+
+    for (source, path) in roots {
+        if !path.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let file_path = entry.path();
+            if file_path.extension().map_or(false, |ext| ext == "md") {
+                let name = file_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let content = std::fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+                let description = content.lines().next().unwrap_or("").to_string();
+
+                let shadowed_by = seen.get(&name).copied();
+                seen.insert(name.clone(), *source);
+                let final_name = if let Some(shadow_source) = shadowed_by {
+                    let source_name = match shadow_source {
+                        DefinitionSource::ProjectCodex => "Project (.codex)",
+                        DefinitionSource::UserCodex => "User (~/.codex)",
+                    };
+                    format!("(shadowed by {}) {}", source_name, name)
+                } else {
+                    name
+                };
+                skills.push(SkillDef {
+                    name: final_name,
+                    description,
+                    source: *source,
+                });
+            }
+        }
+    }
+    Ok(skills)
+}
+
+pub fn render_agents_report(agents: &[AgentDef]) -> String {
+    let mut lines = vec!["Agents".to_string()];
+    let project_agents: Vec<_> = agents
+        .iter()
+        .filter(|a| matches!(a.source, DefinitionSource::ProjectCodex))
+        .collect();
+    let user_agents: Vec<_> = agents
+        .iter()
+        .filter(|a| matches!(a.source, DefinitionSource::UserCodex))
+        .collect();
+
+    let unique_count = agents
+        .iter()
+        .filter(|a| !a.name.starts_with("(shadowed"))
+        .count();
+    lines.push(format!("{} active agents", unique_count));
+
+    if !project_agents.is_empty() {
+        lines.push("Project (.codex):".to_string());
+        for agent in project_agents {
+            lines.push(format!(
+                "{} · {} · {} · {}",
+                agent.name, agent.description, agent.model, agent.temperature
+            ));
+        }
+    }
+
+    if !user_agents.is_empty() {
+        lines.push("User (~/.codex):".to_string());
+        for agent in user_agents {
+            lines.push(format!(
+                "{} · {} · {} · {}",
+                agent.name, agent.description, agent.model, agent.temperature
+            ));
+        }
+    }
+
+    lines.join("\n")
+}
+
+pub fn render_skills_report(skills: &[SkillDef]) -> String {
+    let mut lines = vec!["Skills".to_string()];
+    let project_skills: Vec<_> = skills
+        .iter()
+        .filter(|s| matches!(s.source, DefinitionSource::ProjectCodex))
+        .collect();
+    let user_skills: Vec<_> = skills
+        .iter()
+        .filter(|s| matches!(s.source, DefinitionSource::UserCodex))
+        .collect();
+
+    let unique_count = skills
+        .iter()
+        .filter(|s| !s.name.starts_with("(shadowed"))
+        .count();
+    lines.push(format!("{} available skills", unique_count));
+
+    if !project_skills.is_empty() {
+        lines.push("Project (.codex):".to_string());
+        for skill in project_skills {
+            lines.push(format!("{} · {}", skill.name, skill.description));
+        }
+    }
+
+    if !user_skills.is_empty() {
+        lines.push("User (~/.codex):".to_string());
+        for skill in user_skills {
+            lines.push(format!("{} · {}", skill.name, skill.description));
+        }
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -622,11 +849,25 @@ mod tests {
         fs::write(
             root.join(".claude-plugin").join("plugin.json"),
             format!(
-                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"bundled commands plugin\",\n  \"defaultEnabled\": {}\n}}",
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"bundled commands plugin\",\n  \"defaultEnabled\": {}}}",
                 if default_enabled { "true" } else { "false" }
             ),
         )
         .expect("write bundled manifest");
+    }
+
+    fn write_agent(dir: &Path, name: &str, description: &str, model: &str, temperature: &str) {
+        fs::create_dir_all(dir).expect("agent dir");
+        let json = format!(
+            "{{\n  \"name\": \"{name}\",\n  \"description\": \"{description}\",\n  \"model\": \"{model}\",\n  \"temperature\": \"{temperature}\"\n}}"
+        );
+        fs::write(dir.join(format!("{name}.json")), json).expect("write agent");
+    }
+
+    fn write_skill(dir: &Path, name: &str, description: &str) {
+        fs::create_dir_all(dir).expect("skill dir");
+        let content = format!("{description}\n\nSkill content here.\n");
+        fs::write(dir.join(format!("{name}.md")), content).expect("write skill");
     }
 
     #[allow(clippy::too_many_lines)]
@@ -961,9 +1202,8 @@ mod tests {
             (DefinitionSource::ProjectCodex, project_agents),
             (DefinitionSource::UserCodex, user_agents),
         ];
-        let report = render_agents_report(
-            &load_agents_from_roots(&roots).expect("agent roots should load"),
-        );
+        let report =
+            render_agents_report(&load_agents_from_roots(&roots).expect("agent roots should load"));
 
         assert!(report.contains("Agents"));
         assert!(report.contains("2 active agents"));
@@ -992,9 +1232,8 @@ mod tests {
             (DefinitionSource::ProjectCodex, project_skills),
             (DefinitionSource::UserCodex, user_skills),
         ];
-        let report = render_skills_report(
-            &load_skills_from_roots(&roots).expect("skill roots should load"),
-        );
+        let report =
+            render_skills_report(&load_skills_from_roots(&roots).expect("skill roots should load"));
 
         assert!(report.contains("Skills"));
         assert!(report.contains("2 available skills"));
