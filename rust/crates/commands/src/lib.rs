@@ -1,3 +1,8 @@
+use std::collections::BTreeMap;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use plugins::{PluginError, PluginManager, PluginSummary};
 use runtime::{compact_session, CompactionConfig, Session};
 
@@ -34,6 +39,7 @@ impl CommandRegistry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlashCommandSpec {
     pub name: &'static str,
+    pub aliases: &'static [&'static str],
     pub summary: &'static str,
     pub argument_hint: Option<&'static str>,
     pub resume_supported: bool,
@@ -581,9 +587,10 @@ pub fn handle_slash_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_plugins_slash_command, handle_slash_command, render_plugins_report,
+        handle_plugins_slash_command, handle_slash_command, load_agents_from_roots,
+        load_skills_from_roots, render_agents_report, render_plugins_report, render_skills_report,
         render_slash_command_help, resume_supported_slash_commands, slash_command_specs,
-        SlashCommand,
+        DefinitionSource, SlashCommand,
     };
     use plugins::{PluginKind, PluginManager, PluginManagerConfig, PluginMetadata, PluginSummary};
     use runtime::{CompactionConfig, ContentBlock, ConversationMessage, MessageRole, Session};
@@ -919,6 +926,86 @@ mod tests {
         assert!(rendered.contains("sample"));
         assert!(rendered.contains("v0.9.0"));
         assert!(rendered.contains("disabled"));
+    }
+
+    #[test]
+    fn lists_agents_from_project_and_user_roots() {
+        let workspace = temp_dir("agents-workspace");
+        let project_agents = workspace.join(".codex").join("agents");
+        let user_home = temp_dir("agents-home");
+        let user_agents = user_home.join(".codex").join("agents");
+
+        write_agent(
+            &project_agents,
+            "planner",
+            "Project planner",
+            "gpt-5.4",
+            "medium",
+        );
+        write_agent(
+            &user_agents,
+            "planner",
+            "User planner",
+            "gpt-5.4-mini",
+            "high",
+        );
+        write_agent(
+            &user_agents,
+            "verifier",
+            "Verification agent",
+            "gpt-5.4-mini",
+            "high",
+        );
+
+        let roots = vec![
+            (DefinitionSource::ProjectCodex, project_agents),
+            (DefinitionSource::UserCodex, user_agents),
+        ];
+        let report = render_agents_report(
+            &load_agents_from_roots(&roots).expect("agent roots should load"),
+        );
+
+        assert!(report.contains("Agents"));
+        assert!(report.contains("2 active agents"));
+        assert!(report.contains("Project (.codex):"));
+        assert!(report.contains("planner · Project planner · gpt-5.4 · medium"));
+        assert!(report.contains("User (~/.codex):"));
+        assert!(report.contains("(shadowed by Project (.codex)) planner · User planner"));
+        assert!(report.contains("verifier · Verification agent · gpt-5.4-mini · high"));
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(user_home);
+    }
+
+    #[test]
+    fn lists_skills_from_project_and_user_roots() {
+        let workspace = temp_dir("skills-workspace");
+        let project_skills = workspace.join(".codex").join("skills");
+        let user_home = temp_dir("skills-home");
+        let user_skills = user_home.join(".codex").join("skills");
+
+        write_skill(&project_skills, "plan", "Project planning guidance");
+        write_skill(&user_skills, "plan", "User planning guidance");
+        write_skill(&user_skills, "help", "Help guidance");
+
+        let roots = vec![
+            (DefinitionSource::ProjectCodex, project_skills),
+            (DefinitionSource::UserCodex, user_skills),
+        ];
+        let report = render_skills_report(
+            &load_skills_from_roots(&roots).expect("skill roots should load"),
+        );
+
+        assert!(report.contains("Skills"));
+        assert!(report.contains("2 available skills"));
+        assert!(report.contains("Project (.codex):"));
+        assert!(report.contains("plan · Project planning guidance"));
+        assert!(report.contains("User (~/.codex):"));
+        assert!(report.contains("(shadowed by Project (.codex)) plan · User planning guidance"));
+        assert!(report.contains("help · Help guidance"));
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(user_home);
     }
 
     #[test]
