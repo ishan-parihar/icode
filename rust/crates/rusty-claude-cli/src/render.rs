@@ -1,7 +1,5 @@
 use std::fmt::Write as FmtWrite;
 use std::io::{self, Write};
-use std::thread;
-use std::time::Duration;
 
 use crossterm::cursor::{MoveToColumn, RestorePosition, SavePosition};
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor, Stylize};
@@ -22,6 +20,7 @@ pub struct ColorTheme {
     link: Color,
     quote: Color,
     table_border: Color,
+    code_block_border: Color,
     spinner_active: Color,
     spinner_done: Color,
     spinner_failed: Color,
@@ -37,6 +36,7 @@ impl Default for ColorTheme {
             link: Color::Blue,
             quote: Color::DarkGrey,
             table_border: Color::DarkCyan,
+            code_block_border: Color::DarkGrey,
             spinner_active: Color::Blue,
             spinner_done: Color::Green,
             spinner_failed: Color::Red,
@@ -154,32 +154,63 @@ impl TableState {
 struct RenderState {
     emphasis: usize,
     strong: usize,
+    heading_level: Option<u8>,
     quote: usize,
     list_stack: Vec<ListKind>,
+    link_stack: Vec<LinkState>,
     table: Option<TableState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinkState {
+    destination: String,
+    text: String,
 }
 
 impl RenderState {
     fn style_text(&self, text: &str, theme: &ColorTheme) -> String {
-        let mut styled = text.to_string();
-        if self.strong > 0 {
-            styled = format!("{}", styled.bold().with(theme.strong));
+        let mut style = text.stylize();
+
+        if matches!(self.heading_level, Some(1 | 2)) || self.strong > 0 {
+            style = style.bold();
         }
         if self.emphasis > 0 {
-            styled = format!("{}", styled.italic().with(theme.emphasis));
+            style = style.italic();
         }
+
+        if let Some(level) = self.heading_level {
+            style = match level {
+                1 => style.with(theme.heading),
+                2 => style.white(),
+                3 => style.with(Color::Blue),
+                _ => style.with(Color::Grey),
+            };
+        } else if self.strong > 0 {
+            style = style.with(theme.strong);
+        } else if self.emphasis > 0 {
+            style = style.with(theme.emphasis);
+        }
+
         if self.quote > 0 {
-            styled = format!("{}", styled.with(theme.quote));
+            style = style.with(theme.quote);
         }
-        styled
+
+        format!("{style}")
     }
 
-    fn capture_target_mut<'a>(&'a mut self, output: &'a mut String) -> &'a mut String {
-        if let Some(table) = self.table.as_mut() {
-            &mut table.current_cell
+    fn append_raw(&mut self, output: &mut String, text: &str) {
+        if let Some(link) = self.link_stack.last_mut() {
+            link.text.push_str(text);
+        } else if let Some(table) = self.table.as_mut() {
+            table.current_cell.push_str(text);
         } else {
-            output
+            output.push_str(text);
         }
+    }
+
+    fn append_styled(&mut self, output: &mut String, text: &str, theme: &ColorTheme) {
+        let styled = self.style_text(text, theme);
+        self.append_raw(output, &styled);
     }
 }
 
@@ -238,6 +269,11 @@ impl TerminalRenderer {
         output.trim_end().to_string()
     }
 
+    #[must_use]
+    pub fn markdown_to_ansi(&self, markdown: &str) -> String {
+        self.render_markdown(markdown)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn render_event(
         &self,
@@ -249,15 +285,21 @@ impl TerminalRenderer {
         in_code_block: &mut bool,
     ) {
         match event {
-            Event::Start(Tag::Heading { level, .. }) => self.start_heading(level as u8, output),
-            Event::End(TagEnd::Heading(..) | TagEnd::Paragraph) => output.push_str("\n\n"),
+            Event::Start(Tag::Heading { level, .. }) => {
+                self.start_heading(state, level as u8, output)
+            }
+            Event::End(TagEnd::Paragraph) => output.push_str("\n\n"),
             Event::Start(Tag::BlockQuote(..)) => self.start_quote(state, output),
             Event::End(TagEnd::BlockQuote(..)) => {
                 state.quote = state.quote.saturating_sub(1);
                 output.push('\n');
             }
+            Event::End(TagEnd::Heading(..)) => {
+                state.heading_level = None;
+                output.push_str("\n\n");
+            }
             Event::End(TagEnd::Item) | Event::SoftBreak | Event::HardBreak => {
-                state.capture_target_mut(output).push('\n');
+                state.append_raw(output, "\n");
             }
             Event::Start(Tag::List(first_item)) => {
                 let kind = match first_item {
@@ -293,41 +335,52 @@ impl TerminalRenderer {
             Event::Code(code) => {
                 let rendered =
                     format!("{}", format!("`{code}`").with(self.color_theme.inline_code));
-                state.capture_target_mut(output).push_str(&rendered);
+                state.append_raw(output, &rendered);
             }
             Event::Rule => output.push_str("---\n"),
             Event::Text(text) => {
                 self.push_text(text.as_ref(), state, output, code_buffer, *in_code_block);
             }
             Event::Html(html) | Event::InlineHtml(html) => {
-                state.capture_target_mut(output).push_str(&html);
+                state.append_raw(output, &html);
             }
             Event::FootnoteReference(reference) => {
-                let _ = write!(state.capture_target_mut(output), "[{reference}]");
+                state.append_raw(output, &format!("[{reference}]"));
             }
             Event::TaskListMarker(done) => {
-                state
-                    .capture_target_mut(output)
-                    .push_str(if done { "[x] " } else { "[ ] " });
+                state.append_raw(output, if done { "[x] " } else { "[ ] " });
             }
             Event::InlineMath(math) | Event::DisplayMath(math) => {
-                state.capture_target_mut(output).push_str(&math);
+                state.append_raw(output, &math);
             }
             Event::Start(Tag::Link { dest_url, .. }) => {
-                let rendered = format!(
-                    "{}",
-                    format!("[{dest_url}]")
-                        .underlined()
-                        .with(self.color_theme.link)
-                );
-                state.capture_target_mut(output).push_str(&rendered);
+                state.link_stack.push(LinkState {
+                    destination: dest_url.to_string(),
+                    text: String::new(),
+                });
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some(link) = state.link_stack.pop() {
+                    let label = if link.text.is_empty() {
+                        link.destination.clone()
+                    } else {
+                        link.text
+                    };
+                    let rendered = format!(
+                        "{}",
+                        format!("[{label}]({})", link.destination)
+                            .underlined()
+                            .with(self.color_theme.link)
+                    );
+                    state.append_raw(output, &rendered);
+                }
             }
             Event::Start(Tag::Image { dest_url, .. }) => {
                 let rendered = format!(
                     "{}",
                     format!("[image:{dest_url}]").with(self.color_theme.link)
                 );
-                state.capture_target_mut(output).push_str(&rendered);
+                state.append_raw(output, &rendered);
             }
             Event::Start(Tag::Table(..)) => state.table = Some(TableState::default()),
             Event::End(TagEnd::Table) => {
@@ -369,19 +422,15 @@ impl TerminalRenderer {
                 }
             }
             Event::Start(Tag::Paragraph | Tag::MetadataBlock(..) | _)
-            | Event::End(TagEnd::Link | TagEnd::Image | TagEnd::MetadataBlock(..) | _) => {}
+            | Event::End(TagEnd::Image | TagEnd::MetadataBlock(..) | _) => {}
         }
     }
 
-    fn start_heading(&self, level: u8, output: &mut String) {
-        output.push('\n');
-        let prefix = match level {
-            1 => "# ",
-            2 => "## ",
-            3 => "### ",
-            _ => "#### ",
-        };
-        let _ = write!(output, "{}", prefix.bold().with(self.color_theme.heading));
+    fn start_heading(&self, state: &mut RenderState, level: u8, output: &mut String) {
+        state.heading_level = Some(level);
+        if !output.is_empty() {
+            output.push('\n');
+        }
     }
 
     fn start_quote(&self, state: &mut RenderState, output: &mut String) {
@@ -405,20 +454,27 @@ impl TerminalRenderer {
     }
 
     fn start_code_block(&self, code_language: &str, output: &mut String) {
-        if !code_language.is_empty() {
-            let _ = writeln!(
-                output,
-                "{}",
-                format!("╭─ {code_language}").with(self.color_theme.heading)
-            );
-        }
+        let label = if code_language.is_empty() {
+            "code".to_string()
+        } else {
+            code_language.to_string()
+        };
+        let _ = writeln!(
+            output,
+            "{}",
+            format!("╭─ {label}")
+                .bold()
+                .with(self.color_theme.code_block_border)
+        );
     }
 
     fn finish_code_block(&self, code_buffer: &str, code_language: &str, output: &mut String) {
         output.push_str(&self.highlight_code(code_buffer, code_language));
-        if !code_language.is_empty() {
-            let _ = write!(output, "{}", "╰─".with(self.color_theme.heading));
-        }
+        let _ = write!(
+            output,
+            "{}",
+            "╰─".bold().with(self.color_theme.code_block_border)
+        );
         output.push_str("\n\n");
     }
 
@@ -433,8 +489,7 @@ impl TerminalRenderer {
         if in_code_block {
             code_buffer.push_str(text);
         } else {
-            let rendered = state.style_text(text, &self.color_theme);
-            state.capture_target_mut(output).push_str(&rendered);
+            state.append_styled(output, text, &self.color_theme);
         }
     }
 
@@ -521,9 +576,10 @@ impl TerminalRenderer {
         for line in LinesWithEndings::from(code) {
             match syntax_highlighter.highlight_line(line, &self.syntax_set) {
                 Ok(ranges) => {
-                    colored_output.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
+                    let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+                    colored_output.push_str(&apply_code_block_background(&escaped));
                 }
-                Err(_) => colored_output.push_str(line),
+                Err(_) => colored_output.push_str(&apply_code_block_background(line)),
             }
         }
 
@@ -531,14 +587,81 @@ impl TerminalRenderer {
     }
 
     pub fn stream_markdown(&self, markdown: &str, out: &mut impl Write) -> io::Result<()> {
-        let rendered_markdown = self.render_markdown(markdown);
-        for chunk in rendered_markdown.split_inclusive(char::is_whitespace) {
-            write!(out, "{chunk}")?;
-            out.flush()?;
-            thread::sleep(Duration::from_millis(8));
+        let rendered_markdown = self.markdown_to_ansi(markdown);
+        write!(out, "{rendered_markdown}")?;
+        if !rendered_markdown.ends_with('\n') {
+            writeln!(out)?;
         }
-        writeln!(out)
+        out.flush()
     }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MarkdownStreamState {
+    pending: String,
+}
+
+impl MarkdownStreamState {
+    #[must_use]
+    pub fn push(&mut self, renderer: &TerminalRenderer, delta: &str) -> Option<String> {
+        self.pending.push_str(delta);
+        let split = find_stream_safe_boundary(&self.pending)?;
+        let ready = self.pending[..split].to_string();
+        self.pending.drain(..split);
+        Some(renderer.markdown_to_ansi(&ready))
+    }
+
+    #[must_use]
+    pub fn flush(&mut self, renderer: &TerminalRenderer) -> Option<String> {
+        if self.pending.trim().is_empty() {
+            self.pending.clear();
+            None
+        } else {
+            let pending = std::mem::take(&mut self.pending);
+            Some(renderer.markdown_to_ansi(&pending))
+        }
+    }
+}
+
+fn apply_code_block_background(line: &str) -> String {
+    let trimmed = line.trim_end_matches('\n');
+    let trailing_newline = if trimmed.len() == line.len() {
+        ""
+    } else {
+        "\n"
+    };
+    let with_background = trimmed.replace("\u{1b}[0m", "\u{1b}[0;48;5;236m");
+    format!("\u{1b}[48;5;236m{with_background}\u{1b}[0m{trailing_newline}")
+}
+
+fn find_stream_safe_boundary(markdown: &str) -> Option<usize> {
+    let mut in_fence = false;
+    let mut last_boundary = None;
+
+    for (offset, line) in markdown.split_inclusive('\n').scan(0usize, |cursor, line| {
+        let start = *cursor;
+        *cursor += line.len();
+        Some((start, line))
+    }) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            if !in_fence {
+                last_boundary = Some(offset + line.len());
+            }
+            continue;
+        }
+
+        if in_fence {
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            last_boundary = Some(offset + line.len());
+        }
+    }
+
+    last_boundary
 }
 
 fn visible_width(input: &str) -> usize {
@@ -569,7 +692,7 @@ fn strip_ansi(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{strip_ansi, Spinner, TerminalRenderer};
+    use super::{strip_ansi, MarkdownStreamState, Spinner, TerminalRenderer};
 
     #[test]
     fn renders_markdown_with_styling_and_lists() {
@@ -584,15 +707,27 @@ mod tests {
     }
 
     #[test]
+    fn renders_links_as_colored_markdown_labels() {
+        let terminal_renderer = TerminalRenderer::new();
+        let markdown_output =
+            terminal_renderer.render_markdown("See [Claw](https://example.com/docs) now.");
+        let plain_text = strip_ansi(&markdown_output);
+
+        assert!(plain_text.contains("[Claw](https://example.com/docs)"));
+        assert!(markdown_output.contains('\u{1b}'));
+    }
+
+    #[test]
     fn highlights_fenced_code_blocks() {
         let terminal_renderer = TerminalRenderer::new();
         let markdown_output =
-            terminal_renderer.render_markdown("```rust\nfn hi() { println!(\"hi\"); }\n```");
+            terminal_renderer.markdown_to_ansi("```rust\nfn hi() { println!(\"hi\"); }\n```");
         let plain_text = strip_ansi(&markdown_output);
 
         assert!(plain_text.contains("╭─ rust"));
         assert!(plain_text.contains("fn hi"));
         assert!(markdown_output.contains('\u{1b}'));
+        assert!(markdown_output.contains("[48;5;236m"));
     }
 
     #[test]
@@ -621,6 +756,26 @@ mod tests {
         assert_eq!(lines[2], "│ alpha │ 1     │");
         assert_eq!(lines[3], "│ beta  │ 22    │");
         assert!(markdown_output.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn streaming_state_waits_for_complete_blocks() {
+        let renderer = TerminalRenderer::new();
+        let mut state = MarkdownStreamState::default();
+
+        assert_eq!(state.push(&renderer, "# Heading"), None);
+        let flushed = state
+            .push(&renderer, "\n\nParagraph\n\n")
+            .expect("completed block");
+        let plain_text = strip_ansi(&flushed);
+        assert!(plain_text.contains("Heading"));
+        assert!(plain_text.contains("Paragraph"));
+
+        assert_eq!(state.push(&renderer, "```rust\nfn main() {}\n"), None);
+        let code = state
+            .push(&renderer, "```\n")
+            .expect("closed code fence flushes");
+        assert!(strip_ansi(&code).contains("fn main()"));
     }
 
     #[test]
