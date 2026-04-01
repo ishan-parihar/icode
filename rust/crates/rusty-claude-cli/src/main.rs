@@ -2,7 +2,7 @@ mod init;
 mod input;
 mod render;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -22,6 +22,7 @@ use commands::{
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
+use plugins::{PluginListEntry, PluginManager};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
@@ -928,6 +929,7 @@ fn run_resume_command(
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
         | SlashCommand::Session { .. }
+        | SlashCommand::Plugins { .. }
         | SlashCommand::Unknown(_) => Err("unsupported resumed slash command".into()),
     }
 }
@@ -1217,6 +1219,9 @@ impl LiveCli {
             SlashCommand::Session { action, target } => {
                 self.handle_session_command(action.as_deref(), target.as_deref())?
             }
+            SlashCommand::Plugins { action, target } => {
+                self.handle_plugins_command(action.as_deref(), target.as_deref())?
+            }
             SlashCommand::Unknown(name) => {
                 eprintln!("unknown slash command: /{name}");
                 false
@@ -1479,6 +1484,87 @@ impl LiveCli {
         }
     }
 
+    fn handle_plugins_command(
+        &mut self,
+        action: Option<&str>,
+        target: Option<&str>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let cwd = env::current_dir()?;
+        let runtime_config = ConfigLoader::default_for(&cwd).load()?;
+        let manager = PluginManager::default_for(&cwd);
+
+        match action {
+            None | Some("list") => {
+                let plugins = manager.list_plugins(&runtime_config)?;
+                println!("{}", render_plugins_report(&plugins));
+            }
+            Some("install") => {
+                let Some(target) = target else {
+                    println!("Usage: /plugins install <path>");
+                    return Ok(false);
+                };
+                let result = manager.install_plugin(PathBuf::from(target))?;
+                println!("Plugins\n  Result           {}", result.message);
+                self.reload_runtime_features()?;
+            }
+            Some("enable") => {
+                let Some(target) = target else {
+                    println!("Usage: /plugins enable <plugin-id>");
+                    return Ok(false);
+                };
+                let result = manager.enable_plugin(target)?;
+                println!("Plugins\n  Result           {}", result.message);
+                self.reload_runtime_features()?;
+            }
+            Some("disable") => {
+                let Some(target) = target else {
+                    println!("Usage: /plugins disable <plugin-id>");
+                    return Ok(false);
+                };
+                let result = manager.disable_plugin(target)?;
+                println!("Plugins\n  Result           {}", result.message);
+                self.reload_runtime_features()?;
+            }
+            Some("uninstall") => {
+                let Some(target) = target else {
+                    println!("Usage: /plugins uninstall <plugin-id>");
+                    return Ok(false);
+                };
+                let result = manager.uninstall_plugin(target)?;
+                println!("Plugins\n  Result           {}", result.message);
+                self.reload_runtime_features()?;
+            }
+            Some("update") => {
+                let Some(target) = target else {
+                    println!("Usage: /plugins update <plugin-id>");
+                    return Ok(false);
+                };
+                let result = manager.update_plugin(target)?;
+                println!("Plugins\n  Result           {}", result.message);
+                self.reload_runtime_features()?;
+            }
+            Some(other) => {
+                println!(
+                    "Unknown /plugins action '{other}'. Use list, install, enable, disable, uninstall, or update."
+                );
+            }
+        }
+        Ok(false)
+    }
+
+    fn reload_runtime_features(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.runtime = build_runtime(
+            self.runtime.session().clone(),
+            self.model.clone(),
+            self.system_prompt.clone(),
+            true,
+            true,
+            self.allowed_tools.clone(),
+            self.permission_mode,
+        )?;
+        self.persist_session()
+    }
+
     fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let result = self.runtime.compact(CompactionConfig::default());
         let removed = result.removed_message_count;
@@ -1536,6 +1622,7 @@ impl LiveCli {
         Ok(())
     }
 
+    #[allow(clippy::unused_self)]
     fn run_teleport(&self, target: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) else {
             println!("Usage: /teleport <symbol-or-path>");
@@ -1771,6 +1858,34 @@ fn render_repl_help() -> String {
     )
 }
 
+fn render_plugins_report(plugins: &[PluginListEntry]) -> String {
+    let mut lines = vec!["Plugins".to_string()];
+    if plugins.is_empty() {
+        lines.push("  No plugins discovered.".to_string());
+        return lines.join("\n");
+    }
+    for plugin in plugins {
+        let kind = format!("{:?}", plugin.plugin.source_kind).to_lowercase();
+        let location = plugin
+            .plugin
+            .root
+            .as_ref()
+            .map_or_else(|| kind.clone(), |root| root.display().to_string());
+        let enabled = if plugin.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        lines.push(format!(
+            "  {id:<24} {kind:<8} {enabled:<8} v{version:<8} {location}",
+            id = plugin.plugin.id,
+            kind = kind,
+            version = plugin.plugin.manifest.version,
+        ));
+    }
+    lines.join("\n")
+}
+
 fn status_context(
     session_path: Option<&Path>,
 ) -> Result<StatusContext, Box<dyn std::error::Error>> {
@@ -1894,9 +2009,12 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
             "env" => runtime_config.get("env"),
             "hooks" => runtime_config.get("hooks"),
             "model" => runtime_config.get("model"),
+            "plugins" => runtime_config
+                .get("plugins")
+                .or_else(|| runtime_config.get("enabledPlugins")),
             other => {
                 lines.push(format!(
-                    "  Unsupported config section '{other}'. Use env, hooks, or model."
+                    "  Unsupported config section '{other}'. Use env, hooks, model, or plugins."
                 ));
                 return Ok(lines.join(
                     "
@@ -2309,12 +2427,17 @@ fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
 fn build_runtime_feature_config(
 ) -> Result<runtime::RuntimeFeatureConfig, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    Ok(ConfigLoader::default_for(cwd)
-        .load()?
+    let loader = ConfigLoader::default_for(&cwd);
+    let runtime_config = loader.load()?;
+    let plugin_manager = PluginManager::default_for(&cwd);
+    let plugin_hooks = plugin_manager.active_hook_config(&runtime_config)?;
+    Ok(runtime_config
         .feature_config()
-        .clone())
+        .clone()
+        .with_hooks(runtime_config.hooks().merged(&plugin_hooks)))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn build_runtime(
     session: Session,
     model: String,
@@ -3449,7 +3572,7 @@ mod tests {
             .into_iter()
             .map(str::to_string)
             .collect();
-        let filtered = filter_tool_specs(Some(&allowed));
+        let filtered = filter_tool_specs(&GlobalToolRegistry::builtin(), Some(&allowed));
         let names = filtered
             .into_iter()
             .map(|spec| spec.name)
@@ -3475,13 +3598,16 @@ mod tests {
         assert!(help.contains("/clear [--confirm]"));
         assert!(help.contains("/cost"));
         assert!(help.contains("/resume <session-path>"));
-        assert!(help.contains("/config [env|hooks|model]"));
+        assert!(help.contains("/config [env|hooks|model|plugins]"));
         assert!(help.contains("/memory"));
         assert!(help.contains("/init"));
         assert!(help.contains("/diff"));
         assert!(help.contains("/version"));
         assert!(help.contains("/export [file]"));
         assert!(help.contains("/session [list|switch <session-id>]"));
+        assert!(help.contains(
+            "/plugins [list|install <source>|enable <id>|disable <id>|uninstall <id>|update <id>]"
+        ));
         assert!(help.contains("/exit"));
     }
 
@@ -3632,6 +3758,9 @@ mod tests {
     fn config_report_supports_section_views() {
         let report = render_config_report(Some("env")).expect("config report should render");
         assert!(report.contains("Merged section: env"));
+        let plugins_report =
+            render_config_report(Some("plugins")).expect("plugins config report should render");
+        assert!(plugins_report.contains("Merged section: plugins"));
     }
 
     #[test]

@@ -90,7 +90,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "config",
         summary: "Inspect Claude config files or merged sections",
-        argument_hint: Some("[env|hooks|model]"),
+        argument_hint: Some("[env|hooks|model|plugins]"),
         resume_supported: true,
     },
     SlashCommandSpec {
@@ -171,6 +171,14 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: Some("[list|switch <session-id>]"),
         resume_supported: false,
     },
+    SlashCommandSpec {
+        name: "plugins",
+        summary: "List or manage plugins",
+        argument_hint: Some(
+            "[list|install <source>|enable <id>|disable <id>|uninstall <id>|update <id>]",
+        ),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +227,10 @@ pub enum SlashCommand {
         path: Option<String>,
     },
     Session {
+        action: Option<String>,
+        target: Option<String>,
+    },
+    Plugins {
         action: Option<String>,
         target: Option<String>,
     },
@@ -280,6 +292,10 @@ impl SlashCommand {
                 path: parts.next().map(ToOwned::to_owned),
             },
             "session" => Self::Session {
+                action: parts.next().map(ToOwned::to_owned),
+                target: parts.next().map(ToOwned::to_owned),
+            },
+            "plugins" => Self::Plugins {
                 action: parts.next().map(ToOwned::to_owned),
                 target: parts.next().map(ToOwned::to_owned),
             },
@@ -383,6 +399,7 @@ pub fn handle_slash_command(
         | SlashCommand::Version
         | SlashCommand::Export { .. }
         | SlashCommand::Session { .. }
+        | SlashCommand::Plugins { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -492,6 +509,13 @@ mod tests {
                 target: Some("abc123".to_string())
             })
         );
+        assert_eq!(
+            SlashCommand::parse("/plugins install demo"),
+            Some(SlashCommand::Plugins {
+                action: Some("install".to_string()),
+                target: Some("demo".to_string())
+            })
+        );
     }
 
     #[test]
@@ -513,14 +537,17 @@ mod tests {
         assert!(help.contains("/clear [--confirm]"));
         assert!(help.contains("/cost"));
         assert!(help.contains("/resume <session-path>"));
-        assert!(help.contains("/config [env|hooks|model]"));
+        assert!(help.contains("/config [env|hooks|model|plugins]"));
         assert!(help.contains("/memory"));
         assert!(help.contains("/init"));
         assert!(help.contains("/diff"));
         assert!(help.contains("/version"));
         assert!(help.contains("/export [file]"));
         assert!(help.contains("/session [list|switch <session-id>]"));
-        assert_eq!(slash_command_specs().len(), 22);
+        assert!(help.contains(
+            "/plugins [list|install <source>|enable <id>|disable <id>|uninstall <id>|update <id>]"
+        ));
+        assert_eq!(slash_command_specs().len(), 23);
         assert_eq!(resume_supported_slash_commands().len(), 11);
     }
 
@@ -617,6 +644,9 @@ mod tests {
         );
         assert!(
             handle_slash_command("/session list", &session, CompactionConfig::default()).is_none()
+        );
+        assert!(
+            handle_slash_command("/plugins list", &session, CompactionConfig::default()).is_none()
         );
     }
 }
