@@ -208,9 +208,97 @@ impl Plugin for PluginDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredPlugin {
+    definition: PluginDefinition,
+    enabled: bool,
+}
+
+impl RegisteredPlugin {
+    #[must_use]
+    pub fn new(definition: PluginDefinition, enabled: bool) -> Self {
+        Self {
+            definition,
+            enabled,
+        }
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> &PluginMetadata {
+        self.definition.metadata()
+    }
+
+    #[must_use]
+    pub fn hooks(&self) -> &PluginHooks {
+        self.definition.hooks()
+    }
+
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn validate(&self) -> Result<(), PluginError> {
+        self.definition.validate()
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> PluginSummary {
+        PluginSummary {
+            metadata: self.metadata().clone(),
+            enabled: self.enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSummary {
     pub metadata: PluginMetadata,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginRegistry {
+    plugins: Vec<RegisteredPlugin>,
+}
+
+impl PluginRegistry {
+    #[must_use]
+    pub fn new(mut plugins: Vec<RegisteredPlugin>) -> Self {
+        plugins.sort_by(|left, right| left.metadata().id.cmp(&right.metadata().id));
+        Self { plugins }
+    }
+
+    #[must_use]
+    pub fn plugins(&self) -> &[RegisteredPlugin] {
+        &self.plugins
+    }
+
+    #[must_use]
+    pub fn get(&self, plugin_id: &str) -> Option<&RegisteredPlugin> {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.metadata().id == plugin_id)
+    }
+
+    #[must_use]
+    pub fn contains(&self, plugin_id: &str) -> bool {
+        self.get(plugin_id).is_some()
+    }
+
+    #[must_use]
+    pub fn summaries(&self) -> Vec<PluginSummary> {
+        self.plugins.iter().map(RegisteredPlugin::summary).collect()
+    }
+
+    pub fn aggregated_hooks(&self) -> Result<PluginHooks, PluginError> {
+        self.plugins
+            .iter()
+            .filter(|plugin| plugin.is_enabled())
+            .try_fold(PluginHooks::default(), |acc, plugin| {
+                plugin.validate()?;
+                Ok(acc.merged_with(plugin.hooks()))
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,17 +414,20 @@ impl PluginManager {
         self.config.config_home.join(SETTINGS_FILE_NAME)
     }
 
+    pub fn plugin_registry(&self) -> Result<PluginRegistry, PluginError> {
+        Ok(PluginRegistry::new(
+            self.discover_plugins()?
+                .into_iter()
+                .map(|plugin| {
+                    let enabled = self.is_enabled(plugin.metadata());
+                    RegisteredPlugin::new(plugin, enabled)
+                })
+                .collect(),
+        ))
+    }
+
     pub fn list_plugins(&self) -> Result<Vec<PluginSummary>, PluginError> {
-        let mut plugins = self
-            .discover_plugins()?
-            .into_iter()
-            .map(|plugin| PluginSummary {
-                enabled: self.is_enabled(plugin.metadata()),
-                metadata: plugin.metadata().clone(),
-            })
-            .collect::<Vec<_>>();
-        plugins.sort_by(|left, right| left.metadata.id.cmp(&right.metadata.id));
-        Ok(plugins)
+        Ok(self.plugin_registry()?.summaries())
     }
 
     pub fn discover_plugins(&self) -> Result<Vec<PluginDefinition>, PluginError> {
@@ -347,18 +438,12 @@ impl PluginManager {
     }
 
     pub fn aggregated_hooks(&self) -> Result<PluginHooks, PluginError> {
-        self.discover_plugins()?
-            .into_iter()
-            .filter(|plugin| self.is_enabled(plugin.metadata()))
-            .try_fold(PluginHooks::default(), |acc, plugin| {
-                plugin.validate()?;
-                Ok(acc.merged_with(plugin.hooks()))
-            })
+        self.plugin_registry()?.aggregated_hooks()
     }
 
     pub fn validate_plugin_source(&self, source: &str) -> Result<PluginManifest, PluginError> {
         let path = resolve_local_source(source)?;
-        load_manifest_from_root(&path)
+        load_validated_manifest_from_root(&path)
     }
 
     pub fn install(&mut self, source: &str) -> Result<InstallOutcome, PluginError> {
@@ -366,8 +451,7 @@ impl PluginManager {
         let temp_root = self.install_root().join(".tmp");
         let staged_source = materialize_source(&install_source, &temp_root)?;
         let cleanup_source = matches!(install_source, PluginInstallSource::GitUrl { .. });
-        let manifest = load_manifest_from_root(&staged_source)?;
-        validate_manifest(&manifest)?;
+        let manifest = load_validated_manifest_from_root(&staged_source)?;
 
         let plugin_id = plugin_id(&manifest.name, EXTERNAL_MARKETPLACE);
         let install_path = self.install_root().join(sanitize_plugin_id(&plugin_id));
@@ -445,8 +529,7 @@ impl PluginManager {
         let temp_root = self.install_root().join(".tmp");
         let staged_source = materialize_source(&record.source, &temp_root)?;
         let cleanup_source = matches!(record.source, PluginInstallSource::GitUrl { .. });
-        let manifest = load_manifest_from_root(&staged_source)?;
-        validate_manifest(&manifest)?;
+        let manifest = load_validated_manifest_from_root(&staged_source)?;
 
         if record.install_path.exists() {
             fs::remove_dir_all(&record.install_path)?;
@@ -542,11 +625,7 @@ impl PluginManager {
     }
 
     fn ensure_known_plugin(&self, plugin_id: &str) -> Result<(), PluginError> {
-        if self
-            .list_plugins()?
-            .iter()
-            .any(|plugin| plugin.metadata.id == plugin_id)
-        {
+        if self.plugin_registry()?.contains(plugin_id) {
             Ok(())
         } else {
             Err(PluginError::NotFound(format!(
@@ -617,8 +696,7 @@ fn load_plugin_definition(
     source: String,
     marketplace: &str,
 ) -> Result<PluginDefinition, PluginError> {
-    let manifest = load_manifest_from_root(root)?;
-    validate_manifest(&manifest)?;
+    let manifest = load_validated_manifest_from_root(root)?;
     let metadata = PluginMetadata {
         id: plugin_id(&manifest.name, marketplace),
         name: manifest.name,
@@ -635,6 +713,13 @@ fn load_plugin_definition(
         PluginKind::Bundled => PluginDefinition::Bundled(BundledPlugin { metadata, hooks }),
         PluginKind::External => PluginDefinition::External(ExternalPlugin { metadata, hooks }),
     })
+}
+
+fn load_validated_manifest_from_root(root: &Path) -> Result<PluginManifest, PluginError> {
+    let manifest = load_manifest_from_root(root)?;
+    validate_manifest(&manifest)?;
+    validate_hook_paths(Some(root), &manifest.hooks)?;
+    Ok(manifest)
 }
 
 fn validate_manifest(manifest: &PluginManifest) -> Result<(), PluginError> {
@@ -896,6 +981,17 @@ mod tests {
         .expect("write manifest");
     }
 
+    fn write_broken_plugin(root: &Path, name: &str) {
+        fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        fs::write(
+            root.join(MANIFEST_RELATIVE_PATH),
+            format!(
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"broken plugin\",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/missing.sh\"]\n  }}\n}}"
+            ),
+        )
+        .expect("write broken manifest");
+    }
+
     #[test]
     fn validates_manifest_shape() {
         let error = validate_manifest(&PluginManifest {
@@ -979,6 +1075,55 @@ mod tests {
             .validate_plugin_source(source_root.to_str().expect("utf8 path"))
             .expect("manifest should validate");
         assert_eq!(manifest.name, "validator");
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn plugin_registry_tracks_enabled_state_and_lookup() {
+        let config_home = temp_dir("registry-home");
+        let source_root = temp_dir("registry-source");
+        write_external_plugin(&source_root, "registry-demo", "1.0.0");
+
+        let mut manager = PluginManager::new(PluginManagerConfig::new(&config_home));
+        manager
+            .install(source_root.to_str().expect("utf8 path"))
+            .expect("install should succeed");
+        manager
+            .disable("registry-demo@external")
+            .expect("disable should succeed");
+
+        let registry = manager.plugin_registry().expect("registry should build");
+        let plugin = registry
+            .get("registry-demo@external")
+            .expect("installed plugin should be discoverable");
+        assert_eq!(plugin.metadata().name, "registry-demo");
+        assert!(!plugin.is_enabled());
+        assert!(registry.contains("registry-demo@external"));
+        assert!(!registry.contains("missing@external"));
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn rejects_plugin_sources_with_missing_hook_paths() {
+        let config_home = temp_dir("broken-home");
+        let source_root = temp_dir("broken-source");
+        write_broken_plugin(&source_root, "broken");
+
+        let manager = PluginManager::new(PluginManagerConfig::new(&config_home));
+        let error = manager
+            .validate_plugin_source(source_root.to_str().expect("utf8 path"))
+            .expect_err("missing hook file should fail validation");
+        assert!(error.to_string().contains("does not exist"));
+
+        let mut manager = PluginManager::new(PluginManagerConfig::new(&config_home));
+        let install_error = manager
+            .install(source_root.to_str().expect("utf8 path"))
+            .expect_err("install should reject invalid hook paths");
+        assert!(install_error.to_string().contains("does not exist"));
+
         let _ = fs::remove_dir_all(config_home);
         let _ = fs::remove_dir_all(source_root);
     }
