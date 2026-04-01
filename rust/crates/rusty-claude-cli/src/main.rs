@@ -10,7 +10,10 @@ use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
     resolve_startup_auth_source, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
@@ -50,6 +53,7 @@ const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_TARGET: Option<&str> = option_env!("TARGET");
 const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
+const INTERNAL_PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 
 type AllowedToolSet = BTreeSet<String>;
 
@@ -4051,6 +4055,23 @@ mod tests {
         assert!(!rendered.contains("payload 119"));
         assert!(rendered.contains("full result preserved in session"));
         assert!(output.contains("payload 119"));
+    }
+
+    #[test]
+    fn tool_rendering_truncates_raw_generic_output_for_display_only() {
+        let output = (0..120)
+            .map(|index| format!("raw {index:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let rendered = format_tool_result("plugin_echo", &output, false);
+
+        assert!(rendered.contains("plugin_echo"));
+        assert!(rendered.contains("raw 000"));
+        assert!(rendered.contains("raw 059"));
+        assert!(!rendered.contains("raw 119"));
+        assert!(rendered.contains("full result preserved in session"));
+        assert!(output.contains("raw 119"));
     }
 
     #[test]
