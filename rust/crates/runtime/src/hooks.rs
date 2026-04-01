@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::path::Path;
 use std::process::Command;
 
 use serde_json::json;
@@ -50,6 +49,16 @@ impl HookRunResult {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HookRunner {
     config: RuntimeHookConfig,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HookCommandRequest<'a> {
+    event: HookEvent,
+    tool_name: &'a str,
+    tool_input: &'a str,
+    tool_output: Option<&'a str>,
+    is_error: bool,
+    payload: &'a str,
 }
 
 impl HookRunner {
@@ -119,14 +128,16 @@ impl HookRunner {
         let mut messages = Vec::new();
 
         for command in commands {
-            match self.run_command(
+            match Self::run_command(
                 command,
-                event,
-                tool_name,
-                tool_input,
-                tool_output,
-                is_error,
-                &payload,
+                HookCommandRequest {
+                    event,
+                    tool_name,
+                    tool_input,
+                    tool_output,
+                    is_error,
+                    payload: &payload,
+                },
             ) {
                 HookCommandOutcome::Allow { message } => {
                     if let Some(message) = message {
@@ -150,30 +161,23 @@ impl HookRunner {
         HookRunResult::allow(messages)
     }
 
-    #[allow(clippy::too_many_arguments, clippy::unused_self)]
-    fn run_command(
-        &self,
-        command: &str,
-        event: HookEvent,
-        tool_name: &str,
-        tool_input: &str,
-        tool_output: Option<&str>,
-        is_error: bool,
-        payload: &str,
-    ) -> HookCommandOutcome {
+    fn run_command(command: &str, request: HookCommandRequest<'_>) -> HookCommandOutcome {
         let mut child = shell_command(command);
         child.stdin(std::process::Stdio::piped());
         child.stdout(std::process::Stdio::piped());
         child.stderr(std::process::Stdio::piped());
-        child.env("HOOK_EVENT", event.as_str());
-        child.env("HOOK_TOOL_NAME", tool_name);
-        child.env("HOOK_TOOL_INPUT", tool_input);
-        child.env("HOOK_TOOL_IS_ERROR", if is_error { "1" } else { "0" });
-        if let Some(tool_output) = tool_output {
+        child.env("HOOK_EVENT", request.event.as_str());
+        child.env("HOOK_TOOL_NAME", request.tool_name);
+        child.env("HOOK_TOOL_INPUT", request.tool_input);
+        child.env(
+            "HOOK_TOOL_IS_ERROR",
+            if request.is_error { "1" } else { "0" },
+        );
+        if let Some(tool_output) = request.tool_output {
             child.env("HOOK_TOOL_OUTPUT", tool_output);
         }
 
-        match child.output_with_stdin(payload.as_bytes()) {
+        match child.output_with_stdin(request.payload.as_bytes()) {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -191,16 +195,18 @@ impl HookRunner {
                     },
                     None => HookCommandOutcome::Warn {
                         message: format!(
-                            "{} hook `{command}` terminated by signal while handling `{tool_name}`",
-                            event.as_str()
+                            "{} hook `{command}` terminated by signal while handling `{}`",
+                            request.event.as_str(),
+                            request.tool_name
                         ),
                     },
                 }
             }
             Err(error) => HookCommandOutcome::Warn {
                 message: format!(
-                    "{} hook `{command}` failed to start for `{tool_name}`: {error}",
-                    event.as_str()
+                    "{} hook `{command}` failed to start for `{}`: {error}",
+                    request.event.as_str(),
+                    request.tool_name
                 ),
             },
         }
@@ -239,11 +245,7 @@ fn shell_command(command: &str) -> CommandWithStdin {
     };
 
     #[cfg(not(windows))]
-    let command_builder = if Path::new(command).exists() {
-        let mut command_builder = Command::new("sh");
-        command_builder.arg(command);
-        CommandWithStdin::new(command_builder)
-    } else {
+    let command_builder = {
         let mut command_builder = Command::new("sh");
         command_builder.arg("-lc").arg(command);
         CommandWithStdin::new(command_builder)

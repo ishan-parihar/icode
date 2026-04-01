@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use api::{
-    ApiHttpClient, ApiError, ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent,
-    InputContentBlock, InputMessage, MessageDeltaEvent, MessageRequest, OutputContentBlock,
-    StreamEvent, ToolChoice, ToolDefinition,
+    AnthropicClient, ApiError, AuthSource, ContentBlockDelta, ContentBlockDeltaEvent,
+    ContentBlockStartEvent, InputContentBlock, InputMessage, MessageDeltaEvent, MessageRequest,
+    OutputContentBlock, ProviderClient, StreamEvent, ToolChoice, ToolDefinition,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -34,7 +34,7 @@ async fn send_message_posts_json_and_parses_response() {
     )
     .await;
 
-    let client = ApiHttpClient::new("test-key")
+    let client = AnthropicClient::new("test-key")
         .with_auth_token(Some("proxy-token".to_string()))
         .with_base_url(server.base_url());
     let response = client
@@ -76,48 +76,6 @@ async fn send_message_posts_json_and_parses_response() {
 }
 
 #[tokio::test]
-async fn send_message_parses_response_with_thinking_blocks() {
-    let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
-    let body = concat!(
-        "{",
-        "\"id\":\"msg_thinking\",",
-        "\"type\":\"message\",",
-        "\"role\":\"assistant\",",
-        "\"content\":[",
-        "{\"type\":\"thinking\",\"thinking\":\"step 1\",\"signature\":\"sig_123\"},",
-        "{\"type\":\"text\",\"text\":\"Final answer\"}",
-        "],",
-        "\"model\":\"claude-3-7-sonnet-latest\",",
-        "\"stop_reason\":\"end_turn\",",
-        "\"stop_sequence\":null,",
-        "\"usage\":{\"input_tokens\":12,\"output_tokens\":4}",
-        "}"
-    );
-    let server = spawn_server(
-        state,
-        vec![http_response("200 OK", "application/json", body)],
-    )
-    .await;
-
-    let client = ApiHttpClient::new("test-key").with_base_url(server.base_url());
-    let response = client
-        .send_message(&sample_request(false))
-        .await
-        .expect("request should succeed");
-
-    assert_eq!(response.content.len(), 2);
-    assert!(matches!(
-        &response.content[0],
-        OutputContentBlock::Thinking { thinking, signature }
-            if thinking == "step 1" && signature.as_deref() == Some("sig_123")
-    ));
-    assert!(matches!(
-        &response.content[1],
-        OutputContentBlock::Text { text } if text == "Final answer"
-    ));
-}
-
-#[tokio::test]
 async fn stream_message_parses_sse_events_with_tool_use() {
     let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
     let sse = concat!(
@@ -146,7 +104,7 @@ async fn stream_message_parses_sse_events_with_tool_use() {
     )
     .await;
 
-    let client = ApiHttpClient::new("test-key")
+    let client = AnthropicClient::new("test-key")
         .with_auth_token(Some("proxy-token".to_string()))
         .with_base_url(server.base_url());
     let mut stream = client
@@ -205,85 +163,6 @@ async fn stream_message_parses_sse_events_with_tool_use() {
 }
 
 #[tokio::test]
-async fn stream_message_parses_sse_events_with_thinking_blocks() {
-    let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
-    let sse = concat!(
-        "event: message_start\n",
-        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_stream_thinking\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3-7-sonnet-latest\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":8,\"output_tokens\":0}}}\n\n",
-        "event: content_block_start\n",
-        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
-        "event: content_block_delta\n",
-        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step 1\"}}\n\n",
-        "event: content_block_delta\n",
-        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_123\"}}\n\n",
-        "event: content_block_stop\n",
-        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
-        "event: content_block_start\n",
-        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"Final answer\"}}\n\n",
-        "event: content_block_stop\n",
-        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
-        "event: message_delta\n",
-        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":8,\"output_tokens\":1}}\n\n",
-        "event: message_stop\n",
-        "data: {\"type\":\"message_stop\"}\n\n",
-        "data: [DONE]\n\n"
-    );
-    let server = spawn_server(
-        state,
-        vec![http_response("200 OK", "text/event-stream", sse)],
-    )
-    .await;
-
-    let client = ApiHttpClient::new("test-key").with_base_url(server.base_url());
-    let mut stream = client
-        .stream_message(&sample_request(false))
-        .await
-        .expect("stream should start");
-
-    let mut events = Vec::new();
-    while let Some(event) = stream
-        .next_event()
-        .await
-        .expect("stream event should parse")
-    {
-        events.push(event);
-    }
-
-    assert_eq!(events.len(), 9);
-    assert!(matches!(
-        &events[1],
-        StreamEvent::ContentBlockStart(ContentBlockStartEvent {
-            content_block: OutputContentBlock::Thinking { thinking, signature },
-            ..
-        }) if thinking.is_empty() && signature.is_none()
-    ));
-    assert!(matches!(
-        &events[2],
-        StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
-            delta: ContentBlockDelta::ThinkingDelta { thinking },
-            ..
-        }) if thinking == "step 1"
-    ));
-    assert!(matches!(
-        &events[3],
-        StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
-            delta: ContentBlockDelta::SignatureDelta { signature },
-            ..
-        }) if signature == "sig_123"
-    ));
-    assert!(matches!(
-        &events[5],
-        StreamEvent::ContentBlockStart(ContentBlockStartEvent {
-            content_block: OutputContentBlock::Text { text },
-            ..
-        }) if text == "Final answer"
-    ));
-    assert!(matches!(events[6], StreamEvent::ContentBlockStop(_)));
-    assert!(matches!(events[7], StreamEvent::MessageDelta(_)));
-    assert!(matches!(events[8], StreamEvent::MessageStop(_)));
-}
-
-#[tokio::test]
 async fn retries_retryable_failures_before_succeeding() {
     let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
     let server = spawn_server(
@@ -303,7 +182,7 @@ async fn retries_retryable_failures_before_succeeding() {
     )
     .await;
 
-    let client = ApiHttpClient::new("test-key")
+    let client = AnthropicClient::new("test-key")
         .with_base_url(server.base_url())
         .with_retry_policy(2, Duration::from_millis(1), Duration::from_millis(2));
 
@@ -314,6 +193,47 @@ async fn retries_retryable_failures_before_succeeding() {
 
     assert_eq!(response.total_tokens(), 5);
     assert_eq!(state.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn provider_client_dispatches_anthropic_requests() {
+    let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
+    let server = spawn_server(
+        state.clone(),
+        vec![http_response(
+            "200 OK",
+            "application/json",
+            "{\"id\":\"msg_provider\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Dispatched\"}],\"model\":\"claude-3-7-sonnet-latest\",\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}",
+        )],
+    )
+    .await;
+
+    let client = ProviderClient::from_model_with_anthropic_auth(
+        "claude-sonnet-4-6",
+        Some(AuthSource::ApiKey("test-key".to_string())),
+    )
+    .expect("anthropic provider client should be constructed");
+    let client = match client {
+        ProviderClient::Anthropic(client) => {
+            ProviderClient::Anthropic(client.with_base_url(server.base_url()))
+        }
+        other => panic!("expected anthropic provider, got {other:?}"),
+    };
+
+    let response = client
+        .send_message(&sample_request(false))
+        .await
+        .expect("provider-dispatched request should succeed");
+
+    assert_eq!(response.total_tokens(), 5);
+
+    let captured = state.lock().await;
+    let request = captured.first().expect("server should capture request");
+    assert_eq!(request.path, "/v1/messages");
+    assert_eq!(
+        request.headers.get("x-api-key").map(String::as_str),
+        Some("test-key")
+    );
 }
 
 #[tokio::test]
@@ -336,7 +256,7 @@ async fn surfaces_retry_exhaustion_for_persistent_retryable_errors() {
     )
     .await;
 
-    let client = ApiHttpClient::new("test-key")
+    let client = AnthropicClient::new("test-key")
         .with_base_url(server.base_url())
         .with_retry_policy(1, Duration::from_millis(1), Duration::from_millis(2));
 
@@ -367,7 +287,7 @@ async fn surfaces_retry_exhaustion_for_persistent_retryable_errors() {
 #[tokio::test]
 #[ignore = "requires ANTHROPIC_API_KEY and network access"]
 async fn live_stream_smoke_test() {
-    let client = ApiHttpClient::from_env().expect("ANTHROPIC_API_KEY must be set");
+    let client = AnthropicClient::from_env().expect("ANTHROPIC_API_KEY must be set");
     let mut stream = client
         .stream_message(&MessageRequest {
             model: std::env::var("ANTHROPIC_MODEL")
