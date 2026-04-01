@@ -125,8 +125,8 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "session",
-        summary: "List or switch managed local sessions",
-        argument_hint: Some("[list|switch <session-id>]"),
+        summary: "List, switch, or fork managed local sessions",
+        argument_hint: Some("[list|switch <session-id>|fork [branch-name]]"),
         resume_supported: false,
     },
 ];
@@ -229,7 +229,7 @@ pub fn resume_supported_slash_commands() -> Vec<&'static SlashCommandSpec> {
 pub fn render_slash_command_help() -> String {
     let mut lines = vec![
         "Slash commands".to_string(),
-        "  [resume] means the command also works with --resume SESSION.json".to_string(),
+        "  [resume] means the command also works with --resume SESSION.jsonl".to_string(),
     ];
     for spec in slash_command_specs() {
         let name = match spec.argument_hint {
@@ -365,12 +365,19 @@ mod tests {
                 target: Some("abc123".to_string())
             })
         );
+        assert_eq!(
+            SlashCommand::parse("/session fork incident-review"),
+            Some(SlashCommand::Session {
+                action: Some("fork".to_string()),
+                target: Some("incident-review".to_string())
+            })
+        );
     }
 
     #[test]
     fn renders_help_from_shared_specs() {
         let help = render_slash_command_help();
-        assert!(help.contains("works with --resume SESSION.json"));
+        assert!(help.contains("works with --resume SESSION.jsonl"));
         assert!(help.contains("/help"));
         assert!(help.contains("/status"));
         assert!(help.contains("/compact"));
@@ -385,7 +392,7 @@ mod tests {
         assert!(help.contains("/diff"));
         assert!(help.contains("/version"));
         assert!(help.contains("/export [file]"));
-        assert!(help.contains("/session [list|switch <session-id>]"));
+        assert!(help.contains("/session [list|switch <session-id>|fork [branch-name]]"));
         assert_eq!(slash_command_specs().len(), 15);
         assert_eq!(resume_supported_slash_commands().len(), 11);
     }
@@ -449,6 +456,12 @@ mod tests {
         assert!(handle_slash_command("/cost", &session, CompactionConfig::default()).is_none());
         assert!(handle_slash_command(
             "/resume session.json",
+            &session,
+            CompactionConfig::default()
+        )
+        .is_none());
+        assert!(handle_slash_command(
+            "/resume session.jsonl",
             &session,
             CompactionConfig::default()
         )

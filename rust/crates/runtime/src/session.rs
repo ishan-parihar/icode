@@ -55,6 +55,12 @@ pub struct SessionCompaction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFork {
+    pub parent_session_id: String,
+    pub branch_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionPersistence {
     path: PathBuf,
 }
@@ -67,6 +73,7 @@ pub struct Session {
     pub updated_at_ms: u64,
     pub messages: Vec<ConversationMessage>,
     pub compaction: Option<SessionCompaction>,
+    pub fork: Option<SessionFork>,
     persistence: Option<SessionPersistence>,
 }
 
@@ -78,6 +85,7 @@ impl PartialEq for Session {
             && self.updated_at_ms == other.updated_at_ms
             && self.messages == other.messages
             && self.compaction == other.compaction
+            && self.fork == other.fork
     }
 }
 
@@ -125,6 +133,7 @@ impl Session {
             updated_at_ms: now,
             messages: Vec::new(),
             compaction: None,
+            fork: None,
             persistence: None,
         }
     }
@@ -179,6 +188,24 @@ impl Session {
     }
 
     #[must_use]
+    pub fn fork(&self, branch_name: Option<String>) -> Self {
+        let now = current_time_millis();
+        Self {
+            version: self.version,
+            session_id: generate_session_id(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            messages: self.messages.clone(),
+            compaction: self.compaction.clone(),
+            fork: Some(SessionFork {
+                parent_session_id: self.session_id.clone(),
+                branch_name: normalize_optional_string(branch_name),
+            }),
+            persistence: None,
+        }
+    }
+
+    #[must_use]
     pub fn to_json(&self) -> JsonValue {
         let mut object = BTreeMap::new();
         object.insert(
@@ -208,6 +235,9 @@ impl Session {
         );
         if let Some(compaction) = &self.compaction {
             object.insert("compaction".to_string(), compaction.to_json());
+        }
+        if let Some(fork) = &self.fork {
+            object.insert("fork".to_string(), fork.to_json());
         }
         JsonValue::Object(object)
     }
@@ -249,6 +279,7 @@ impl Session {
             .get("compaction")
             .map(SessionCompaction::from_json)
             .transpose()?;
+        let fork = object.get("fork").map(SessionFork::from_json).transpose()?;
         Ok(Self {
             version,
             session_id,
@@ -256,6 +287,7 @@ impl Session {
             updated_at_ms,
             messages,
             compaction,
+            fork,
             persistence: None,
         })
     }
@@ -267,6 +299,7 @@ impl Session {
         let mut updated_at_ms = None;
         let mut messages = Vec::new();
         let mut compaction = None;
+        let mut fork = None;
 
         for (line_number, raw_line) in contents.lines().enumerate() {
             let line = raw_line.trim();
@@ -300,6 +333,7 @@ impl Session {
                     session_id = Some(required_string(object, "session_id")?);
                     created_at_ms = Some(required_u64(object, "created_at_ms")?);
                     updated_at_ms = Some(required_u64(object, "updated_at_ms")?);
+                    fork = object.get("fork").map(SessionFork::from_json).transpose()?;
                 }
                 "message" => {
                     let message_value = object.get("message").ok_or_else(|| {
@@ -332,6 +366,7 @@ impl Session {
             updated_at_ms: updated_at_ms.unwrap_or(created_at_ms.unwrap_or(now)),
             messages,
             compaction,
+            fork,
             persistence: None,
         })
     }
@@ -389,6 +424,9 @@ impl Session {
             "updated_at_ms".to_string(),
             JsonValue::Number(i64_from_u64(self.updated_at_ms, "updated_at_ms")),
         );
+        if let Some(fork) = &self.fork {
+            object.insert("fork".to_string(), fork.to_json());
+        }
         JsonValue::Object(object)
     }
 
@@ -634,6 +672,37 @@ impl SessionCompaction {
     }
 }
 
+impl SessionFork {
+    #[must_use]
+    pub fn to_json(&self) -> JsonValue {
+        let mut object = BTreeMap::new();
+        object.insert(
+            "parent_session_id".to_string(),
+            JsonValue::String(self.parent_session_id.clone()),
+        );
+        if let Some(branch_name) = &self.branch_name {
+            object.insert(
+                "branch_name".to_string(),
+                JsonValue::String(branch_name.clone()),
+            );
+        }
+        JsonValue::Object(object)
+    }
+
+    fn from_json(value: &JsonValue) -> Result<Self, SessionError> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| SessionError::Format("fork metadata must be an object".to_string()))?;
+        Ok(Self {
+            parent_session_id: required_string(object, "parent_session_id")?,
+            branch_name: object
+                .get("branch_name")
+                .and_then(JsonValue::as_str)
+                .map(ToOwned::to_owned),
+        })
+    }
+}
+
 fn message_record(message: &ConversationMessage) -> JsonValue {
     let mut object = BTreeMap::new();
     object.insert("type".to_string(), JsonValue::String("message".to_string()));
@@ -721,6 +790,17 @@ fn i64_from_u64(value: u64, key: &str) -> i64 {
 
 fn i64_from_usize(value: usize, key: &str) -> i64 {
     i64::try_from(value).unwrap_or_else(|_| panic!("{key} out of range for JSON number"))
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn current_time_millis() -> u64 {
@@ -815,7 +895,7 @@ fn cleanup_rotated_logs(path: &Path) -> Result<(), SessionError> {
 mod tests {
     use super::{
         cleanup_rotated_logs, rotate_session_file_if_needed, ContentBlock, ConversationMessage,
-        MessageRole, Session,
+        MessageRole, Session, SessionFork,
     };
     use crate::json::JsonValue;
     use crate::usage::TokenUsage;
@@ -936,6 +1016,35 @@ mod tests {
         assert_eq!(compaction.count, 1);
         assert_eq!(compaction.removed_message_count, 4);
         assert!(compaction.summary.contains("summarized"));
+    }
+
+    #[test]
+    fn forks_sessions_with_branch_metadata_and_persists_it() {
+        let path = temp_session_path("fork");
+        let mut session = Session::new();
+        session
+            .push_user_text("before fork")
+            .expect("message should append");
+
+        let forked = session
+            .fork(Some("investigation".to_string()))
+            .with_persistence_path(path.clone());
+        forked
+            .save_to_path(&path)
+            .expect("forked session should save");
+
+        let restored = Session::load_from_path(&path).expect("forked session should load");
+        fs::remove_file(&path).expect("temp file should be removable");
+
+        assert_ne!(restored.session_id, session.session_id);
+        assert_eq!(
+            restored.fork,
+            Some(SessionFork {
+                parent_session_id: session.session_id,
+                branch_name: Some("investigation".to_string()),
+            })
+        );
+        assert_eq!(restored.messages, forked.messages);
     }
 
     #[test]

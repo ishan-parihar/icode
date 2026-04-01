@@ -287,6 +287,11 @@ where
     }
 
     #[must_use]
+    pub fn fork_session(&self, branch_name: Option<String>) -> Session {
+        self.session.fork(branch_name)
+    }
+
+    #[must_use]
     pub fn into_session(self) -> Session {
         self.session
     }
@@ -836,6 +841,35 @@ mod tests {
         assert_eq!(restored.messages[0].role, MessageRole::User);
         assert_eq!(restored.messages[1].role, MessageRole::Assistant);
         assert_eq!(restored.session_id, runtime.session().session_id);
+    }
+
+    #[test]
+    fn forks_runtime_session_without_mutating_original() {
+        let mut session = Session::new();
+        session
+            .push_user_text("branch me")
+            .expect("message should append");
+
+        let runtime = ConversationRuntime::new(
+            session.clone(),
+            ScriptedApiClient { call_count: 0 },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let forked = runtime.fork_session(Some("alt-path".to_string()));
+
+        assert_eq!(forked.messages, session.messages);
+        assert_ne!(forked.session_id, session.session_id);
+        assert_eq!(
+            forked
+                .fork
+                .as_ref()
+                .map(|fork| (fork.parent_session_id.as_str(), fork.branch_name.as_deref())),
+            Some((session.session_id.as_str(), Some("alt-path")))
+        );
+        assert!(runtime.session().fork.is_none());
     }
 
     fn temp_session_path(label: &str) -> PathBuf {
