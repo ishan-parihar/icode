@@ -2099,28 +2099,74 @@ fn slash_command_completion_candidates() -> Vec<String> {
 }
 
 fn format_tool_call_start(name: &str, input: &str) -> String {
+    let parsed: serde_json::Value =
+        serde_json::from_str(input).unwrap_or(serde_json::Value::String(input.to_string()));
+
+    let detail = match name {
+        "bash" | "Bash" => parsed
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|cmd| truncate_for_summary(cmd, 120))
+            .unwrap_or_default(),
+        "read_file" | "Read" => parsed
+            .get("file_path")
+            .or_else(|| parsed.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
+        "write_file" | "Write" => {
+            let path = parsed
+                .get("file_path")
+                .or_else(|| parsed.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let lines = parsed
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|c| c.lines().count())
+                .unwrap_or(0);
+            format!("{path} ({lines} lines)")
+        }
+        "edit_file" | "Edit" => {
+            let path = parsed
+                .get("file_path")
+                .or_else(|| parsed.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            path.to_string()
+        }
+        "glob_search" | "Glob" => parsed
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
+        "grep_search" | "Grep" => parsed
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
+        "web_search" | "WebSearch" => parsed
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
+        _ => summarize_tool_payload(input),
+    };
+
+    let border = "─".repeat(name.len() + 6);
     format!(
-        "Tool call
-  Name             {name}
-  Input            {}",
-        summarize_tool_payload(input)
+        "\x1b[38;5;245m╭─ \x1b[1;36m{name}\x1b[0;38;5;245m ─╮\x1b[0m\n\x1b[38;5;245m│\x1b[0m {detail}\n\x1b[38;5;245m╰{border}╯\x1b[0m"
     )
 }
 
 fn format_tool_result(name: &str, output: &str, is_error: bool) -> String {
-    let status = if is_error { "error" } else { "ok" };
-    format!(
-        "### Tool `{name}`
-
-- Status: {status}
-- Output:
-
-```json
-{}
-```
-",
-        prettify_tool_payload(output)
-    )
+    let icon = if is_error {
+        "\x1b[1;31m✗\x1b[0m"
+    } else {
+        "\x1b[1;32m✓\x1b[0m"
+    };
+    let summary = truncate_for_summary(output.trim(), 200);
+    format!("{icon} \x1b[38;5;245m{name}:\x1b[0m {summary}")
 }
 
 fn summarize_tool_payload(payload: &str) -> String {
