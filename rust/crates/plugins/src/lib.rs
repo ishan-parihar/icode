@@ -1208,6 +1208,8 @@ impl PluginManager {
             let install_path = install_root.join(sanitize_plugin_id(&plugin_id));
             let now = unix_time_ms();
             let existing_record = registry.plugins.get(&plugin_id);
+            let installed_copy_is_valid =
+                install_path.exists() && load_plugin_from_directory(&install_path).is_ok();
             let needs_sync = existing_record.is_none_or(|record| {
                 record.kind != PluginKind::Bundled
                     || record.version != manifest.version
@@ -1215,6 +1217,7 @@ impl PluginManager {
                     || record.description != manifest.description
                     || record.install_path != install_path
                     || !record.install_path.exists()
+                    || !installed_copy_is_valid
             });
 
             if !needs_sync {
@@ -1294,6 +1297,7 @@ impl PluginManager {
     fn load_registry(&self) -> Result<InstalledPluginRegistry, PluginError> {
         let path = self.registry_path();
         match fs::read_to_string(&path) {
+            Ok(contents) if contents.trim().is_empty() => Ok(InstalledPluginRegistry::default()),
             Ok(contents) => Ok(serde_json::from_str(&contents)?),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(InstalledPluginRegistry::default())
@@ -2003,7 +2007,11 @@ mod tests {
     use super::*;
 
     fn temp_dir(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("plugins-{label}-{}", unix_time_ms()))
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("plugins-{label}-{nanos}"))
     }
 
     fn write_file(path: &Path, contents: &str) {

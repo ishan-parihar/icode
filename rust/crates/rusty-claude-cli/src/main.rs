@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use api::{
     detect_provider_kind, max_tokens_for_model, resolve_model_alias, resolve_startup_auth_source,
-    AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock, InputMessage,
+    ApiClient as ApiHttpClient, AuthSource, ContentBlockDelta, InputContentBlock, InputMessage,
     MessageRequest, MessageResponse, OutputContentBlock, ProviderClient, ProviderKind,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
@@ -191,7 +191,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 index += 1;
             }
             "-p" => {
-                // Claude Code compat: -p "prompt" = one-shot prompt
+                // Claw Code compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
                 if prompt.trim().is_empty() {
                     return Err("-p requires a prompt string".to_string());
@@ -205,7 +205,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 });
             }
             "--print" => {
-                // Claude Code compat: --print makes output non-interactive
+                // Claw Code compat: --print makes output non-interactive
                 output_format = CliOutputFormat::Text;
                 index += 1;
             }
@@ -484,7 +484,7 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "oauth state mismatch").into());
     }
 
-    let client = AnthropicClient::from_auth(AuthSource::None).with_base_url(api::read_base_url());
+    let client = ApiHttpClient::from_auth(AuthSource::None).with_base_url(api::read_base_url());
     let exchange_request =
         OAuthTokenExchangeRequest::from_config(oauth, code, state, pkce.verifier, redirect_uri);
     let runtime = tokio::runtime::Runtime::new()?;
@@ -899,6 +899,14 @@ fn run_resume_command(
             })
         }
         SlashCommand::Resume { .. }
+        | SlashCommand::Bughunter { .. }
+        | SlashCommand::Commit
+        | SlashCommand::Pr { .. }
+        | SlashCommand::Issue { .. }
+        | SlashCommand::Ultraplan { .. }
+        | SlashCommand::Teleport { .. }
+        | SlashCommand::DebugToolCall
+        | SlashCommand::Plugins { .. }
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
         | SlashCommand::Session { .. }
@@ -1152,6 +1160,17 @@ impl LiveCli {
             }
             SlashCommand::Session { action, target } => {
                 self.handle_session_command(action.as_deref(), target.as_deref())?
+            }
+            SlashCommand::Bughunter { .. }
+            | SlashCommand::Commit
+            | SlashCommand::Pr { .. }
+            | SlashCommand::Issue { .. }
+            | SlashCommand::Ultraplan { .. }
+            | SlashCommand::Teleport { .. }
+            | SlashCommand::DebugToolCall
+            | SlashCommand::Plugins { .. } => {
+                eprintln!("slash command not supported in this REPL yet");
+                false
             }
             SlashCommand::Unknown(name) => {
                 eprintln!("unknown slash command: /{name}");
@@ -1437,7 +1456,7 @@ impl LiveCli {
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let path = cwd.join(".claude").join("sessions");
+    let path = cwd.join(".claw").join("sessions");
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -2094,6 +2113,8 @@ impl ApiClient for ProviderRuntimeClient {
                                 input.push_str(&partial_json);
                             }
                         }
+                        ContentBlockDelta::ThinkingDelta { .. }
+                        | ContentBlockDelta::SignatureDelta { .. } => {}
                     },
                     ApiStreamEvent::ContentBlockStop(stop) => {
                         if let Some(rendered) = markdown_stream.flush(&renderer) {
@@ -2595,6 +2616,7 @@ fn push_output_block(
             };
             pending_tools.insert(block_index, (id, name, initial_input));
         }
+        OutputContentBlock::Thinking { .. } | OutputContentBlock::RedactedThinking { .. } => {}
     }
     Ok(())
 }
@@ -3080,7 +3102,7 @@ mod tests {
         assert!(help.contains("/clear [--confirm]"));
         assert!(help.contains("/cost"));
         assert!(help.contains("/resume <session-path>"));
-        assert!(help.contains("/config [env|hooks|model]"));
+        assert!(help.contains("/config [env|hooks|model|plugins]"));
         assert!(help.contains("/memory"));
         assert!(help.contains("/init"));
         assert!(help.contains("/diff"));

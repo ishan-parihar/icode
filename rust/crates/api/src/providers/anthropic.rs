@@ -660,7 +660,7 @@ mod tests {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("env lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn temp_config_home() -> std::path::PathBuf {
@@ -672,6 +672,14 @@ mod tests {
                 .expect("time")
                 .as_nanos()
         ))
+    }
+
+    fn cleanup_temp_config_home(config_home: &std::path::Path) {
+        match std::fs::remove_dir_all(config_home) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("cleanup temp dir: {error}"),
+        }
     }
 
     fn sample_oauth_config(token_url: String) -> OAuthConfig {
@@ -709,7 +717,7 @@ mod tests {
         let _guard = env_lock();
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
-        std::env::remove_var("CLAUDE_CONFIG_HOME");
+        std::env::remove_var("CLAW_CONFIG_HOME");
         let error = super::read_api_key().expect_err("missing key should error");
         assert!(matches!(
             error,
@@ -779,7 +787,7 @@ mod tests {
     fn auth_source_from_saved_oauth_when_env_absent() {
         let _guard = env_lock();
         let config_home = temp_config_home();
-        std::env::set_var("CLAUDE_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
@@ -794,8 +802,8 @@ mod tests {
         assert_eq!(auth.bearer_token(), Some("saved-access-token"));
 
         clear_oauth_credentials().expect("clear credentials");
-        std::env::remove_var("CLAUDE_CONFIG_HOME");
-        std::fs::remove_dir_all(config_home).expect("cleanup temp dir");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        cleanup_temp_config_home(&config_home);
     }
 
     #[test]
@@ -818,7 +826,7 @@ mod tests {
     fn resolve_saved_oauth_token_refreshes_expired_credentials() {
         let _guard = env_lock();
         let config_home = temp_config_home();
-        std::env::set_var("CLAUDE_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
@@ -842,15 +850,15 @@ mod tests {
         assert_eq!(stored.access_token, "refreshed-token");
 
         clear_oauth_credentials().expect("clear credentials");
-        std::env::remove_var("CLAUDE_CONFIG_HOME");
-        std::fs::remove_dir_all(config_home).expect("cleanup temp dir");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        cleanup_temp_config_home(&config_home);
     }
 
     #[test]
     fn resolve_startup_auth_source_uses_saved_oauth_without_loading_config() {
         let _guard = env_lock();
         let config_home = temp_config_home();
-        std::env::set_var("CLAUDE_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
@@ -866,15 +874,15 @@ mod tests {
         assert_eq!(auth.bearer_token(), Some("saved-access-token"));
 
         clear_oauth_credentials().expect("clear credentials");
-        std::env::remove_var("CLAUDE_CONFIG_HOME");
-        std::fs::remove_dir_all(config_home).expect("cleanup temp dir");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        cleanup_temp_config_home(&config_home);
     }
 
     #[test]
     fn resolve_startup_auth_source_errors_when_refreshable_token_lacks_config() {
         let _guard = env_lock();
         let config_home = temp_config_home();
-        std::env::set_var("CLAUDE_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
@@ -898,15 +906,15 @@ mod tests {
         assert_eq!(stored.refresh_token.as_deref(), Some("refresh-token"));
 
         clear_oauth_credentials().expect("clear credentials");
-        std::env::remove_var("CLAUDE_CONFIG_HOME");
-        std::fs::remove_dir_all(config_home).expect("cleanup temp dir");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        cleanup_temp_config_home(&config_home);
     }
 
     #[test]
     fn resolve_saved_oauth_token_preserves_refresh_token_when_refresh_response_omits_it() {
         let _guard = env_lock();
         let config_home = temp_config_home();
-        std::env::set_var("CLAUDE_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
@@ -931,8 +939,8 @@ mod tests {
         assert_eq!(stored.refresh_token.as_deref(), Some("refresh-token"));
 
         clear_oauth_credentials().expect("clear credentials");
-        std::env::remove_var("CLAUDE_CONFIG_HOME");
-        std::fs::remove_dir_all(config_home).expect("cleanup temp dir");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        cleanup_temp_config_home(&config_home);
     }
 
     #[test]
