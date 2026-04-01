@@ -1922,13 +1922,14 @@ fn build_runtime(
     permission_mode: PermissionMode,
 ) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
 {
+    let feature_config = build_runtime_feature_config()?;
     Ok(ConversationRuntime::new_with_features(
         session,
         AnthropicRuntimeClient::new(model, enable_tools, emit_output, allowed_tools.clone())?,
         CliToolExecutor::new(allowed_tools, emit_output),
-        permission_policy(permission_mode),
+        permission_policy(permission_mode, &feature_config),
         system_prompt,
-        build_runtime_feature_config()?,
+        &feature_config,
     ))
 }
 
@@ -2673,12 +2674,14 @@ impl ToolExecutor for CliToolExecutor {
     }
 }
 
-fn permission_policy(mode: PermissionMode) -> PermissionPolicy {
-    tool_permission_specs()
-        .into_iter()
-        .fold(PermissionPolicy::new(mode), |policy, spec| {
-            policy.with_tool_requirement(spec.name, spec.required_permission)
-        })
+fn permission_policy(
+    mode: PermissionMode,
+    feature_config: &runtime::RuntimeFeatureConfig,
+) -> PermissionPolicy {
+    tool_permission_specs().into_iter().fold(
+        PermissionPolicy::new(mode).with_permission_rules(feature_config.permission_rules()),
+        |policy, spec| policy.with_tool_requirement(spec.name, spec.required_permission),
+    )
 }
 
 fn tool_permission_specs() -> Vec<ToolSpec> {
