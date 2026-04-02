@@ -30,12 +30,11 @@ use plugins::{PluginManager, PluginManagerConfig};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
-    parse_oauth_callback_request_target, resolve_sandbox_status, save_oauth_credentials,
-    ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource,
-    ContentBlock, ConversationMessage, ConversationRuntime, MessageRole, PromptCacheEvent,
-    OAuthAuthorizationRequest, OAuthConfig,
-    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
-    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    parse_oauth_callback_request_target, resolve_sandbox_status, save_oauth_credentials, ApiClient,
+    ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
+    ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
+    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
+    RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde_json::json;
 use tools::GlobalToolRegistry;
@@ -83,6 +82,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             session_path,
             commands,
         } => resume_session(&session_path, &commands),
+        CliAction::Status {
+            model,
+            permission_mode,
+        } => print_status_snapshot(&model, permission_mode)?,
+        CliAction::Sandbox => print_sandbox_status_snapshot()?,
         CliAction::Prompt {
             prompt,
             model,
@@ -123,6 +127,11 @@ enum CliAction {
         session_path: PathBuf,
         commands: Vec<String>,
     },
+    Status {
+        model: String,
+        permission_mode: PermissionMode,
+    },
+    Sandbox,
     Prompt {
         prompt: String,
         model: String,
@@ -273,6 +282,9 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     if rest.first().map(String::as_str) == Some("--resume") {
         return parse_resume_args(&rest[1..]);
     }
+    if let Some(action) = parse_single_word_command_alias(&rest, &model, permission_mode) {
+        return action;
+    }
 
     match rest[0].as_str() {
         "dump-manifests" => Ok(CliAction::DumpManifests),
@@ -309,6 +321,57 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             permission_mode,
         }),
     }
+}
+
+fn parse_single_word_command_alias(
+    rest: &[String],
+    model: &str,
+    permission_mode: PermissionMode,
+) -> Option<Result<CliAction, String>> {
+    if rest.len() != 1 {
+        return None;
+    }
+
+    match rest[0].as_str() {
+        "help" => Some(Ok(CliAction::Help)),
+        "version" => Some(Ok(CliAction::Version)),
+        "status" => Some(Ok(CliAction::Status {
+            model: model.to_string(),
+            permission_mode,
+        })),
+        "sandbox" => Some(Ok(CliAction::Sandbox)),
+        other => bare_slash_command_guidance(other).map(Err),
+    }
+}
+
+fn bare_slash_command_guidance(command_name: &str) -> Option<String> {
+    if matches!(
+        command_name,
+        "dump-manifests"
+            | "bootstrap-plan"
+            | "agents"
+            | "skills"
+            | "system-prompt"
+            | "login"
+            | "logout"
+            | "init"
+            | "prompt"
+    ) {
+        return None;
+    }
+    let slash_command = slash_command_specs()
+        .into_iter()
+        .find(|spec| spec.name == command_name)?;
+    let guidance = if slash_command.resume_supported {
+        format!(
+            "`claw {command_name}` is a slash command. Use `claw --resume SESSION.jsonl /{command_name}` or start `claw` and run `/{command_name}`."
+        )
+    } else {
+        format!(
+            "`claw {command_name}` is a slash command. Start `claw` and run `/{command_name}` inside the REPL."
+        )
+    };
+    Some(guidance)
 }
 
 fn join_optional_args(args: &[String]) -> Option<String> {
@@ -2155,6 +2218,28 @@ fn render_repl_help() -> String {
     )
 }
 
+fn print_status_snapshot(
+    model: &str,
+    permission_mode: PermissionMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "{}",
+        format_status_report(
+            model,
+            StatusUsage {
+                message_count: 0,
+                turns: 0,
+                latest: TokenUsage::default(),
+                cumulative: TokenUsage::default(),
+                estimated_tokens: 0,
+            },
+            permission_mode.as_str(),
+            &status_context(None)?,
+        )
+    );
+    Ok(())
+}
+
 fn status_context(
     session_path: Option<&Path>,
 ) -> Result<StatusContext, Box<dyn std::error::Error>> {
@@ -2277,6 +2362,19 @@ fn format_sandbox_report(status: &runtime::SandboxStatus) -> String {
             .clone()
             .unwrap_or_else(|| "<none>".to_string()),
     )
+}
+
+fn print_sandbox_status_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = env::current_dir()?;
+    let loader = ConfigLoader::default_for(&cwd);
+    let runtime_config = loader
+        .load()
+        .unwrap_or_else(|_| runtime::RuntimeConfig::empty());
+    println!(
+        "{}",
+        format_sandbox_report(&resolve_sandbox_status(runtime_config.sandbox(), &cwd))
+    );
+    Ok(())
 }
 
 fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -3146,7 +3244,8 @@ fn build_runtime(
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
-) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>> {
+) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
+{
     let (feature_config, tool_registry) = build_runtime_plugin_state()?;
     let mut runtime = ConversationRuntime::new_with_features(
         session,
@@ -3286,7 +3385,6 @@ impl AnthropicRuntimeClient {
             progress_reporter,
         })
     }
-
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -4023,7 +4121,9 @@ fn push_prompt_cache_record(client: &AnthropicClient, events: &mut Vec<Assistant
     }
 }
 
-fn prompt_cache_record_to_runtime_event(record: api::PromptCacheRecord) -> Option<PromptCacheEvent> {
+fn prompt_cache_record_to_runtime_event(
+    record: api::PromptCacheRecord,
+) -> Option<PromptCacheEvent> {
     let cache_break = record.cache_break?;
     Some(PromptCacheEvent {
         unexpected: cache_break.unexpected,
@@ -4173,6 +4273,17 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         out,
         "      Inspect or maintain a saved session without entering the REPL"
     )?;
+    writeln!(out, "  claw help")?;
+    writeln!(out, "      Alias for --help")?;
+    writeln!(out, "  claw version")?;
+    writeln!(out, "      Alias for --version")?;
+    writeln!(out, "  claw status")?;
+    writeln!(
+        out,
+        "      Show the current local workspace status snapshot"
+    )?;
+    writeln!(out, "  claw sandbox")?;
+    writeln!(out, "      Show the current sandbox isolation snapshot")?;
     writeln!(out, "  claw dump-manifests")?;
     writeln!(out, "  claw bootstrap-plan")?;
     writeln!(out, "  claw agents")?;
@@ -4245,18 +4356,17 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_tool_progress, filter_tool_specs, format_compact_report, format_cost_report,
-        format_internal_prompt_progress_line, format_model_report, format_model_switch_report,
-        format_permissions_report,
+        create_managed_session_handle, describe_tool_progress, filter_tool_specs,
+        format_compact_report, format_cost_report, format_internal_prompt_progress_line,
+        format_model_report, format_model_switch_report, format_permissions_report,
         format_permissions_switch_report, format_resume_report, format_status_report,
         format_tool_call_start, format_tool_result, normalize_permission_mode, parse_args,
-        parse_git_status_branch, parse_git_status_metadata_for, permission_policy,
-        print_help_to, push_output_block, render_config_report, render_diff_report,
-        render_memory_report, render_repl_help, resolve_model_alias, response_to_events,
+        parse_git_status_branch, parse_git_status_metadata_for, permission_policy, print_help_to,
+        push_output_block, render_config_report, render_diff_report, render_memory_report,
+        render_repl_help, resolve_model_alias, resolve_session_reference, response_to_events,
         resume_supported_slash_commands, run_resume_command, status_context, CliAction,
-        CliOutputFormat, InternalPromptProgressEvent,
-        InternalPromptProgressState, SlashCommand, StatusUsage, DEFAULT_MODEL,
-        create_managed_session_handle, resolve_session_reference,
+        CliOutputFormat, InternalPromptProgressEvent, InternalPromptProgressState, SlashCommand,
+        StatusUsage, DEFAULT_MODEL,
     };
     use api::{MessageResponse, OutputContentBlock, Usage};
     use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
@@ -4514,6 +4624,51 @@ mod tests {
     }
 
     #[test]
+    fn parses_single_word_command_aliases_without_falling_back_to_prompt_mode() {
+        assert_eq!(
+            parse_args(&["help".to_string()]).expect("help should parse"),
+            CliAction::Help
+        );
+        assert_eq!(
+            parse_args(&["version".to_string()]).expect("version should parse"),
+            CliAction::Version
+        );
+        assert_eq!(
+            parse_args(&["status".to_string()]).expect("status should parse"),
+            CliAction::Status {
+                model: DEFAULT_MODEL.to_string(),
+                permission_mode: PermissionMode::DangerFullAccess,
+            }
+        );
+        assert_eq!(
+            parse_args(&["sandbox".to_string()]).expect("sandbox should parse"),
+            CliAction::Sandbox
+        );
+    }
+
+    #[test]
+    fn single_word_slash_command_names_return_guidance_instead_of_hitting_prompt_mode() {
+        let error = parse_args(&["cost".to_string()]).expect_err("cost should return guidance");
+        assert!(error.contains("slash command"));
+        assert!(error.contains("/cost"));
+    }
+
+    #[test]
+    fn multi_word_prompt_still_uses_shorthand_prompt_mode() {
+        assert_eq!(
+            parse_args(&["help".to_string(), "me".to_string(), "debug".to_string()])
+                .expect("prompt shorthand should still work"),
+            CliAction::Prompt {
+                prompt: "help me debug".to_string(),
+                model: DEFAULT_MODEL.to_string(),
+                output_format: CliOutputFormat::Text,
+                allowed_tools: None,
+                permission_mode: PermissionMode::DangerFullAccess,
+            }
+        );
+    }
+
+    #[test]
     fn parses_direct_agents_and_skills_slash_commands() {
         assert_eq!(
             parse_args(&["/agents".to_string()]).expect("/agents should parse"),
@@ -4721,6 +4876,10 @@ mod tests {
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
+        assert!(help.contains("claw help"));
+        assert!(help.contains("claw version"));
+        assert!(help.contains("claw status"));
+        assert!(help.contains("claw sandbox"));
         assert!(help.contains("claw init"));
         assert!(help.contains("claw agents"));
         assert!(help.contains("claw skills"));
@@ -5051,8 +5210,13 @@ mod tests {
 
         let resolved = resolve_session_reference("legacy").expect("legacy session should resolve");
         assert_eq!(
-            resolved.path.canonicalize().expect("resolved path should exist"),
-            legacy_path.canonicalize().expect("legacy path should exist")
+            resolved
+                .path
+                .canonicalize()
+                .expect("resolved path should exist"),
+            legacy_path
+                .canonicalize()
+                .expect("legacy path should exist")
         );
 
         std::env::set_current_dir(previous).expect("restore cwd");
