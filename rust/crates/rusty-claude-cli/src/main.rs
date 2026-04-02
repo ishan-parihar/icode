@@ -1,4 +1,11 @@
-#![allow(dead_code, unused_imports, unused_variables, clippy::unneeded_struct_pattern, clippy::unnecessary_wraps, clippy::unused_self)]
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    clippy::unneeded_struct_pattern,
+    clippy::unnecessary_wraps,
+    clippy::unused_self
+)]
 mod init;
 mod input;
 mod render;
@@ -36,7 +43,8 @@ use runtime::{
     ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
     ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
     OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
-    RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    ResolvedPermissionMode, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
+    UsageTracker,
 };
 use serde_json::json;
 use tools::GlobalToolRegistry;
@@ -594,12 +602,32 @@ fn permission_mode_from_label(mode: &str) -> PermissionMode {
     }
 }
 
+fn permission_mode_from_resolved(mode: ResolvedPermissionMode) -> PermissionMode {
+    match mode {
+        ResolvedPermissionMode::ReadOnly => PermissionMode::ReadOnly,
+        ResolvedPermissionMode::WorkspaceWrite => PermissionMode::WorkspaceWrite,
+        ResolvedPermissionMode::DangerFullAccess => PermissionMode::DangerFullAccess,
+    }
+}
+
 fn default_permission_mode() -> PermissionMode {
     env::var("RUSTY_CLAUDE_PERMISSION_MODE")
         .ok()
         .as_deref()
         .and_then(normalize_permission_mode)
-        .map_or(PermissionMode::DangerFullAccess, permission_mode_from_label)
+        .map(permission_mode_from_label)
+        .or_else(config_permission_mode_for_current_dir)
+        .unwrap_or(PermissionMode::DangerFullAccess)
+}
+
+fn config_permission_mode_for_current_dir() -> Option<PermissionMode> {
+    let cwd = env::current_dir().ok()?;
+    let loader = ConfigLoader::default_for(&cwd);
+    loader
+        .load()
+        .ok()?
+        .permission_mode()
+        .map(permission_mode_from_resolved)
 }
 
 fn filter_tool_specs(
@@ -4946,6 +4974,74 @@ mod tests {
                 permission_mode: PermissionMode::DangerFullAccess,
             }
         );
+    }
+
+    #[test]
+    fn default_permission_mode_uses_project_config_when_env_is_unset() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let config_home = root.join("config-home");
+        std::fs::create_dir_all(cwd.join(".claw")).expect("project config dir should exist");
+        std::fs::create_dir_all(&config_home).expect("config home should exist");
+        std::fs::write(
+            cwd.join(".claw").join("settings.json"),
+            r#"{"permissionMode":"acceptEdits"}"#,
+        )
+        .expect("project config should write");
+
+        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_permission_mode = std::env::var("RUSTY_CLAUDE_PERMISSION_MODE").ok();
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+
+        let resolved = with_current_dir(&cwd, super::default_permission_mode);
+
+        match original_config_home {
+            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
+            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+        }
+        match original_permission_mode {
+            Some(value) => std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", value),
+            None => std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE"),
+        }
+        std::fs::remove_dir_all(root).expect("temp config root should clean up");
+
+        assert_eq!(resolved, PermissionMode::WorkspaceWrite);
+    }
+
+    #[test]
+    fn env_permission_mode_overrides_project_config_default() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let config_home = root.join("config-home");
+        std::fs::create_dir_all(cwd.join(".claw")).expect("project config dir should exist");
+        std::fs::create_dir_all(&config_home).expect("config home should exist");
+        std::fs::write(
+            cwd.join(".claw").join("settings.json"),
+            r#"{"permissionMode":"acceptEdits"}"#,
+        )
+        .expect("project config should write");
+
+        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_permission_mode = std::env::var("RUSTY_CLAUDE_PERMISSION_MODE").ok();
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", "read-only");
+
+        let resolved = with_current_dir(&cwd, super::default_permission_mode);
+
+        match original_config_home {
+            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
+            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+        }
+        match original_permission_mode {
+            Some(value) => std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", value),
+            None => std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE"),
+        }
+        std::fs::remove_dir_all(root).expect("temp config root should clean up");
+
+        assert_eq!(resolved, PermissionMode::ReadOnly);
     }
 
     #[test]
