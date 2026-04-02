@@ -1311,6 +1311,7 @@ impl LiveCli {
                 })),
                 "tool_uses": collect_tool_uses(&summary),
                 "tool_results": collect_tool_results(&summary),
+                "prompt_cache_events": collect_prompt_cache_events(&summary),
                 "usage": {
                     "input_tokens": summary.usage.input_tokens,
                     "output_tokens": summary.usage.output_tokens,
@@ -3276,7 +3277,8 @@ impl AnthropicRuntimeClient {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
             client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(api::read_base_url()),
+                .with_base_url(api::read_base_url())
+                .with_prompt_cache(PromptCache::new(session_id)),
             model,
             enable_tools,
             emit_output,
@@ -3413,6 +3415,8 @@ impl ApiClient for AnthropicRuntimeClient {
                 }
             }
 
+            push_prompt_cache_record(&self.client, &mut events);
+
             if !saw_stop
                 && events.iter().any(|event| {
                     matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
@@ -3437,7 +3441,9 @@ impl ApiClient for AnthropicRuntimeClient {
                 })
                 .await
                 .map_err(|error| RuntimeError::new(error.to_string()))?;
-            response_to_events(response, out)
+            let mut events = response_to_events(response, out)?;
+            push_prompt_cache_record(&self.client, &mut events);
+            Ok(events)
         })
     }
 }
@@ -3496,6 +3502,39 @@ fn collect_tool_results(summary: &runtime::TurnSummary) -> Vec<serde_json::Value
             _ => None,
         })
         .collect()
+}
+
+fn collect_prompt_cache_events(summary: &runtime::TurnSummary) -> Vec<serde_json::Value> {
+    summary
+        .prompt_cache_events
+        .iter()
+        .map(|event| {
+            json!({
+                "unexpected": event.unexpected,
+                "reason": event.reason,
+                "previous_cache_read_input_tokens": event.previous_cache_read_input_tokens,
+                "current_cache_read_input_tokens": event.current_cache_read_input_tokens,
+                "token_drop": event.token_drop,
+            })
+        })
+        .collect()
+}
+
+fn print_prompt_cache_events(summary: &runtime::TurnSummary) {
+    for event in &summary.prompt_cache_events {
+        let label = if event.unexpected {
+            "Prompt cache break"
+        } else {
+            "Prompt cache invalidation"
+        };
+        println!(
+            "{label}: {} (cache read {} -> {}, drop {})",
+            event.reason,
+            event.previous_cache_read_input_tokens,
+            event.current_cache_read_input_tokens,
+            event.token_drop,
+        );
+    }
 }
 
 fn slash_command_completion_candidates() -> Vec<String> {
@@ -3653,6 +3692,8 @@ fn first_visible_line(text: &str) -> &str {
 }
 
 fn format_bash_result(icon: &str, parsed: &serde_json::Value) -> String {
+    use std::fmt::Write as _;
+
     let mut lines = vec![format!("{icon} \x1b[38;5;245mbash\x1b[0m")];
     if let Some(task_id) = parsed
         .get("backgroundTaskId")
@@ -3994,6 +4035,26 @@ fn response_to_events(
     events.push(AssistantEvent::Usage(response.usage.token_usage()));
     events.push(AssistantEvent::MessageStop);
     Ok(events)
+}
+
+fn push_prompt_cache_record(client: &AnthropicClient, events: &mut Vec<AssistantEvent>) {
+    if let Some(event) = client
+        .take_last_prompt_cache_record()
+        .and_then(prompt_cache_record_to_runtime_event)
+    {
+        events.push(AssistantEvent::PromptCache(event));
+    }
+}
+
+fn prompt_cache_record_to_runtime_event(record: PromptCacheRecord) -> Option<PromptCacheEvent> {
+    let cache_break = record.cache_break?;
+    Some(PromptCacheEvent {
+        unexpected: cache_break.unexpected,
+        reason: cache_break.reason,
+        previous_cache_read_input_tokens: cache_break.previous_cache_read_input_tokens,
+        current_cache_read_input_tokens: cache_break.current_cache_read_input_tokens,
+        token_drop: cache_break.token_drop,
+    })
 }
 
 struct CliToolExecutor {
