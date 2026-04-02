@@ -44,6 +44,11 @@ pub enum SlashCommand {
     Help,
     Status,
     Compact,
+    Model { model: Option<String> },
+    Permissions { mode: Option<String> },
+    Config { section: Option<String> },
+    Memory,
+    Clear { confirm: bool },
     Unknown(String),
 }
 
@@ -55,15 +60,25 @@ impl SlashCommand {
             return None;
         }
 
-        let command = trimmed
-            .trim_start_matches('/')
-            .split_whitespace()
-            .next()
-            .unwrap_or_default();
+        let mut parts = trimmed.trim_start_matches('/').split_whitespace();
+        let command = parts.next().unwrap_or_default();
         Some(match command {
             "help" => Self::Help,
             "status" => Self::Status,
             "compact" => Self::Compact,
+            "model" => Self::Model {
+                model: parts.next().map(ToOwned::to_owned),
+            },
+            "permissions" => Self::Permissions {
+                mode: parts.next().map(ToOwned::to_owned),
+            },
+            "config" => Self::Config {
+                section: parts.next().map(ToOwned::to_owned),
+            },
+            "memory" => Self::Memory,
+            "clear" => Self::Clear {
+                confirm: parts.next() == Some("--confirm"),
+            },
             other => Self::Unknown(other.to_string()),
         })
     }
@@ -86,6 +101,26 @@ const SLASH_COMMAND_HANDLERS: &[SlashCommandHandler] = &[
     SlashCommandHandler {
         command: SlashCommand::Compact,
         summary: "Compact local session history",
+    },
+    SlashCommandHandler {
+        command: SlashCommand::Model { model: None },
+        summary: "Show or switch the active model",
+    },
+    SlashCommandHandler {
+        command: SlashCommand::Permissions { mode: None },
+        summary: "Show or switch the active permission mode",
+    },
+    SlashCommandHandler {
+        command: SlashCommand::Config { section: None },
+        summary: "Inspect current config path or section",
+    },
+    SlashCommandHandler {
+        command: SlashCommand::Memory,
+        summary: "Inspect loaded memory/instruction files",
+    },
+    SlashCommandHandler {
+        command: SlashCommand::Clear { confirm: false },
+        summary: "Start a fresh local session",
     },
 ];
 
@@ -158,6 +193,11 @@ impl CliApp {
             SlashCommand::Help => Self::handle_help(out),
             SlashCommand::Status => self.handle_status(out),
             SlashCommand::Compact => self.handle_compact(out),
+            SlashCommand::Model { model } => self.handle_model(model.as_deref(), out),
+            SlashCommand::Permissions { mode } => self.handle_permissions(mode.as_deref(), out),
+            SlashCommand::Config { section } => self.handle_config(section.as_deref(), out),
+            SlashCommand::Memory => self.handle_memory(out),
+            SlashCommand::Clear { confirm } => self.handle_clear(confirm, out),
             SlashCommand::Unknown(name) => {
                 writeln!(out, "Unknown slash command: /{name}")?;
                 Ok(CommandResult::Continue)
@@ -172,6 +212,11 @@ impl CliApp {
                 SlashCommand::Help => "/help",
                 SlashCommand::Status => "/status",
                 SlashCommand::Compact => "/compact",
+                SlashCommand::Model { .. } => "/model [model]",
+                SlashCommand::Permissions { .. } => "/permissions [mode]",
+                SlashCommand::Config { .. } => "/config [section]",
+                SlashCommand::Memory => "/memory",
+                SlashCommand::Clear { .. } => "/clear [--confirm]",
                 SlashCommand::Unknown(_) => continue,
             };
             writeln!(out, "  {name:<9} {}", handler.summary)?;
@@ -206,6 +251,102 @@ impl CliApp {
             "Compacted session history into a local summary ({} messages total compacted).",
             self.state.compacted_messages
         )?;
+        Ok(CommandResult::Continue)
+    }
+
+    fn handle_model(
+        &mut self,
+        model: Option<&str>,
+        out: &mut impl Write,
+    ) -> io::Result<CommandResult> {
+        match model {
+            Some(model) => {
+                self.config.model = model.to_string();
+                self.state.last_model = model.to_string();
+                writeln!(out, "Active model set to {model}")?;
+            }
+            None => {
+                writeln!(out, "Active model: {}", self.config.model)?;
+            }
+        }
+        Ok(CommandResult::Continue)
+    }
+
+    fn handle_permissions(
+        &mut self,
+        mode: Option<&str>,
+        out: &mut impl Write,
+    ) -> io::Result<CommandResult> {
+        match mode {
+            None => writeln!(out, "Permission mode: {:?}", self.config.permission_mode)?,
+            Some("read-only") => {
+                self.config.permission_mode = PermissionMode::ReadOnly;
+                writeln!(out, "Permission mode set to read-only")?;
+            }
+            Some("workspace-write") => {
+                self.config.permission_mode = PermissionMode::WorkspaceWrite;
+                writeln!(out, "Permission mode set to workspace-write")?;
+            }
+            Some("danger-full-access") => {
+                self.config.permission_mode = PermissionMode::DangerFullAccess;
+                writeln!(out, "Permission mode set to danger-full-access")?;
+            }
+            Some(other) => {
+                writeln!(out, "Unknown permission mode: {other}")?;
+            }
+        }
+        Ok(CommandResult::Continue)
+    }
+
+    fn handle_config(
+        &mut self,
+        section: Option<&str>,
+        out: &mut impl Write,
+    ) -> io::Result<CommandResult> {
+        match section {
+            None => writeln!(
+                out,
+                "Config path: {}",
+                self.config
+                    .config
+                    .as_ref()
+                    .map_or_else(|| String::from("<none>"), |path| path.display().to_string())
+            )?,
+            Some(section) => writeln!(
+                out,
+                "Config section `{section}` is not fully implemented yet; current config path is {}",
+                self.config
+                    .config
+                    .as_ref()
+                    .map_or_else(|| String::from("<none>"), |path| path.display().to_string())
+            )?,
+        }
+        Ok(CommandResult::Continue)
+    }
+
+    fn handle_memory(&mut self, out: &mut impl Write) -> io::Result<CommandResult> {
+        writeln!(
+            out,
+            "Loaded memory/config file: {}",
+            self.config
+                .config
+                .as_ref()
+                .map_or_else(|| String::from("<none>"), |path| path.display().to_string())
+        )?;
+        Ok(CommandResult::Continue)
+    }
+
+    fn handle_clear(&mut self, confirm: bool, out: &mut impl Write) -> io::Result<CommandResult> {
+        if !confirm {
+            writeln!(out, "Refusing to clear without confirmation. Re-run as /clear --confirm")?;
+            return Ok(CommandResult::Continue);
+        }
+
+        self.state.turns = 0;
+        self.state.compacted_messages = 0;
+        self.state.last_usage = UsageSummary::default();
+        self.conversation_history.clear();
+        writeln!(out, "Started a fresh local session.")?;
         Ok(CommandResult::Continue)
     }
 
