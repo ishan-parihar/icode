@@ -785,6 +785,7 @@ mod tests {
     use crate::prompt::{ProjectContext, SystemPromptBuilder};
     use crate::session::{ContentBlock, MessageRole, Session};
     use crate::usage::TokenUsage;
+    use crate::ToolError;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1199,6 +1200,85 @@ mod tests {
         assert!(
             output.contains("post hook ran"),
             "tool output missing post hook feedback: {output:?}"
+        );
+    }
+
+    #[test]
+    fn appends_post_tool_use_failure_hook_feedback_to_tool_result() {
+        struct TwoCallApiClient {
+            calls: usize,
+        }
+
+        impl ApiClient for TwoCallApiClient {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "tool-1".to_string(),
+                            name: "fail".to_string(),
+                            input: r#"{"path":"README.md"}"#.to_string(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    2 => {
+                        assert!(request
+                            .messages
+                            .iter()
+                            .any(|message| message.role == MessageRole::Tool));
+                        Ok(vec![
+                            AssistantEvent::TextDelta("done".to_string()),
+                            AssistantEvent::MessageStop,
+                        ])
+                    }
+                    _ => Err(RuntimeError::new("unexpected extra API call")),
+                }
+            }
+        }
+
+        // given
+        let mut runtime = ConversationRuntime::new_with_features(
+            Session::new(),
+            TwoCallApiClient { calls: 0 },
+            StaticToolExecutor::new()
+                .register("fail", |_input| Err(ToolError::new("tool exploded"))),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+            &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
+                Vec::new(),
+                vec![shell_snippet("printf 'post hook should not run'")],
+                vec![shell_snippet("printf 'failure hook ran'")],
+            )),
+        );
+
+        // when
+        let summary = runtime
+            .run_turn("use fail", None)
+            .expect("tool loop succeeds");
+
+        // then
+        assert_eq!(summary.tool_results.len(), 1);
+        let ContentBlock::ToolResult {
+            is_error, output, ..
+        } = &summary.tool_results[0].blocks[0]
+        else {
+            panic!("expected tool result block");
+        };
+        assert!(
+            *is_error,
+            "failure hook path should preserve error result: {output:?}"
+        );
+        assert!(
+            output.contains("tool exploded"),
+            "tool output missing failure reason: {output:?}"
+        );
+        assert!(
+            output.contains("failure hook ran"),
+            "tool output missing failure hook feedback: {output:?}"
+        );
+        assert!(
+            !output.contains("post hook should not run"),
+            "normal post hook should not run on tool failure: {output:?}"
         );
     }
 

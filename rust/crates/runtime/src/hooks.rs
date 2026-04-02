@@ -806,17 +806,48 @@ mod tests {
 
     #[test]
     fn runs_post_tool_use_failure_hooks() {
+        // given
         let runner = HookRunner::new(RuntimeHookConfig::new(
             Vec::new(),
             Vec::new(),
             vec![shell_snippet("printf 'failure hook ran'")],
         ));
 
+        // when
         let result =
             runner.run_post_tool_use_failure("bash", r#"{"command":"false"}"#, "command failed");
 
+        // then
         assert!(!result.is_denied());
         assert_eq!(result.messages(), &["failure hook ran".to_string()]);
+    }
+
+    #[test]
+    fn stops_running_failure_hooks_after_failure() {
+        // given
+        let runner = HookRunner::new(RuntimeHookConfig::new(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                shell_snippet("printf 'broken failure hook'; exit 1"),
+                shell_snippet("printf 'later failure hook'"),
+            ],
+        ));
+
+        // when
+        let result =
+            runner.run_post_tool_use_failure("bash", r#"{"command":"false"}"#, "command failed");
+
+        // then
+        assert!(result.is_failed());
+        assert!(result
+            .messages()
+            .iter()
+            .any(|message| message.contains("broken failure hook")));
+        assert!(!result
+            .messages()
+            .iter()
+            .any(|message| message == "later failure hook"));
     }
 
     #[test]
