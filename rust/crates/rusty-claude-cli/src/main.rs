@@ -637,7 +637,7 @@ fn parse_system_prompt_args(args: &[String]) -> Result<CliAction, String> {
 fn parse_resume_args(args: &[String]) -> Result<CliAction, String> {
     let (session_path, command_tokens): (PathBuf, &[String]) = match args.first() {
         None => (PathBuf::from(LATEST_SESSION_REFERENCE), &[]),
-        Some(first) if first.trim_start().starts_with('/') => {
+        Some(first) if looks_like_slash_command_token(first) => {
             (PathBuf::from(LATEST_SESSION_REFERENCE), args)
         }
         Some(first) => (PathBuf::from(first), &args[1..]),
