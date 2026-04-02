@@ -510,6 +510,29 @@ mod tests {
             SlashCommand::parse("/compact now"),
             Some(SlashCommand::Compact)
         );
+        assert_eq!(
+            SlashCommand::parse("/model claude-sonnet"),
+            Some(SlashCommand::Model {
+                model: Some("claude-sonnet".into()),
+            })
+        );
+        assert_eq!(
+            SlashCommand::parse("/permissions workspace-write"),
+            Some(SlashCommand::Permissions {
+                mode: Some("workspace-write".into()),
+            })
+        );
+        assert_eq!(
+            SlashCommand::parse("/config hooks"),
+            Some(SlashCommand::Config {
+                section: Some("hooks".into()),
+            })
+        );
+        assert_eq!(SlashCommand::parse("/memory"), Some(SlashCommand::Memory));
+        assert_eq!(
+            SlashCommand::parse("/clear --confirm"),
+            Some(SlashCommand::Clear { confirm: true })
+        );
     }
 
     #[test]
@@ -521,6 +544,11 @@ mod tests {
         assert!(output.contains("/help"));
         assert!(output.contains("/status"));
         assert!(output.contains("/compact"));
+        assert!(output.contains("/model [model]"));
+        assert!(output.contains("/permissions [mode]"));
+        assert!(output.contains("/config [section]"));
+        assert!(output.contains("/memory"));
+        assert!(output.contains("/clear [--confirm]"));
     }
 
     #[test]
