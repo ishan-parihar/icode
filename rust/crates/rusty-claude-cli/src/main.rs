@@ -1,4 +1,11 @@
-#![allow(dead_code, unused_imports, unused_variables, clippy::unneeded_struct_pattern, clippy::unnecessary_wraps, clippy::unused_self)]
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    clippy::unneeded_struct_pattern,
+    clippy::unnecessary_wraps,
+    clippy::unused_self
+)]
 mod init;
 mod input;
 mod render;
@@ -5179,6 +5186,17 @@ mod tests {
                 .expect("/skills help should parse"),
             CliAction::Skills {
                 args: Some("help".to_string())
+            }
+        );
+        assert_eq!(
+            parse_args(&[
+                "/skills".to_string(),
+                "install".to_string(),
+                "./fixtures/help-skill".to_string(),
+            ])
+            .expect("/skills install should parse"),
+            CliAction::Skills {
+                args: Some("install ./fixtures/help-skill".to_string())
             }
         );
         let error = parse_args(&["/status".to_string()])
