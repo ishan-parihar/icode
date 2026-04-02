@@ -1,0 +1,38 @@
+name: rust-ci
+
+on:
+  push:
+    branches:
+      - main
+      - 'gaebal/**'
+      - 'omx-issue-*'
+  pull_request:
+
+jobs:
+  rust-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy -p rusty-claude-cli --bin claw --no-deps -- -D warnings
+
+      - name: cargo test
+        run: cargo test -p rusty-claude-cli
