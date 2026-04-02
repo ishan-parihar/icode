@@ -423,11 +423,11 @@ fn join_optional_args(args: &[String]) -> Option<String> {
 fn parse_direct_slash_cli_action(rest: &[String]) -> Result<CliAction, String> {
     let raw = rest.join(" ");
     match SlashCommand::parse(&raw) {
-        Some(SlashCommand::Help) => Ok(CliAction::Help),
-        Some(SlashCommand::Agents { args }) => Ok(CliAction::Agents { args }),
-        Some(SlashCommand::Skills { args }) => Ok(CliAction::Skills { args }),
-        Some(SlashCommand::Unknown(name)) => Err(format_unknown_direct_slash_command(&name)),
-        Some(command) => Err({
+        Ok(Some(SlashCommand::Help)) => Ok(CliAction::Help),
+        Ok(Some(SlashCommand::Agents { args })) => Ok(CliAction::Agents { args }),
+        Ok(Some(SlashCommand::Skills { args })) => Ok(CliAction::Skills { args }),
+        Ok(Some(SlashCommand::Unknown(name))) => Err(format_unknown_direct_slash_command(&name)),
+        Ok(Some(command)) => Err({
             let _ = command;
             format!(
                 "slash command {command_name} is interactive-only. Start `claw` and run it there, or use `claw --resume SESSION.jsonl {command_name}` / `claw --resume {latest} {command_name}` when the command is marked [resume] in /help.",
@@ -435,7 +435,8 @@ fn parse_direct_slash_cli_action(rest: &[String]) -> Result<CliAction, String> {
                 latest = LATEST_SESSION_REFERENCE,
             )
         }),
-        None => Err(format!("unknown subcommand: {}", rest[0])),
+        Ok(None) => Err(format!("unknown subcommand: {}", rest[0])),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -680,7 +681,7 @@ fn parse_resume_args(args: &[String]) -> Result<CliAction, String> {
 fn resume_command_can_absorb_token(current_command: &str, token: &str) -> bool {
     matches!(
         SlashCommand::parse(current_command),
-        Some(SlashCommand::Export { path: None })
+        Ok(Some(SlashCommand::Export { path: None }))
     ) && !looks_like_slash_command_token(token)
 }
 
@@ -896,9 +897,16 @@ fn resume_session(session_path: &Path, commands: &[String]) {
 
     let mut session = session;
     for raw_command in commands {
-        let Some(command) = SlashCommand::parse(raw_command) else {
-            eprintln!("unsupported resumed command: {raw_command}");
-            std::process::exit(2);
+        let command = match SlashCommand::parse(raw_command) {
+            Ok(Some(command)) => command,
+            Ok(None) => {
+                eprintln!("unsupported resumed command: {raw_command}");
+                std::process::exit(2);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
         };
         match run_resume_command(&resolved_path, &session, &command) {
             Ok(ResumeCommandOutcome {
@@ -1417,11 +1425,18 @@ fn run_repl(
                     cli.persist_session()?;
                     break;
                 }
-                if let Some(command) = SlashCommand::parse(&trimmed) {
-                    if cli.handle_repl_command(command)? {
-                        cli.persist_session()?;
+                match SlashCommand::parse(&trimmed) {
+                    Ok(Some(command)) => {
+                        if cli.handle_repl_command(command)? {
+                            cli.persist_session()?;
+                        }
+                        continue;
                     }
-                    continue;
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("{error}");
+                        continue;
+                    }
                 }
                 editor.push_history(input);
                 cli.run_turn(&trimmed)?;
@@ -5887,11 +5902,11 @@ UU conflicted.rs",
     fn clear_command_requires_explicit_confirmation_flag() {
         assert_eq!(
             SlashCommand::parse("/clear"),
-            Some(SlashCommand::Clear { confirm: false })
+            Ok(Some(SlashCommand::Clear { confirm: false }))
         );
         assert_eq!(
             SlashCommand::parse("/clear --confirm"),
-            Some(SlashCommand::Clear { confirm: true })
+            Ok(Some(SlashCommand::Clear { confirm: true }))
         );
     }
 
@@ -5899,32 +5914,35 @@ UU conflicted.rs",
     fn parses_resume_and_config_slash_commands() {
         assert_eq!(
             SlashCommand::parse("/resume saved-session.jsonl"),
-            Some(SlashCommand::Resume {
+            Ok(Some(SlashCommand::Resume {
                 session_path: Some("saved-session.jsonl".to_string())
-            })
+            }))
         );
         assert_eq!(
             SlashCommand::parse("/clear --confirm"),
-            Some(SlashCommand::Clear { confirm: true })
+            Ok(Some(SlashCommand::Clear { confirm: true }))
         );
         assert_eq!(
             SlashCommand::parse("/config"),
-            Some(SlashCommand::Config { section: None })
+            Ok(Some(SlashCommand::Config { section: None }))
         );
         assert_eq!(
             SlashCommand::parse("/config env"),
-            Some(SlashCommand::Config {
+            Ok(Some(SlashCommand::Config {
                 section: Some("env".to_string())
-            })
+            }))
         );
-        assert_eq!(SlashCommand::parse("/memory"), Some(SlashCommand::Memory));
-        assert_eq!(SlashCommand::parse("/init"), Some(SlashCommand::Init));
+        assert_eq!(
+            SlashCommand::parse("/memory"),
+            Ok(Some(SlashCommand::Memory))
+        );
+        assert_eq!(SlashCommand::parse("/init"), Ok(Some(SlashCommand::Init)));
         assert_eq!(
             SlashCommand::parse("/session fork incident-review"),
-            Some(SlashCommand::Session {
+            Ok(Some(SlashCommand::Session {
                 action: Some("fork".to_string()),
                 target: Some("incident-review".to_string())
-            })
+            }))
         );
     }
 
