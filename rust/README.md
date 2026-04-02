@@ -96,6 +96,8 @@ Commands:
 
 ## Slash Commands (REPL)
 
+Tab completion now expands not just slash command names, but also common workflow arguments like model aliases, permission modes, and recent session IDs.
+
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help |
