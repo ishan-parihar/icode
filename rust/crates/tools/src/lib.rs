@@ -91,7 +91,10 @@ impl GlobalToolRegistry {
         Ok(Self { plugin_tools })
     }
 
-    pub fn normalize_allowed_tools(&self, values: &[String]) -> Result<Option<BTreeSet<String>>, String> {
+    pub fn normalize_allowed_tools(
+        &self,
+        values: &[String],
+    ) -> Result<Option<BTreeSet<String>>, String> {
         if values.is_empty() {
             return Ok(None);
         }
@@ -100,7 +103,11 @@ impl GlobalToolRegistry {
         let canonical_names = builtin_specs
             .iter()
             .map(|spec| spec.name.to_string())
-            .chain(self.plugin_tools.iter().map(|tool| tool.definition().name.clone()))
+            .chain(
+                self.plugin_tools
+                    .iter()
+                    .map(|tool| tool.definition().name.clone()),
+            )
             .collect::<Vec<_>>();
         let mut name_map = canonical_names
             .iter()
@@ -151,7 +158,8 @@ impl GlobalToolRegistry {
             .plugin_tools
             .iter()
             .filter(|tool| {
-                allowed_tools.is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
+                allowed_tools
+                    .is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
             })
             .map(|tool| ToolDefinition {
                 name: tool.definition().name.clone(),
@@ -174,7 +182,8 @@ impl GlobalToolRegistry {
             .plugin_tools
             .iter()
             .filter(|tool| {
-                allowed_tools.is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
+                allowed_tools
+                    .is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
             })
             .map(|tool| {
                 (
@@ -1809,8 +1818,9 @@ struct ProviderRuntimeClient {
 }
 
 impl ProviderRuntimeClient {
+    #[allow(clippy::needless_pass_by_value)]
     fn new(model: String, allowed_tools: BTreeSet<String>) -> Result<Self, String> {
-        let model = resolve_model_alias(&model).to_string();
+        let model = resolve_model_alias(&model).clone();
         let client = ProviderClient::from_model(&model).map_err(|error| error.to_string())?;
         Ok(Self {
             runtime: tokio::runtime::Runtime::new().map_err(|error| error.to_string())?,
@@ -1822,6 +1832,7 @@ impl ProviderRuntimeClient {
 }
 
 impl ApiClient for ProviderRuntimeClient {
+    #[allow(clippy::too_many_lines)]
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
         let tools = tool_specs_for_allowed_tools(Some(&self.allowed_tools))
             .into_iter()
@@ -2057,7 +2068,9 @@ fn push_prompt_cache_record(client: &ProviderClient, events: &mut Vec<AssistantE
     }
 }
 
-fn prompt_cache_record_to_runtime_event(record: api::PromptCacheRecord) -> Option<PromptCacheEvent> {
+fn prompt_cache_record_to_runtime_event(
+    record: api::PromptCacheRecord,
+) -> Option<PromptCacheEvent> {
     let cache_break = record.cache_break?;
     Some(PromptCacheEvent {
         unexpected: cache_break.unexpected,

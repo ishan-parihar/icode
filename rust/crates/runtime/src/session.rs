@@ -168,16 +168,23 @@ impl Session {
             {
                 Self::from_json(&value)?
             }
-            Err(_) => Self::from_jsonl(&contents)?,
-            Ok(_) => Self::from_jsonl(&contents)?,
+            Err(_) | Ok(_) => Self::from_jsonl(&contents)?,
         };
         Ok(session.with_persistence_path(path.to_path_buf()))
     }
 
     pub fn push_message(&mut self, message: ConversationMessage) -> Result<(), SessionError> {
         self.touch();
-        self.messages.push(message.clone());
-        self.append_persisted_message(&message)
+        self.messages.push(message);
+        let persist_result = {
+            let message_ref = self.messages.last().expect("message was just pushed");
+            self.append_persisted_message(message_ref)
+        };
+        if let Err(error) = persist_result {
+            self.messages.pop();
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn push_user_text(&mut self, text: impl Into<String>) -> Result<(), SessionError> {
@@ -270,8 +277,7 @@ impl Session {
         let session_id = object
             .get("session_id")
             .and_then(JsonValue::as_str)
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(generate_session_id);
+            .map_or_else(generate_session_id, ToOwned::to_owned);
         let created_at_ms = object
             .get("created_at_ms")
             .map(|value| required_u64_from_value(value, "created_at_ms"))
@@ -813,7 +819,7 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
 fn current_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
 }
 
@@ -881,7 +887,12 @@ fn cleanup_rotated_logs(path: &Path) -> Result<(), SessionError> {
             entry_path
                 .file_name()
                 .and_then(|value| value.to_str())
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".jsonl"))
+                .is_some_and(|name| {
+                    name.starts_with(&prefix)
+                        && Path::new(name)
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                })
         })
         .collect::<Vec<_>>();
 
@@ -907,7 +918,7 @@ mod tests {
     use crate::json::JsonValue;
     use crate::usage::TokenUsage;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1057,8 +1068,9 @@ mod tests {
     #[test]
     fn rotates_and_cleans_up_large_session_logs() {
         let path = temp_session_path("rotation");
-        fs::write(&path, "x".repeat((super::ROTATE_AFTER_BYTES + 10) as usize))
-            .expect("oversized file should write");
+        let oversized_length =
+            usize::try_from(super::ROTATE_AFTER_BYTES + 10).expect("rotate threshold should fit");
+        fs::write(&path, "x".repeat(oversized_length)).expect("oversized file should write");
         rotate_session_file_if_needed(&path).expect("rotation should succeed");
         assert!(
             !path.exists(),
@@ -1086,7 +1098,7 @@ mod tests {
         std::env::temp_dir().join(format!("runtime-session-{label}-{nanos}.json"))
     }
 
-    fn rotation_files(path: &PathBuf) -> Vec<PathBuf> {
+    fn rotation_files(path: &Path) -> Vec<PathBuf> {
         let stem = path
             .file_stem()
             .and_then(|value| value.to_str())
@@ -1101,7 +1113,10 @@ mod tests {
                     .file_name()
                     .and_then(|value| value.to_str())
                     .is_some_and(|name| {
-                        name.starts_with(&format!("{stem}.rot-")) && name.ends_with(".jsonl")
+                        name.starts_with(&format!("{stem}.rot-"))
+                            && Path::new(name)
+                                .extension()
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
                     })
             })
             .collect()

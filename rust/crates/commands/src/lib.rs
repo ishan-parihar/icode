@@ -394,40 +394,153 @@ pub fn resume_supported_slash_commands() -> Vec<&'static SlashCommandSpec> {
         .collect()
 }
 
+fn slash_command_category(name: &str) -> &'static str {
+    match name {
+        "help" | "status" | "sandbox" | "model" | "permissions" | "cost" | "resume" | "session"
+        | "version" => "Session & visibility",
+        "compact" | "clear" | "config" | "memory" | "init" | "diff" | "commit" | "pr" | "issue"
+        | "export" | "plugin" => "Workspace & git",
+        "agents" | "skills" | "teleport" | "debug-tool-call" => "Discovery & debugging",
+        "bughunter" | "ultraplan" => "Analysis & automation",
+        _ => "Other",
+    }
+}
+
+fn format_slash_command_help_line(spec: &SlashCommandSpec) -> String {
+    let name = match spec.argument_hint {
+        Some(argument_hint) => format!("/{} {}", spec.name, argument_hint),
+        None => format!("/{}", spec.name),
+    };
+    let alias_suffix = if spec.aliases.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (aliases: {})",
+            spec.aliases
+                .iter()
+                .map(|alias| format!("/{alias}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let resume = if spec.resume_supported {
+        " [resume]"
+    } else {
+        ""
+    };
+    format!("  {name:<20} {}{alias_suffix}{resume}", spec.summary)
+}
+
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    if left == right {
+        return 0;
+    }
+    if left.is_empty() {
+        return right.chars().count();
+    }
+    if right.is_empty() {
+        return left.chars().count();
+    }
+
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right_chars.len() + 1];
+
+    for (left_index, left_char) in left.chars().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right_chars.iter().enumerate() {
+            let substitution_cost = usize::from(left_char != *right_char);
+            current[right_index + 1] = (current[right_index] + 1)
+                .min(previous[right_index + 1] + 1)
+                .min(previous[right_index] + substitution_cost);
+        }
+        previous.clone_from(&current);
+    }
+
+    previous[right_chars.len()]
+}
+
+#[must_use]
+pub fn suggest_slash_commands(input: &str, limit: usize) -> Vec<String> {
+    let query = input.trim().trim_start_matches('/').to_ascii_lowercase();
+    if query.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let mut suggestions = slash_command_specs()
+        .iter()
+        .filter_map(|spec| {
+            let best = std::iter::once(spec.name)
+                .chain(spec.aliases.iter().copied())
+                .map(str::to_ascii_lowercase)
+                .map(|candidate| {
+                    let prefix_rank =
+                        if candidate.starts_with(&query) || query.starts_with(&candidate) {
+                            0
+                        } else if candidate.contains(&query) || query.contains(&candidate) {
+                            1
+                        } else {
+                            2
+                        };
+                    let distance = levenshtein_distance(&candidate, &query);
+                    (prefix_rank, distance)
+                })
+                .min();
+
+            best.and_then(|(prefix_rank, distance)| {
+                if prefix_rank <= 1 || distance <= 2 {
+                    Some((prefix_rank, distance, spec.name.len(), spec.name))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    suggestions.sort_unstable();
+    suggestions
+        .into_iter()
+        .map(|(_, _, _, name)| format!("/{name}"))
+        .take(limit)
+        .collect()
+}
+
 #[must_use]
 pub fn render_slash_command_help() -> String {
     let mut lines = vec![
         "Slash commands".to_string(),
+        "  Start here       /status, /diff, /agents, /skills, /commit".to_string(),
         "  [resume] means the command also works with --resume SESSION.jsonl".to_string(),
+        String::new(),
     ];
-    for spec in slash_command_specs() {
-        let name = match spec.argument_hint {
-            Some(argument_hint) => format!("/{} {}", spec.name, argument_hint),
-            None => format!("/{}", spec.name),
-        };
-        let alias_suffix = if spec.aliases.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " (aliases: {})",
-                spec.aliases
-                    .iter()
-                    .map(|alias| format!("/{alias}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        let resume = if spec.resume_supported {
-            " [resume]"
-        } else {
-            ""
-        };
-        lines.push(format!(
-            "  {name:<20} {}{alias_suffix}{resume}",
-            spec.summary
-        ));
+
+    let categories = [
+        "Session & visibility",
+        "Workspace & git",
+        "Discovery & debugging",
+        "Analysis & automation",
+    ];
+
+    for category in categories {
+        lines.push(category.to_string());
+        for spec in slash_command_specs()
+            .iter()
+            .filter(|spec| slash_command_category(spec.name) == category)
+        {
+            lines.push(format_slash_command_help_line(spec));
+        }
+        lines.push(String::new());
     }
-    lines.join("\n")
+
+    lines
+        .into_iter()
+        .rev()
+        .skip_while(String::is_empty)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1223,7 +1336,7 @@ mod tests {
         handle_plugins_slash_command, handle_slash_command, load_agents_from_roots,
         load_skills_from_roots, render_agents_report, render_plugins_report, render_skills_report,
         render_slash_command_help, resume_supported_slash_commands, slash_command_specs,
-        DefinitionSource, SkillOrigin, SkillRoot, SlashCommand,
+        suggest_slash_commands, DefinitionSource, SkillOrigin, SkillRoot, SlashCommand,
     };
     use plugins::{PluginKind, PluginManager, PluginManagerConfig, PluginMetadata, PluginSummary};
     use runtime::{CompactionConfig, ContentBlock, ConversationMessage, MessageRole, Session};
@@ -1466,7 +1579,12 @@ mod tests {
     #[test]
     fn renders_help_from_shared_specs() {
         let help = render_slash_command_help();
+        assert!(help.contains("Start here       /status, /diff, /agents, /skills, /commit"));
         assert!(help.contains("works with --resume SESSION.jsonl"));
+        assert!(help.contains("Session & visibility"));
+        assert!(help.contains("Workspace & git"));
+        assert!(help.contains("Discovery & debugging"));
+        assert!(help.contains("Analysis & automation"));
         assert!(help.contains("/help"));
         assert!(help.contains("/status"));
         assert!(help.contains("/sandbox"));
@@ -1499,6 +1617,13 @@ mod tests {
         assert!(help.contains("/skills"));
         assert_eq!(slash_command_specs().len(), 26);
         assert_eq!(resume_supported_slash_commands().len(), 14);
+    }
+
+    #[test]
+    fn suggests_closest_slash_commands_for_typos_and_aliases() {
+        assert_eq!(suggest_slash_commands("stats", 3), vec!["/status"]);
+        assert_eq!(suggest_slash_commands("/plugns", 3), vec!["/plugin"]);
+        assert_eq!(suggest_slash_commands("zzz", 3), Vec::<String>::new());
     }
 
     #[test]

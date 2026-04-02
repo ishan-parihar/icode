@@ -19,6 +19,7 @@ async fn stream_via_provider<P: Provider>(
     provider.stream_message(request).await
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ProviderClient {
     Anthropic(AnthropicClient),

@@ -22,7 +22,8 @@ use api::{
 
 use commands::{
     handle_agents_slash_command, handle_plugins_slash_command, handle_skills_slash_command,
-    render_slash_command_help, resume_supported_slash_commands, slash_command_specs, SlashCommand,
+    render_slash_command_help, resume_supported_slash_commands, slash_command_specs,
+    suggest_slash_commands, SlashCommand,
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
@@ -30,12 +31,11 @@ use plugins::{PluginManager, PluginManagerConfig};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
-    parse_oauth_callback_request_target, resolve_sandbox_status, save_oauth_credentials,
-    ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource,
-    ContentBlock, ConversationMessage, ConversationRuntime, MessageRole, PromptCacheEvent,
-    OAuthAuthorizationRequest, OAuthConfig,
-    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
-    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    parse_oauth_callback_request_target, resolve_sandbox_status, save_oauth_credentials, ApiClient,
+    ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
+    ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
+    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
+    RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde_json::json;
 use tools::GlobalToolRegistry;
@@ -323,13 +323,13 @@ fn parse_direct_slash_cli_action(rest: &[String]) -> Result<CliAction, String> {
         Some(SlashCommand::Help) => Ok(CliAction::Help),
         Some(SlashCommand::Agents { args }) => Ok(CliAction::Agents { args }),
         Some(SlashCommand::Skills { args }) => Ok(CliAction::Skills { args }),
-        Some(command) => Err(format!(
-            "unsupported direct slash command outside the REPL: {command_name}",
-            command_name = match command {
-                SlashCommand::Unknown(name) => format!("/{name}"),
-                _ => rest[0].clone(),
-            }
-        )),
+        Some(command) => Err(match command {
+            SlashCommand::Unknown(name) => format_unknown_slash_command_message(&name),
+            _ => format!(
+                "slash command {command_name} is interactive-only. Start `claw` and run it there, or use `claw --resume SESSION.jsonl {command_name}` when the command is marked [resume] in /help.",
+                command_name = rest[0]
+            ),
+        }),
         None => Err(format!("unknown subcommand: {}", rest[0])),
     }
 }
@@ -670,6 +670,7 @@ struct StatusContext {
     memory_file_count: usize,
     project_root: Option<PathBuf>,
     git_branch: Option<String>,
+    git_summary: GitWorkspaceSummary,
     sandbox_status: runtime::SandboxStatus,
 }
 
@@ -680,6 +681,59 @@ struct StatusUsage {
     latest: TokenUsage,
     cumulative: TokenUsage,
     estimated_tokens: usize,
+}
+
+#[allow(clippy::struct_field_names)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GitWorkspaceSummary {
+    changed_files: usize,
+    staged_files: usize,
+    unstaged_files: usize,
+    untracked_files: usize,
+    conflicted_files: usize,
+}
+
+impl GitWorkspaceSummary {
+    fn is_clean(self) -> bool {
+        self.changed_files == 0
+    }
+
+    fn headline(self) -> String {
+        if self.is_clean() {
+            "clean".to_string()
+        } else {
+            let mut details = Vec::new();
+            if self.staged_files > 0 {
+                details.push(format!("{} staged", self.staged_files));
+            }
+            if self.unstaged_files > 0 {
+                details.push(format!("{} unstaged", self.unstaged_files));
+            }
+            if self.untracked_files > 0 {
+                details.push(format!("{} untracked", self.untracked_files));
+            }
+            if self.conflicted_files > 0 {
+                details.push(format!("{} conflicted", self.conflicted_files));
+            }
+            format!(
+                "dirty · {} files · {}",
+                self.changed_files,
+                details.join(", ")
+            )
+        }
+    }
+}
+
+fn format_unknown_slash_command_message(name: &str) -> String {
+    let suggestions = suggest_slash_commands(name, 3);
+    if suggestions.is_empty() {
+        format!("unknown slash command: /{name}. Use /help to list available commands.")
+    } else {
+        format!(
+            "unknown slash command: /{name}. Did you mean {}? Use /help to list available commands.",
+            suggestions.join(", ")
+        )
+    }
 }
 
 fn format_model_report(model: &str, message_count: usize, turns: u32) -> String {
@@ -825,6 +879,44 @@ fn parse_git_status_branch(status: Option<&str>) -> Option<String> {
     } else {
         Some(branch.to_string())
     }
+}
+
+fn parse_git_workspace_summary(status: Option<&str>) -> GitWorkspaceSummary {
+    let mut summary = GitWorkspaceSummary::default();
+    let Some(status) = status else {
+        return summary;
+    };
+
+    for line in status.lines() {
+        if line.starts_with("## ") || line.trim().is_empty() {
+            continue;
+        }
+
+        summary.changed_files += 1;
+        let mut chars = line.chars();
+        let index_status = chars.next().unwrap_or(' ');
+        let worktree_status = chars.next().unwrap_or(' ');
+
+        if index_status == '?' && worktree_status == '?' {
+            summary.untracked_files += 1;
+            continue;
+        }
+
+        if index_status != ' ' {
+            summary.staged_files += 1;
+        }
+        if worktree_status != ' ' {
+            summary.unstaged_files += 1;
+        }
+        if (matches!(index_status, 'U' | 'A') && matches!(worktree_status, 'U' | 'A'))
+            || index_status == 'U'
+            || worktree_status == 'U'
+        {
+            summary.conflicted_files += 1;
+        }
+    }
+
+    summary
 }
 
 fn resolve_git_branch_for(cwd: &Path) -> Option<String> {
@@ -1188,6 +1280,15 @@ impl LiveCli {
             |_| "<unknown>".to_string(),
             |path| path.display().to_string(),
         );
+        let status = status_context(None).ok();
+        let git_branch = status
+            .as_ref()
+            .and_then(|context| context.git_branch.as_deref())
+            .unwrap_or("unknown");
+        let workspace = status.as_ref().map_or_else(
+            || "unknown".to_string(),
+            |context| context.git_summary.headline(),
+        );
         format!(
             "\x1b[38;5;196m\
  ██████╗██╗      █████╗ ██╗    ██╗\n\
@@ -1198,11 +1299,15 @@ impl LiveCli {
  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
   \x1b[2mModel\x1b[0m            {}\n\
   \x1b[2mPermissions\x1b[0m      {}\n\
+  \x1b[2mBranch\x1b[0m           {}\n\
+  \x1b[2mWorkspace\x1b[0m        {}\n\
   \x1b[2mDirectory\x1b[0m        {}\n\
   \x1b[2mSession\x1b[0m          {}\n\n\
-  Type \x1b[1m/help\x1b[0m for commands · \x1b[2mShift+Enter\x1b[0m for newline",
+  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
             self.permission_mode.as_str(),
+            git_branch,
+            workspace,
             cwd,
             self.session.id,
         )
@@ -1416,7 +1521,7 @@ impl LiveCli {
                 false
             }
             SlashCommand::Unknown(name) => {
-                eprintln!("unknown slash command: /{name}");
+                eprintln!("{}", format_unknown_slash_command_message(&name));
                 false
             }
         })
@@ -1885,11 +1990,18 @@ impl LiveCli {
     }
 
     fn run_commit(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let status = git_output(&["status", "--short"])?;
-        if status.trim().is_empty() {
-            println!("Commit\n  Result           skipped\n  Reason           no workspace changes");
+        let status = git_output(&["status", "--short", "--branch"])?;
+        let summary = parse_git_workspace_summary(Some(&status));
+        let branch = parse_git_status_branch(Some(&status));
+        if summary.is_clean() {
+            println!("{}", format_commit_skipped_report());
             return Ok(());
         }
+
+        println!(
+            "{}",
+            format_commit_preflight_report(branch.as_deref(), summary)
+        );
 
         git_status_ok(&["add", "-A"])?;
         let staged_stat = git_output(&["diff", "--cached", "--stat"])?;
@@ -1911,13 +2023,12 @@ impl LiveCli {
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(format!("git commit failed: {stderr}").into());
+            return Err(format_git_commit_failure(&stderr).into());
         }
 
         println!(
-            "Commit\n  Result           created\n  Message file     {}\n\n{}",
-            path.display(),
-            message.trim()
+            "{}",
+            format_commit_success_report(branch.as_deref(), summary, &path, &staged_stat, &message,)
         );
         Ok(())
     }
@@ -2058,33 +2169,35 @@ fn list_managed_sessions() -> Result<Vec<ManagedSessionSummary>, Box<dyn std::er
             .map(|duration| duration.as_secs())
             .unwrap_or_default();
         let (id, message_count, parent_session_id, branch_name) = Session::load_from_path(&path)
-            .map(|session| {
-                let parent_session_id = session
-                    .fork
-                    .as_ref()
-                    .map(|fork| fork.parent_session_id.clone());
-                let branch_name = session
-                    .fork
-                    .as_ref()
-                    .and_then(|fork| fork.branch_name.clone());
-                (
-                    session.session_id,
-                    session.messages.len(),
-                    parent_session_id,
-                    branch_name,
-                )
-            })
-            .unwrap_or_else(|_| {
-                (
-                    path.file_stem()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    0,
-                    None,
-                    None,
-                )
-            });
+            .map_or_else(
+                |_| {
+                    (
+                        path.file_stem()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        0,
+                        None,
+                        None,
+                    )
+                },
+                |session| {
+                    let parent_session_id = session
+                        .fork
+                        .as_ref()
+                        .map(|fork| fork.parent_session_id.clone());
+                    let branch_name = session
+                        .fork
+                        .as_ref()
+                        .and_then(|fork| fork.branch_name.clone());
+                    (
+                        session.session_id,
+                        session.messages.len(),
+                        parent_session_id,
+                        branch_name,
+                    )
+                },
+            );
         sessions.push(ManagedSessionSummary {
             id,
             path,
@@ -2165,6 +2278,7 @@ fn status_context(
     let project_context = ProjectContext::discover_with_git(&cwd, DEFAULT_DATE)?;
     let (project_root, git_branch) =
         parse_git_status_metadata(project_context.git_status.as_deref());
+    let git_summary = parse_git_workspace_summary(project_context.git_status.as_deref());
     let sandbox_status = resolve_sandbox_status(runtime_config.sandbox(), &cwd);
     Ok(StatusContext {
         cwd,
@@ -2174,6 +2288,7 @@ fn status_context(
         memory_file_count: project_context.instruction_files.len(),
         project_root,
         git_branch,
+        git_summary,
         sandbox_status,
     })
 }
@@ -2210,15 +2325,26 @@ fn format_status_report(
   Cwd              {}
   Project root     {}
   Git branch       {}
+  Git state        {}
+  Changed files    {}
+  Staged           {}
+  Unstaged         {}
+  Untracked        {}
   Session          {}
   Config files     loaded {}/{}
-  Memory files     {}",
+  Memory files     {}
+  Suggested flow   /status → /diff → /commit",
             context.cwd.display(),
             context
                 .project_root
                 .as_ref()
                 .map_or_else(|| "unknown".to_string(), |path| path.display().to_string()),
             context.git_branch.as_deref().unwrap_or("unknown"),
+            context.git_summary.headline(),
+            context.git_summary.changed_files,
+            context.git_summary.staged_files,
+            context.git_summary.unstaged_files,
+            context.git_summary.untracked_files,
             context.session_path.as_ref().map_or_else(
                 || "live-repl".to_string(),
                 |path| path.display().to_string()
@@ -2277,6 +2403,70 @@ fn format_sandbox_report(status: &runtime::SandboxStatus) -> String {
             .clone()
             .unwrap_or_else(|| "<none>".to_string()),
     )
+}
+
+fn format_commit_preflight_report(branch: Option<&str>, summary: GitWorkspaceSummary) -> String {
+    format!(
+        "Commit
+  Result           preparing
+  Branch           {}
+  Workspace        {}
+  Changed files    {}
+  Action           auto-stage workspace changes and draft Lore commit message",
+        branch.unwrap_or("unknown"),
+        summary.headline(),
+        summary.changed_files,
+    )
+}
+
+fn format_commit_skipped_report() -> String {
+    "Commit
+  Result           skipped
+  Reason           no workspace changes
+  Next             /status to inspect context · /diff to inspect repo changes"
+        .to_string()
+}
+
+fn format_commit_success_report(
+    branch: Option<&str>,
+    summary: GitWorkspaceSummary,
+    message_path: &Path,
+    staged_stat: &str,
+    message: &str,
+) -> String {
+    let staged_summary = staged_stat.trim();
+    format!(
+        "Commit
+  Result           created
+  Branch           {}
+  Workspace        {}
+  Changed files    {}
+  Message file     {}
+
+Staged diff
+{}
+
+Lore message
+{}",
+        branch.unwrap_or("unknown"),
+        summary.headline(),
+        summary.changed_files,
+        message_path.display(),
+        if staged_summary.is_empty() {
+            "  <summary unavailable>".to_string()
+        } else {
+            indent_block(staged_summary, 2)
+        },
+        message.trim()
+    )
+}
+
+fn format_git_commit_failure(stderr: &str) -> String {
+    if stderr.contains("Author identity unknown") || stderr.contains("Please tell me who you are") {
+        "git commit failed: author identity is not configured. Run `git config user.name \"Your Name\"` and `git config user.email \"you@example.com\"`, then retry /commit.".to_string()
+    } else {
+        format!("git commit failed: {stderr}")
+    }
 }
 
 fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -3146,7 +3336,8 @@ fn build_runtime(
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
-) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>> {
+) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
+{
     let (feature_config, tool_registry) = build_runtime_plugin_state()?;
     let mut runtime = ConversationRuntime::new_with_features(
         session,
@@ -3286,7 +3477,6 @@ impl AnthropicRuntimeClient {
             progress_reporter,
         })
     }
-
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -4023,7 +4213,9 @@ fn push_prompt_cache_record(client: &AnthropicClient, events: &mut Vec<Assistant
     }
 }
 
-fn prompt_cache_record_to_runtime_event(record: api::PromptCacheRecord) -> Option<PromptCacheEvent> {
+fn prompt_cache_record_to_runtime_event(
+    record: api::PromptCacheRecord,
+) -> Option<PromptCacheEvent> {
     let cache_break = record.cache_break?;
     Some(PromptCacheEvent {
         unexpected: cache_break.unexpected,
@@ -4245,18 +4437,19 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_tool_progress, filter_tool_specs, format_compact_report, format_cost_report,
-        format_internal_prompt_progress_line, format_model_report, format_model_switch_report,
-        format_permissions_report,
+        create_managed_session_handle, describe_tool_progress, filter_tool_specs,
+        format_commit_preflight_report, format_commit_skipped_report, format_commit_success_report,
+        format_compact_report, format_cost_report, format_internal_prompt_progress_line,
+        format_model_report, format_model_switch_report, format_permissions_report,
         format_permissions_switch_report, format_resume_report, format_status_report,
-        format_tool_call_start, format_tool_result, normalize_permission_mode, parse_args,
-        parse_git_status_branch, parse_git_status_metadata_for, permission_policy,
+        format_tool_call_start, format_tool_result, format_unknown_slash_command_message,
+        normalize_permission_mode, parse_args, parse_git_status_branch,
+        parse_git_status_metadata_for, parse_git_workspace_summary, permission_policy,
         print_help_to, push_output_block, render_config_report, render_diff_report,
-        render_memory_report, render_repl_help, resolve_model_alias, response_to_events,
-        resume_supported_slash_commands, run_resume_command, status_context, CliAction,
-        CliOutputFormat, InternalPromptProgressEvent,
+        render_memory_report, render_repl_help, resolve_model_alias, resolve_session_reference,
+        response_to_events, resume_supported_slash_commands, run_resume_command, status_context,
+        CliAction, CliOutputFormat, GitWorkspaceSummary, InternalPromptProgressEvent,
         InternalPromptProgressState, SlashCommand, StatusUsage, DEFAULT_MODEL,
-        create_managed_session_handle, resolve_session_reference,
     };
     use api::{MessageResponse, OutputContentBlock, Usage};
     use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
@@ -4532,7 +4725,16 @@ mod tests {
         );
         let error = parse_args(&["/status".to_string()])
             .expect_err("/status should remain REPL-only when invoked directly");
-        assert!(error.contains("unsupported direct slash command"));
+        assert!(error.contains("interactive-only"));
+        assert!(error.contains("claw --resume SESSION.jsonl /status"));
+    }
+
+    #[test]
+    fn formats_unknown_slash_command_with_suggestions() {
+        let report = format_unknown_slash_command_message("stats");
+        assert!(report.contains("unknown slash command: /stats"));
+        assert!(report.contains("Did you mean /status?"));
+        assert!(report.contains("Use /help"));
     }
 
     #[test]
@@ -4775,6 +4977,13 @@ mod tests {
                 memory_file_count: 4,
                 project_root: Some(PathBuf::from("/tmp")),
                 git_branch: Some("main".to_string()),
+                git_summary: GitWorkspaceSummary {
+                    changed_files: 3,
+                    staged_files: 1,
+                    unstaged_files: 1,
+                    untracked_files: 1,
+                    conflicted_files: 0,
+                },
                 sandbox_status: runtime::SandboxStatus::default(),
             },
         );
@@ -4787,9 +4996,54 @@ mod tests {
         assert!(status.contains("Cwd              /tmp/project"));
         assert!(status.contains("Project root     /tmp"));
         assert!(status.contains("Git branch       main"));
+        assert!(
+            status.contains("Git state        dirty · 3 files · 1 staged, 1 unstaged, 1 untracked")
+        );
+        assert!(status.contains("Changed files    3"));
+        assert!(status.contains("Staged           1"));
+        assert!(status.contains("Unstaged         1"));
+        assert!(status.contains("Untracked        1"));
         assert!(status.contains("Session          session.jsonl"));
         assert!(status.contains("Config files     loaded 2/3"));
         assert!(status.contains("Memory files     4"));
+        assert!(status.contains("Suggested flow   /status → /diff → /commit"));
+    }
+
+    #[test]
+    fn commit_reports_surface_workspace_context() {
+        let summary = GitWorkspaceSummary {
+            changed_files: 2,
+            staged_files: 1,
+            unstaged_files: 1,
+            untracked_files: 0,
+            conflicted_files: 0,
+        };
+
+        let preflight = format_commit_preflight_report(Some("feature/ux"), summary);
+        assert!(preflight.contains("Result           preparing"));
+        assert!(preflight.contains("Branch           feature/ux"));
+        assert!(preflight.contains("Workspace        dirty · 2 files · 1 staged, 1 unstaged"));
+
+        let success = format_commit_success_report(
+            Some("feature/ux"),
+            summary,
+            Path::new("/tmp/message.txt"),
+            " src/main.rs | 4 ++--",
+            "Improve slash command guidance",
+        );
+        assert!(success.contains("Result           created"));
+        assert!(success.contains("Message file     /tmp/message.txt"));
+        assert!(success.contains("Staged diff"));
+        assert!(success.contains("src/main.rs | 4 ++--"));
+        assert!(success.contains("Lore message"));
+    }
+
+    #[test]
+    fn commit_skipped_report_points_to_next_steps() {
+        let report = format_commit_skipped_report();
+        assert!(report.contains("Reason           no workspace changes"));
+        assert!(report.contains("/status to inspect context"));
+        assert!(report.contains("/diff to inspect repo changes"));
     }
 
     #[test]
@@ -4844,6 +5098,32 @@ mod tests {
  M src/main.rs"
             )),
             Some("detached HEAD".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_git_workspace_summary_counts() {
+        let summary = parse_git_workspace_summary(Some(
+            "## feature/ux
+M  src/main.rs
+ M README.md
+?? notes.md
+UU conflicted.rs",
+        ));
+
+        assert_eq!(
+            summary,
+            GitWorkspaceSummary {
+                changed_files: 4,
+                staged_files: 2,
+                unstaged_files: 2,
+                untracked_files: 1,
+                conflicted_files: 1,
+            }
+        );
+        assert_eq!(
+            summary.headline(),
+            "dirty · 4 files · 2 staged, 2 unstaged, 1 untracked, 1 conflicted"
         );
     }
 
@@ -5051,8 +5331,13 @@ mod tests {
 
         let resolved = resolve_session_reference("legacy").expect("legacy session should resolve");
         assert_eq!(
-            resolved.path.canonicalize().expect("resolved path should exist"),
-            legacy_path.canonicalize().expect("legacy path should exist")
+            resolved
+                .path
+                .canonicalize()
+                .expect("resolved path should exist"),
+            legacy_path
+                .canonicalize()
+                .expect("legacy path should exist")
         );
 
         std::env::set_current_dir(previous).expect("restore cwd");
