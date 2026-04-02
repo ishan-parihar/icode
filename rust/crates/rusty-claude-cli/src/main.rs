@@ -1,4 +1,11 @@
-#![allow(dead_code, unused_imports, unused_variables, clippy::unneeded_struct_pattern, clippy::unnecessary_wraps, clippy::unused_self)]
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    clippy::unneeded_struct_pattern,
+    clippy::unnecessary_wraps,
+    clippy::unused_self
+)]
 mod init;
 mod input;
 mod render;
@@ -8,6 +15,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -28,7 +36,7 @@ use commands::{
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
-use plugins::{PluginManager, PluginManagerConfig};
+use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
@@ -1475,8 +1483,74 @@ struct LiveCli {
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     system_prompt: Vec<String>,
-    runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
+    runtime: BuiltRuntime,
     session: SessionHandle,
+}
+
+struct RuntimePluginState {
+    feature_config: runtime::RuntimeFeatureConfig,
+    tool_registry: GlobalToolRegistry,
+    plugin_registry: PluginRegistry,
+}
+
+struct BuiltRuntime {
+    runtime: Option<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>>,
+    plugin_registry: PluginRegistry,
+    plugins_active: bool,
+}
+
+impl BuiltRuntime {
+    fn new(
+        runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
+        plugin_registry: PluginRegistry,
+    ) -> Self {
+        Self {
+            runtime: Some(runtime),
+            plugin_registry,
+            plugins_active: true,
+        }
+    }
+
+    fn with_hook_abort_signal(mut self, hook_abort_signal: runtime::HookAbortSignal) -> Self {
+        let runtime = self
+            .runtime
+            .take()
+            .expect("runtime should exist before installing hook abort signal");
+        self.runtime = Some(runtime.with_hook_abort_signal(hook_abort_signal));
+        self
+    }
+
+    fn shutdown_plugins(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.plugins_active {
+            self.plugin_registry.shutdown()?;
+            self.plugins_active = false;
+        }
+        Ok(())
+    }
+}
+
+impl Deref for BuiltRuntime {
+    type Target = ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>;
+
+    fn deref(&self) -> &Self::Target {
+        self.runtime
+            .as_ref()
+            .expect("runtime should exist while built runtime is alive")
+    }
+}
+
+impl DerefMut for BuiltRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.runtime
+            .as_mut()
+            .expect("runtime should exist while built runtime is alive")
+    }
+}
+
+impl Drop for BuiltRuntime {
+    fn drop(&mut self) {
+        let _ = self.shutdown_plugins();
+    }
 }
 
 struct HookAbortMonitor {
@@ -1625,13 +1699,7 @@ impl LiveCli {
     fn prepare_turn_runtime(
         &self,
         emit_output: bool,
-    ) -> Result<
-        (
-            ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
-            HookAbortMonitor,
-        ),
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<(BuiltRuntime, HookAbortMonitor), Box<dyn std::error::Error>> {
         let hook_abort_signal = runtime::HookAbortSignal::new();
         let runtime = build_runtime(
             self.runtime.session().clone(),
@@ -1650,6 +1718,12 @@ impl LiveCli {
         Ok((runtime, hook_abort_monitor))
     }
 
+    fn replace_runtime(&mut self, runtime: BuiltRuntime) -> Result<(), Box<dyn std::error::Error>> {
+        self.runtime.shutdown_plugins()?;
+        self.runtime = runtime;
+        Ok(())
+    }
+
     fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
         let mut spinner = Spinner::new();
@@ -1662,9 +1736,9 @@ impl LiveCli {
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let result = runtime.run_turn(input, Some(&mut permission_prompter));
         hook_abort_monitor.stop();
-        self.runtime = runtime;
         match result {
             Ok(summary) => {
+                self.replace_runtime(runtime)?;
                 spinner.finish(
                     "✨ Done",
                     TerminalRenderer::new().color_theme(),
@@ -1681,6 +1755,7 @@ impl LiveCli {
                 Ok(())
             }
             Err(error) => {
+                runtime.shutdown_plugins()?;
                 spinner.fail(
                     "❌ Request failed",
                     TerminalRenderer::new().color_theme(),
@@ -1708,7 +1783,7 @@ impl LiveCli {
         let result = runtime.run_turn(input, Some(&mut permission_prompter));
         hook_abort_monitor.stop();
         let summary = result?;
-        self.runtime = runtime;
+        self.replace_runtime(runtime)?;
         self.persist_session()?;
         println!(
             "{}",
@@ -1903,7 +1978,7 @@ impl LiveCli {
         let previous = self.model.clone();
         let session = self.runtime.session().clone();
         let message_count = session.messages.len();
-        self.runtime = build_runtime(
+        let runtime = build_runtime(
             session,
             &self.session.id,
             model.clone(),
@@ -1914,6 +1989,7 @@ impl LiveCli {
             self.permission_mode,
             None,
         )?;
+        self.replace_runtime(runtime)?;
         self.model.clone_from(&model);
         println!(
             "{}",
@@ -1948,7 +2024,7 @@ impl LiveCli {
         let previous = self.permission_mode.as_str().to_string();
         let session = self.runtime.session().clone();
         self.permission_mode = permission_mode_from_label(normalized);
-        self.runtime = build_runtime(
+        let runtime = build_runtime(
             session,
             &self.session.id,
             self.model.clone(),
@@ -1959,6 +2035,7 @@ impl LiveCli {
             self.permission_mode,
             None,
         )?;
+        self.replace_runtime(runtime)?;
         println!(
             "{}",
             format_permissions_switch_report(&previous, normalized)
@@ -1976,7 +2053,7 @@ impl LiveCli {
 
         let session_state = Session::new();
         self.session = create_managed_session_handle(&session_state.session_id)?;
-        self.runtime = build_runtime(
+        let runtime = build_runtime(
             session_state.with_persistence_path(self.session.path.clone()),
             &self.session.id,
             self.model.clone(),
@@ -1987,6 +2064,7 @@ impl LiveCli {
             self.permission_mode,
             None,
         )?;
+        self.replace_runtime(runtime)?;
         println!(
             "Session cleared\n  Mode             fresh session\n  Preserved model  {}\n  Permission mode  {}\n  Session          {}",
             self.model,
@@ -2014,7 +2092,7 @@ impl LiveCli {
         let session = Session::load_from_path(&handle.path)?;
         let message_count = session.messages.len();
         let session_id = session.session_id.clone();
-        self.runtime = build_runtime(
+        let runtime = build_runtime(
             session,
             &handle.id,
             self.model.clone(),
@@ -2025,6 +2103,7 @@ impl LiveCli {
             self.permission_mode,
             None,
         )?;
+        self.replace_runtime(runtime)?;
         self.session = SessionHandle {
             id: session_id,
             path: handle.path,
@@ -2104,7 +2183,7 @@ impl LiveCli {
                 let session = Session::load_from_path(&handle.path)?;
                 let message_count = session.messages.len();
                 let session_id = session.session_id.clone();
-                self.runtime = build_runtime(
+                let runtime = build_runtime(
                     session,
                     &handle.id,
                     self.model.clone(),
@@ -2115,6 +2194,7 @@ impl LiveCli {
                     self.permission_mode,
                     None,
                 )?;
+                self.replace_runtime(runtime)?;
                 self.session = SessionHandle {
                     id: session_id,
                     path: handle.path,
@@ -2138,7 +2218,7 @@ impl LiveCli {
                 let forked = forked.with_persistence_path(handle.path.clone());
                 let message_count = forked.messages.len();
                 forked.save_to_path(&handle.path)?;
-                self.runtime = build_runtime(
+                let runtime = build_runtime(
                     forked,
                     &handle.id,
                     self.model.clone(),
@@ -2149,6 +2229,7 @@ impl LiveCli {
                     self.permission_mode,
                     None,
                 )?;
+                self.replace_runtime(runtime)?;
                 self.session = handle;
                 println!(
                     "Session forked\n  Parent session   {}\n  Active session   {}\n  Branch           {}\n  File             {}\n  Messages         {}",
@@ -2187,7 +2268,7 @@ impl LiveCli {
     }
 
     fn reload_runtime_features(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.runtime = build_runtime(
+        let runtime = build_runtime(
             self.runtime.session().clone(),
             &self.session.id,
             self.model.clone(),
@@ -2198,6 +2279,7 @@ impl LiveCli {
             self.permission_mode,
             None,
         )?;
+        self.replace_runtime(runtime)?;
         self.persist_session()
     }
 
@@ -2206,7 +2288,7 @@ impl LiveCli {
         let removed = result.removed_message_count;
         let kept = result.compacted_session.messages.len();
         let skipped = removed == 0;
-        self.runtime = build_runtime(
+        let runtime = build_runtime(
             result.compacted_session,
             &self.session.id,
             self.model.clone(),
@@ -2217,6 +2299,7 @@ impl LiveCli {
             self.permission_mode,
             None,
         )?;
+        self.replace_runtime(runtime)?;
         self.persist_session()?;
         println!("{}", format_compact_report(removed, kept, skipped));
         Ok(())
@@ -2242,7 +2325,9 @@ impl LiveCli {
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let summary = runtime.run_turn(prompt, Some(&mut permission_prompter))?;
-        Ok(final_assistant_text(&summary).trim().to_string())
+        let text = final_assistant_text(&summary).trim().to_string();
+        runtime.shutdown_plugins()?;
+        Ok(text)
     }
 
     fn run_internal_prompt_text(
@@ -3270,14 +3355,32 @@ fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     )?)
 }
 
-fn build_runtime_plugin_state(
-) -> Result<(runtime::RuntimeFeatureConfig, GlobalToolRegistry), Box<dyn std::error::Error>> {
+fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let runtime_config = loader.load()?;
+    build_runtime_plugin_state_with_loader(&cwd, &loader, &runtime_config)
+}
+
+fn build_runtime_plugin_state_with_loader(
+    cwd: &Path,
+    loader: &ConfigLoader,
+    runtime_config: &runtime::RuntimeConfig,
+) -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
     let plugin_manager = build_plugin_manager(&cwd, &loader, &runtime_config);
-    let tool_registry = GlobalToolRegistry::with_plugin_tools(plugin_manager.aggregated_tools()?)?;
-    Ok((runtime_config.feature_config().clone(), tool_registry))
+    let plugin_registry = plugin_manager.plugin_registry()?;
+    let plugin_hook_config =
+        runtime_hook_config_from_plugin_hooks(plugin_registry.aggregated_hooks()?);
+    let feature_config = runtime_config
+        .feature_config()
+        .clone()
+        .with_hooks(runtime_config.hooks().merged(&plugin_hook_config));
+    let tool_registry = GlobalToolRegistry::with_plugin_tools(plugin_registry.aggregated_tools()?)?;
+    Ok(RuntimePluginState {
+        feature_config,
+        tool_registry,
+        plugin_registry,
+    })
 }
 
 fn build_plugin_manager(
@@ -3314,6 +3417,14 @@ fn resolve_plugin_path(cwd: &Path, config_home: &Path, value: &str) -> PathBuf {
     } else {
         config_home.join(path)
     }
+}
+
+fn runtime_hook_config_from_plugin_hooks(hooks: PluginHooks) -> runtime::RuntimeHookConfig {
+    runtime::RuntimeHookConfig::new(
+        hooks.pre_tool_use,
+        hooks.post_tool_use,
+        hooks.post_tool_use_failure,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3656,9 +3767,42 @@ fn build_runtime(
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
-) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
-{
-    let (feature_config, tool_registry) = build_runtime_plugin_state()?;
+) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
+    let runtime_plugin_state = build_runtime_plugin_state()?;
+    build_runtime_with_plugin_state(
+        session,
+        session_id,
+        model,
+        system_prompt,
+        enable_tools,
+        emit_output,
+        allowed_tools,
+        permission_mode,
+        progress_reporter,
+        runtime_plugin_state,
+    )
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
+fn build_runtime_with_plugin_state(
+    session: Session,
+    session_id: &str,
+    model: String,
+    system_prompt: Vec<String>,
+    enable_tools: bool,
+    emit_output: bool,
+    allowed_tools: Option<AllowedToolSet>,
+    permission_mode: PermissionMode,
+    progress_reporter: Option<InternalPromptProgressReporter>,
+    runtime_plugin_state: RuntimePluginState,
+) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
+    let RuntimePluginState {
+        feature_config,
+        tool_registry,
+        plugin_registry,
+    } = runtime_plugin_state;
+    plugin_registry.initialize()?;
     let mut runtime = ConversationRuntime::new_with_features(
         session,
         AnthropicRuntimeClient::new(
@@ -3679,7 +3823,7 @@ fn build_runtime(
     if emit_output {
         runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
     }
-    Ok(runtime)
+    Ok(BuiltRuntime::new(runtime, plugin_registry))
 }
 
 struct CliHookProgressReporter;
@@ -4847,6 +4991,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
+        build_runtime_plugin_state_with_loader, build_runtime_with_plugin_state,
         create_managed_session_handle, describe_tool_progress, filter_tool_specs,
         format_bughunter_report, format_commit_preflight_report, format_commit_skipped_report,
         format_compact_report, format_cost_report, format_internal_prompt_progress_line,
@@ -4865,9 +5010,12 @@ mod tests {
         InternalPromptProgressState, LiveCli, SlashCommand, StatusUsage, DEFAULT_MODEL,
     };
     use api::{MessageResponse, OutputContentBlock, Usage};
-    use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
+    use plugins::{
+        PluginManager, PluginManagerConfig, PluginTool, PluginToolDefinition, PluginToolPermission,
+    };
     use runtime::{
-        AssistantEvent, ContentBlock, ConversationMessage, MessageRole, PermissionMode, Session,
+        AssistantEvent, ConfigLoader, ContentBlock, ConversationMessage, MessageRole,
+        PermissionMode, Session,
     };
     use serde_json::json;
     use std::fs;
@@ -4935,6 +5083,49 @@ mod tests {
         let result = f();
         std::env::set_current_dir(previous).expect("cwd should restore");
         result
+    }
+
+    fn write_plugin_fixture(root: &Path, name: &str, include_hooks: bool, include_lifecycle: bool) {
+        fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        if include_hooks {
+            fs::create_dir_all(root.join("hooks")).expect("hooks dir");
+            fs::write(
+                root.join("hooks").join("pre.sh"),
+                "#!/bin/sh\nprintf 'plugin pre hook'\n",
+            )
+            .expect("write hook");
+        }
+        if include_lifecycle {
+            fs::create_dir_all(root.join("lifecycle")).expect("lifecycle dir");
+            fs::write(
+                root.join("lifecycle").join("init.sh"),
+                "#!/bin/sh\nprintf 'init\\n' >> lifecycle.log\n",
+            )
+            .expect("write init lifecycle");
+            fs::write(
+                root.join("lifecycle").join("shutdown.sh"),
+                "#!/bin/sh\nprintf 'shutdown\\n' >> lifecycle.log\n",
+            )
+            .expect("write shutdown lifecycle");
+        }
+
+        let hooks = if include_hooks {
+            ",\n  \"hooks\": {\n    \"PreToolUse\": [\"./hooks/pre.sh\"]\n  }"
+        } else {
+            ""
+        };
+        let lifecycle = if include_lifecycle {
+            ",\n  \"lifecycle\": {\n    \"Init\": [\"./lifecycle/init.sh\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.sh\"]\n  }"
+        } else {
+            ""
+        };
+        fs::write(
+            root.join(".claude-plugin").join("plugin.json"),
+            format!(
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"runtime plugin fixture\"{hooks}{lifecycle}\n}}"
+            ),
+        )
+        .expect("write plugin manifest");
     }
     #[test]
     fn defaults_to_repl_when_no_args() {
@@ -6383,6 +6574,89 @@ UU conflicted.rs",
             AssistantEvent::TextDelta(text) if text == "Final answer"
         ));
         assert!(!String::from_utf8(out).expect("utf8").contains("step 1"));
+    }
+
+    #[test]
+    fn build_runtime_plugin_state_merges_plugin_hooks_into_runtime_features() {
+        let config_home = temp_dir();
+        let workspace = temp_dir();
+        let source_root = temp_dir();
+        fs::create_dir_all(&config_home).expect("config home");
+        fs::create_dir_all(&workspace).expect("workspace");
+        fs::create_dir_all(&source_root).expect("source root");
+        write_plugin_fixture(&source_root, "hook-runtime-demo", true, false);
+
+        let mut manager = PluginManager::new(PluginManagerConfig::new(&config_home));
+        manager
+            .install(source_root.to_str().expect("utf8 source path"))
+            .expect("plugin install should succeed");
+        let loader = ConfigLoader::new(&workspace, &config_home);
+        let runtime_config = loader.load().expect("runtime config should load");
+        let state = build_runtime_plugin_state_with_loader(&workspace, &loader, &runtime_config)
+            .expect("plugin state should load");
+        let pre_hooks = state.feature_config.hooks().pre_tool_use();
+        assert_eq!(pre_hooks.len(), 1);
+        assert!(
+            pre_hooks[0].ends_with("hooks/pre.sh"),
+            "expected installed plugin hook path, got {pre_hooks:?}"
+        );
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn build_runtime_runs_plugin_lifecycle_init_and_shutdown() {
+        let config_home = temp_dir();
+        let workspace = temp_dir();
+        let source_root = temp_dir();
+        fs::create_dir_all(&config_home).expect("config home");
+        fs::create_dir_all(&workspace).expect("workspace");
+        fs::create_dir_all(&source_root).expect("source root");
+        write_plugin_fixture(&source_root, "lifecycle-runtime-demo", false, true);
+
+        let mut manager = PluginManager::new(PluginManagerConfig::new(&config_home));
+        let install = manager
+            .install(source_root.to_str().expect("utf8 source path"))
+            .expect("plugin install should succeed");
+        let log_path = install.install_path.join("lifecycle.log");
+        let loader = ConfigLoader::new(&workspace, &config_home);
+        let runtime_config = loader.load().expect("runtime config should load");
+        let runtime_plugin_state =
+            build_runtime_plugin_state_with_loader(&workspace, &loader, &runtime_config)
+                .expect("plugin state should load");
+        let mut runtime = build_runtime_with_plugin_state(
+            Session::new(),
+            "runtime-plugin-lifecycle",
+            DEFAULT_MODEL.to_string(),
+            vec!["test system prompt".to_string()],
+            true,
+            false,
+            None,
+            PermissionMode::DangerFullAccess,
+            None,
+            runtime_plugin_state,
+        )
+        .expect("runtime should build");
+
+        assert_eq!(
+            fs::read_to_string(&log_path).expect("init log should exist"),
+            "init\n"
+        );
+
+        runtime
+            .shutdown_plugins()
+            .expect("plugin shutdown should succeed");
+
+        assert_eq!(
+            fs::read_to_string(&log_path).expect("shutdown log should exist"),
+            "init\nshutdown\n"
+        );
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(source_root);
     }
 }
 
