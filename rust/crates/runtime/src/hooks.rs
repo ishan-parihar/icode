@@ -476,6 +476,15 @@ impl HookRunner {
     }
 }
 
+struct HookInvocation<'a> {
+    event: HookEvent,
+    tool_name: &'a str,
+    tool_input: &'a str,
+    tool_output: Option<&'a str>,
+    is_error: bool,
+    payload: &'a str,
+}
+
 enum HookCommandOutcome {
     Allow { parsed: ParsedHookOutput },
     Deny { parsed: ParsedHookOutput },

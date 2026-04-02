@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 
+use serde_json::{Map, Value};
+use telemetry::SessionTracer;
+
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
@@ -132,7 +135,7 @@ where
             tool_executor,
             permission_policy,
             system_prompt,
-            RuntimeFeatureConfig::default(),
+            &RuntimeFeatureConfig::default(),
         )
     }
 
@@ -144,7 +147,7 @@ where
         tool_executor: T,
         permission_policy: PermissionPolicy,
         system_prompt: Vec<String>,
-        feature_config: RuntimeFeatureConfig,
+        feature_config: &RuntimeFeatureConfig,
     ) -> Self {
         let usage_tracker = UsageTracker::from_session(&session);
         Self {
@@ -266,6 +269,8 @@ where
         user_input: impl Into<String>,
         mut prompter: Option<&mut dyn PermissionPrompter>,
     ) -> Result<TurnSummary, RuntimeError> {
+        let user_input = user_input.into();
+        self.record_turn_started(&user_input);
         self.session
             .push_user_text(user_input.into())
             .map_err(|error| RuntimeError::new(error.to_string()))?;
@@ -277,17 +282,31 @@ where
         loop {
             iterations += 1;
             if iterations > self.max_iterations {
-                return Err(RuntimeError::new(
+                let error = RuntimeError::new(
                     "conversation loop exceeded the maximum number of iterations",
-                ));
+                );
+                self.record_turn_failed(iterations, &error);
+                return Err(error);
             }
 
             let request = ApiRequest {
                 system_prompt: self.system_prompt.clone(),
                 messages: self.session.messages.clone(),
             };
-            let events = self.api_client.stream(request)?;
-            let (assistant_message, usage) = build_assistant_message(events)?;
+            let events = match self.api_client.stream(request) {
+                Ok(events) => events,
+                Err(error) => {
+                    self.record_turn_failed(iterations, &error);
+                    return Err(error);
+                }
+            };
+            let (assistant_message, usage) = match build_assistant_message(events) {
+                Ok(result) => result,
+                Err(error) => {
+                    self.record_turn_failed(iterations, &error);
+                    return Err(error);
+                }
+            };
             if let Some(usage) = usage {
                 self.usage_tracker.record(usage);
             }
@@ -301,6 +320,11 @@ where
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            self.record_assistant_iteration(
+                iterations,
+                &assistant_message,
+                pending_tool_uses.len(),
+            );
 
             self.session
                 .push_message(assistant_message.clone())
@@ -721,6 +745,39 @@ mod tests {
     }
 
     #[test]
+    fn records_runtime_session_trace_events() {
+        let sink = Arc::new(MemoryTelemetrySink::default());
+        let tracer = SessionTracer::new("session-runtime", sink.clone());
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            ScriptedApiClient { call_count: 0 },
+            StaticToolExecutor::new().register("add", |_input| Ok("4".to_string())),
+            PermissionPolicy::new(PermissionMode::WorkspaceWrite),
+            vec!["system".to_string()],
+        )
+        .with_session_tracer(tracer);
+
+        runtime
+            .run_turn("what is 2 + 2?", Some(&mut PromptAllowOnce))
+            .expect("conversation loop should succeed");
+
+        let events = sink.events();
+        let trace_names = events
+            .iter()
+            .filter_map(|event| match event {
+                TelemetryEvent::SessionTrace(trace) => Some(trace.name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(trace_names.contains(&"turn_started"));
+        assert!(trace_names.contains(&"assistant_iteration_completed"));
+        assert!(trace_names.contains(&"tool_execution_started"));
+        assert!(trace_names.contains(&"tool_execution_finished"));
+        assert!(trace_names.contains(&"turn_completed"));
+    }
+
+    #[test]
     fn records_denied_tool_results_when_prompt_rejects() {
         struct RejectPrompter;
         impl PermissionPrompter for RejectPrompter {
@@ -808,7 +865,7 @@ mod tests {
             }),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-            RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
+            &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'blocked by hook'; exit 2")],
                 Vec::new(),
                 Vec::new(),
@@ -875,7 +932,7 @@ mod tests {
             StaticToolExecutor::new().register("add", |_input| Ok("4".to_string())),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-            RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
+            &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'pre hook ran'")],
                 vec![shell_snippet("printf 'post hook ran'")],
                 Vec::new(),

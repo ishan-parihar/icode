@@ -17,8 +17,9 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
     resolve_startup_auth_source, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    InputMessage, JsonlTelemetrySink, MessageRequest, MessageResponse, OutputContentBlock,
+    SessionTracer, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
+    ToolResultContentBlock,
 };
 
 use commands::{
@@ -51,6 +52,7 @@ fn max_tokens_for_model(model: &str) -> u32 {
 }
 const DEFAULT_DATE: &str = "2026-03-31";
 const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
+const TELEMETRY_LOG_PATH_ENV: &str = "CLAW_TELEMETRY_LOG_PATH";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_TARGET: Option<&str> = option_env!("TARGET");
 const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
@@ -1489,6 +1491,7 @@ impl LiveCli {
         let message_count = session.messages.len();
         self.runtime = build_runtime(
             session,
+            &self.session.id,
             model.clone(),
             self.system_prompt.clone(),
             true,
@@ -1533,6 +1536,7 @@ impl LiveCli {
         self.permission_mode = permission_mode_from_label(normalized);
         self.runtime = build_runtime(
             session,
+            &self.session.id,
             self.model.clone(),
             self.system_prompt.clone(),
             true,
@@ -1597,6 +1601,7 @@ impl LiveCli {
         let session_id = session.session_id.clone();
         self.runtime = build_runtime(
             session,
+            &handle.id,
             self.model.clone(),
             self.system_prompt.clone(),
             true,
@@ -1686,6 +1691,7 @@ impl LiveCli {
                 let session_id = session.session_id.clone();
                 self.runtime = build_runtime(
                     session,
+                    &handle.id,
                     self.model.clone(),
                     self.system_prompt.clone(),
                     true,
@@ -1785,6 +1791,7 @@ impl LiveCli {
         let skipped = removed == 0;
         self.runtime = build_runtime(
             result.compacted_session,
+            &self.session.id,
             self.model.clone(),
             self.system_prompt.clone(),
             true,
@@ -3127,6 +3134,7 @@ fn describe_tool_progress(name: &str, input: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 fn build_runtime(
     session: Session,
+    session_id: &str,
     model: String,
     system_prompt: Vec<String>,
     enable_tools: bool,
@@ -3271,6 +3279,11 @@ impl AnthropicRuntimeClient {
             progress_reporter,
         })
     }
+
+    fn with_session_tracer(mut self, session_tracer: SessionTracer) -> Self {
+        self.client = self.client.with_session_tracer(session_tracer);
+        self
+    }
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -3380,12 +3393,7 @@ impl ApiClient for AnthropicRuntimeClient {
                         }
                     }
                     ApiStreamEvent::MessageDelta(delta) => {
-                        events.push(AssistantEvent::Usage(TokenUsage {
-                            input_tokens: delta.usage.input_tokens,
-                            output_tokens: delta.usage.output_tokens,
-                            cache_creation_input_tokens: 0,
-                            cache_read_input_tokens: 0,
-                        }));
+                        events.push(AssistantEvent::Usage(delta.usage.token_usage()));
                     }
                     ApiStreamEvent::MessageStop(_) => {
                         saw_stop = true;
@@ -3977,12 +3985,7 @@ fn response_to_events(
         }
     }
 
-    events.push(AssistantEvent::Usage(TokenUsage {
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-        cache_creation_input_tokens: response.usage.cache_creation_input_tokens,
-        cache_read_input_tokens: response.usage.cache_read_input_tokens,
-    }));
+    events.push(AssistantEvent::Usage(response.usage.token_usage()));
     events.push(AssistantEvent::MessageStop);
     Ok(events)
 }
