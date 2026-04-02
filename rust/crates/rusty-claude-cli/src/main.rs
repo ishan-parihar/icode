@@ -1,4 +1,11 @@
-#![allow(dead_code, unused_imports, unused_variables, clippy::unneeded_struct_pattern, clippy::unnecessary_wraps, clippy::unused_self)]
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    clippy::unneeded_struct_pattern,
+    clippy::unnecessary_wraps,
+    clippy::unused_self
+)]
 mod init;
 mod input;
 mod render;
@@ -1293,12 +1300,17 @@ fn run_resume_command(
                     ),
                 });
             }
+            let backup_path = write_session_clear_backup(session, session_path)?;
+            let previous_session_id = session.session_id.clone();
             let cleared = Session::new();
+            let new_session_id = cleared.session_id.clone();
             cleared.save_to_path(session_path)?;
             Ok(ResumeCommandOutcome {
                 session: cleared,
                 message: Some(format!(
-                    "Cleared resumed session file {}.",
+                    "Session cleared\n  Mode             resumed session reset\n  Previous session {previous_session_id}\n  Backup           {}\n  Resume previous  claw --resume {}\n  New session      {new_session_id}\n  Session file     {}",
+                    backup_path.display(),
+                    backup_path.display(),
                     session_path.display()
                 )),
             })
@@ -1974,6 +1986,7 @@ impl LiveCli {
             return Ok(false);
         }
 
+        let previous_session = self.session.clone();
         let session_state = Session::new();
         self.session = create_managed_session_handle(&session_state.session_id)?;
         self.runtime = build_runtime(
@@ -1988,10 +2001,13 @@ impl LiveCli {
             None,
         )?;
         println!(
-            "Session cleared\n  Mode             fresh session\n  Preserved model  {}\n  Permission mode  {}\n  Session          {}",
+            "Session cleared\n  Mode             fresh session\n  Previous session {}\n  Resume previous  /resume {}\n  Preserved model  {}\n  Permission mode  {}\n  New session      {}\n  Session file     {}",
+            previous_session.id,
+            previous_session.id,
             self.model,
             self.permission_mode.as_str(),
             self.session.id,
+            self.session.path.display(),
         );
         Ok(true)
     }
@@ -2512,6 +2528,27 @@ fn format_session_modified_age(modified_epoch_millis: u128) -> String {
         3_600..=86_399 => format!("{}h-ago", delta_seconds / 3_600),
         _ => format!("{}d-ago", delta_seconds / 86_400),
     }
+}
+
+fn write_session_clear_backup(
+    session: &Session,
+    session_path: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let backup_path = session_clear_backup_path(session_path);
+    session.save_to_path(&backup_path)?;
+    Ok(backup_path)
+}
+
+fn session_clear_backup_path(session_path: &Path) -> PathBuf {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map_or(0, |duration| duration.as_millis());
+    let file_name = session_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("session.jsonl");
+    session_path.with_file_name(format!("{file_name}.before-clear-{timestamp}.bak"))
 }
 
 fn render_repl_help() -> String {
