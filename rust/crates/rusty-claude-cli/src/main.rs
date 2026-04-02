@@ -1128,10 +1128,12 @@ fn run_repl(
     permission_mode: PermissionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cli = LiveCli::new(model, true, allowed_tools, permission_mode)?;
-    let mut editor = input::LineEditor::new("> ", slash_command_completion_candidates());
+    let mut editor =
+        input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
 
     loop {
+        editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());
         match editor.read_line()? {
             input::ReadOutcome::Submit(input) => {
                 let trimmed = input.trim().to_string();
@@ -1303,7 +1305,7 @@ impl LiveCli {
   \x1b[2mWorkspace\x1b[0m        {}\n\
   \x1b[2mDirectory\x1b[0m        {}\n\
   \x1b[2mSession\x1b[0m          {}\n\n\
-  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mShift+Enter\x1b[0m for newline",
+  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
             self.permission_mode.as_str(),
             git_branch,
@@ -1311,6 +1313,17 @@ impl LiveCli {
             cwd,
             self.session.id,
         )
+    }
+
+    fn repl_completion_candidates(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        Ok(slash_command_completion_candidates_with_sessions(
+            &self.model,
+            Some(&self.session.id),
+            list_managed_sessions()?
+                .into_iter()
+                .map(|session| session.id)
+                .collect(),
+        ))
     }
 
     fn prepare_turn_runtime(
@@ -2168,20 +2181,9 @@ fn list_managed_sessions() -> Result<Vec<ManagedSessionSummary>, Box<dyn std::er
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs())
             .unwrap_or_default();
-        let (id, message_count, parent_session_id, branch_name) = Session::load_from_path(&path)
-            .map_or_else(
-                |_| {
-                    (
-                        path.file_stem()
-                            .and_then(|value| value.to_str())
-                            .unwrap_or("unknown")
-                            .to_string(),
-                        0,
-                        None,
-                        None,
-                    )
-                },
-                |session| {
+        let (id, message_count, parent_session_id, branch_name) =
+            match Session::load_from_path(&path) {
+                Ok(session) => {
                     let parent_session_id = session
                         .fork
                         .as_ref()
@@ -2196,8 +2198,17 @@ fn list_managed_sessions() -> Result<Vec<ManagedSessionSummary>, Box<dyn std::er
                         parent_session_id,
                         branch_name,
                     )
-                },
-            );
+                }
+                Err(_) => (
+                    path.file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    0,
+                    None,
+                    None,
+                ),
+            };
         sessions.push(ManagedSessionSummary {
             id,
             path,
@@ -2256,7 +2267,7 @@ fn render_repl_help() -> String {
         "  /exit                Quit the REPL".to_string(),
         "  /quit                Quit the REPL".to_string(),
         "  Up/Down              Navigate prompt history".to_string(),
-        "  Tab                  Complete slash commands".to_string(),
+        "  Tab                  Complete commands, modes, and recent sessions".to_string(),
         "  Ctrl-C               Clear input (or exit on empty prompt)".to_string(),
         "  Shift+Enter/Ctrl+J   Insert a newline".to_string(),
         String::new(),
@@ -3705,16 +3716,78 @@ fn collect_prompt_cache_events(summary: &runtime::TurnSummary) -> Vec<serde_json
         .collect()
 }
 
-fn slash_command_completion_candidates() -> Vec<String> {
-    slash_command_specs()
-        .iter()
-        .flat_map(|spec| {
-            std::iter::once(spec.name)
-                .chain(spec.aliases.iter().copied())
-                .map(|name| format!("/{name}"))
-                .collect::<Vec<_>>()
-        })
-        .collect()
+fn slash_command_completion_candidates_with_sessions(
+    model: &str,
+    active_session_id: Option<&str>,
+    recent_session_ids: Vec<String>,
+) -> Vec<String> {
+    let mut completions = BTreeSet::new();
+
+    for spec in slash_command_specs() {
+        completions.insert(format!("/{}", spec.name));
+        for alias in spec.aliases {
+            completions.insert(format!("/{alias}"));
+        }
+    }
+
+    for candidate in [
+        "/bughunter ",
+        "/clear --confirm",
+        "/config ",
+        "/config env",
+        "/config hooks",
+        "/config model",
+        "/config plugins",
+        "/export ",
+        "/issue ",
+        "/model ",
+        "/model opus",
+        "/model sonnet",
+        "/model haiku",
+        "/permissions ",
+        "/permissions read-only",
+        "/permissions workspace-write",
+        "/permissions danger-full-access",
+        "/plugin list",
+        "/plugin install ",
+        "/plugin enable ",
+        "/plugin disable ",
+        "/plugin uninstall ",
+        "/plugin update ",
+        "/plugins list",
+        "/pr ",
+        "/resume ",
+        "/session list",
+        "/session switch ",
+        "/session fork ",
+        "/teleport ",
+        "/ultraplan ",
+        "/agents help",
+        "/skills help",
+    ] {
+        completions.insert(candidate.to_string());
+    }
+
+    if !model.trim().is_empty() {
+        completions.insert(format!("/model {}", resolve_model_alias(model)));
+        completions.insert(format!("/model {model}"));
+    }
+
+    if let Some(active_session_id) = active_session_id.filter(|value| !value.trim().is_empty()) {
+        completions.insert(format!("/resume {active_session_id}"));
+        completions.insert(format!("/session switch {active_session_id}"));
+    }
+
+    for session_id in recent_session_ids
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .take(10)
+    {
+        completions.insert(format!("/resume {session_id}"));
+        completions.insert(format!("/session switch {session_id}"));
+    }
+
+    completions.into_iter().collect()
 }
 
 fn format_tool_call_start(name: &str, input: &str) -> String {
@@ -4447,9 +4520,10 @@ mod tests {
         parse_git_status_metadata_for, parse_git_workspace_summary, permission_policy,
         print_help_to, push_output_block, render_config_report, render_diff_report,
         render_memory_report, render_repl_help, resolve_model_alias, resolve_session_reference,
-        response_to_events, resume_supported_slash_commands, run_resume_command, status_context,
-        CliAction, CliOutputFormat, GitWorkspaceSummary, InternalPromptProgressEvent,
-        InternalPromptProgressState, SlashCommand, StatusUsage, DEFAULT_MODEL,
+        response_to_events, resume_supported_slash_commands, run_resume_command,
+        slash_command_completion_candidates_with_sessions, status_context, CliAction,
+        CliOutputFormat, GitWorkspaceSummary, InternalPromptProgressEvent,
+        InternalPromptProgressState, LiveCli, SlashCommand, StatusUsage, DEFAULT_MODEL,
     };
     use api::{MessageResponse, OutputContentBlock, Usage};
     use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
@@ -4824,6 +4898,7 @@ mod tests {
         let help = render_repl_help();
         assert!(help.contains("REPL"));
         assert!(help.contains("/help"));
+        assert!(help.contains("Complete commands, modes, and recent sessions"));
         assert!(help.contains("/status"));
         assert!(help.contains("/sandbox"));
         assert!(help.contains("/model [model]"));
@@ -4845,6 +4920,45 @@ mod tests {
         assert!(help.contains("/agents"));
         assert!(help.contains("/skills"));
         assert!(help.contains("/exit"));
+    }
+
+    #[test]
+    fn completion_candidates_include_workflow_shortcuts_and_dynamic_sessions() {
+        let completions = slash_command_completion_candidates_with_sessions(
+            "sonnet",
+            Some("session-current"),
+            vec!["session-old".to_string()],
+        );
+
+        assert!(completions.contains(&"/model claude-sonnet-4-6".to_string()));
+        assert!(completions.contains(&"/permissions workspace-write".to_string()));
+        assert!(completions.contains(&"/session list".to_string()));
+        assert!(completions.contains(&"/session switch session-current".to_string()));
+        assert!(completions.contains(&"/resume session-old".to_string()));
+        assert!(completions.contains(&"/ultraplan ".to_string()));
+    }
+
+    #[test]
+    fn startup_banner_mentions_workflow_completions() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+
+        let banner = with_current_dir(&root, || {
+            LiveCli::new(
+                "claude-sonnet-4-6".to_string(),
+                true,
+                None,
+                PermissionMode::DangerFullAccess,
+            )
+            .expect("cli should initialize")
+            .startup_banner()
+        });
+
+        assert!(banner.contains("Tab"));
+        assert!(banner.contains("workflow completions"));
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 
     #[test]

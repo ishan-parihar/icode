@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::io::{self, IsTerminal, Write};
 
 use rustyline::completion::{Completer, Pair};
@@ -27,7 +28,7 @@ struct SlashCommandHelper {
 impl SlashCommandHelper {
     fn new(completions: Vec<String>) -> Self {
         Self {
-            completions,
+            completions: normalize_completions(completions),
             current_line: RefCell::new(String::new()),
         }
     }
@@ -44,6 +45,10 @@ impl SlashCommandHelper {
         let mut current = self.current_line.borrow_mut();
         current.clear();
         current.push_str(line);
+    }
+
+    fn set_completions(&mut self, completions: Vec<String>) {
+        self.completions = normalize_completions(completions);
     }
 }
 
@@ -126,6 +131,12 @@ impl LineEditor {
         let _ = self.editor.add_history_entry(entry);
     }
 
+    pub fn set_completions(&mut self, completions: Vec<String>) {
+        if let Some(helper) = self.editor.helper_mut() {
+            helper.set_completions(completions);
+        }
+    }
+
     pub fn read_line(&mut self) -> io::Result<ReadOutcome> {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return self.read_line_fallback();
@@ -192,11 +203,20 @@ fn slash_command_prefix(line: &str, pos: usize) -> Option<&str> {
     }
 
     let prefix = &line[..pos];
-    if prefix.contains(char::is_whitespace) || !prefix.starts_with('/') {
+    if !prefix.starts_with('/') {
         return None;
     }
 
     Some(prefix)
+}
+
+fn normalize_completions(completions: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    completions
+        .into_iter()
+        .filter(|candidate| candidate.starts_with('/'))
+        .filter(|candidate| seen.insert(candidate.clone()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -208,9 +228,13 @@ mod tests {
     use rustyline::Context;
 
     #[test]
-    fn extracts_only_terminal_slash_command_prefixes() {
+    fn extracts_terminal_slash_command_prefixes_with_arguments() {
         assert_eq!(slash_command_prefix("/he", 3), Some("/he"));
-        assert_eq!(slash_command_prefix("/help me", 5), None);
+        assert_eq!(slash_command_prefix("/help me", 8), Some("/help me"));
+        assert_eq!(
+            slash_command_prefix("/session switch ses", 19),
+            Some("/session switch ses")
+        );
         assert_eq!(slash_command_prefix("hello", 5), None);
         assert_eq!(slash_command_prefix("/help", 2), None);
     }
@@ -235,6 +259,30 @@ mod tests {
                 .map(|candidate| candidate.replacement)
                 .collect::<Vec<_>>(),
             vec!["/help".to_string(), "/hello".to_string()]
+        );
+    }
+
+    #[test]
+    fn completes_matching_slash_command_arguments() {
+        let helper = SlashCommandHelper::new(vec![
+            "/model".to_string(),
+            "/model opus".to_string(),
+            "/model sonnet".to_string(),
+            "/session switch alpha".to_string(),
+        ]);
+        let history = DefaultHistory::new();
+        let ctx = Context::new(&history);
+        let (start, matches) = helper
+            .complete("/model o", 8, &ctx)
+            .expect("completion should work");
+
+        assert_eq!(start, 0);
+        assert_eq!(
+            matches
+                .into_iter()
+                .map(|candidate| candidate.replacement)
+                .collect::<Vec<_>>(),
+            vec!["/model opus".to_string()]
         );
     }
 
@@ -265,5 +313,18 @@ mod tests {
         editor.push_history("/help");
 
         assert_eq!(editor.editor.history().len(), 1);
+    }
+
+    #[test]
+    fn set_completions_replaces_and_normalizes_candidates() {
+        let mut editor = LineEditor::new("> ", vec!["/help".to_string()]);
+        editor.set_completions(vec![
+            "/model opus".to_string(),
+            "/model opus".to_string(),
+            "status".to_string(),
+        ]);
+
+        let helper = editor.editor.helper().expect("helper should exist");
+        assert_eq!(helper.completions, vec!["/model opus".to_string()]);
     }
 }
