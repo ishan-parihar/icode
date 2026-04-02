@@ -788,6 +788,10 @@ fn format_compact_report(removed: usize, resulting_messages: usize, skipped: boo
     }
 }
 
+fn format_auto_compaction_notice(removed: usize) -> String {
+    format!("[auto-compacted: removed {removed} messages]")
+}
+
 fn parse_git_status_metadata(status: Option<&str>) -> (Option<PathBuf>, Option<String>) {
     parse_git_status_metadata_for(
         &env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -1143,13 +1147,19 @@ impl LiveCli {
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let result = self.runtime.run_turn(input, Some(&mut permission_prompter));
         match result {
-            Ok(_) => {
+            Ok(summary) => {
                 spinner.finish(
                     "✨ Done",
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
                 println!();
+                if let Some(event) = summary.auto_compaction {
+                    println!(
+                        "{}",
+                        format_auto_compaction_notice(event.removed_message_count)
+                    );
+                }
                 self.persist_session()?;
                 Ok(())
             }
@@ -1197,6 +1207,10 @@ impl LiveCli {
                 "message": final_assistant_text(&summary),
                 "model": self.model,
                 "iterations": summary.iterations,
+                "auto_compaction": summary.auto_compaction.map(|event| json!({
+                    "removed_messages": event.removed_message_count,
+                    "notice": format_auto_compaction_notice(event.removed_message_count),
+                })),
                 "tool_uses": collect_tool_uses(&summary),
                 "tool_results": collect_tool_results(&summary),
                 "usage": {

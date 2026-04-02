@@ -1334,6 +1334,41 @@ mod tests {
             Some(SlashCommand::DebugToolCall)
         );
         assert_eq!(
+            SlashCommand::parse("/bughunter runtime"),
+            Some(SlashCommand::Bughunter {
+                scope: Some("runtime".to_string())
+            })
+        );
+        assert_eq!(SlashCommand::parse("/commit"), Some(SlashCommand::Commit));
+        assert_eq!(
+            SlashCommand::parse("/pr ready for review"),
+            Some(SlashCommand::Pr {
+                context: Some("ready for review".to_string())
+            })
+        );
+        assert_eq!(
+            SlashCommand::parse("/issue flaky test"),
+            Some(SlashCommand::Issue {
+                context: Some("flaky test".to_string())
+            })
+        );
+        assert_eq!(
+            SlashCommand::parse("/ultraplan ship both features"),
+            Some(SlashCommand::Ultraplan {
+                task: Some("ship both features".to_string())
+            })
+        );
+        assert_eq!(
+            SlashCommand::parse("/teleport conversation.rs"),
+            Some(SlashCommand::Teleport {
+                target: Some("conversation.rs".to_string())
+            })
+        );
+        assert_eq!(
+            SlashCommand::parse("/debug-tool-call"),
+            Some(SlashCommand::DebugToolCall)
+        );
+        assert_eq!(
             SlashCommand::parse("/model claude-opus"),
             Some(SlashCommand::Model {
                 model: Some("claude-opus".to_string()),
@@ -1504,6 +1539,22 @@ mod tests {
         assert!(handle_slash_command("/unknown", &session, CompactionConfig::default()).is_none());
         assert!(handle_slash_command("/status", &session, CompactionConfig::default()).is_none());
         assert!(handle_slash_command("/sandbox", &session, CompactionConfig::default()).is_none());
+        assert!(
+            handle_slash_command("/bughunter", &session, CompactionConfig::default()).is_none()
+        );
+        assert!(handle_slash_command("/commit", &session, CompactionConfig::default()).is_none());
+        assert!(handle_slash_command("/pr", &session, CompactionConfig::default()).is_none());
+        assert!(handle_slash_command("/issue", &session, CompactionConfig::default()).is_none());
+        assert!(
+            handle_slash_command("/ultraplan", &session, CompactionConfig::default()).is_none()
+        );
+        assert!(
+            handle_slash_command("/teleport foo", &session, CompactionConfig::default()).is_none()
+        );
+        assert!(
+            handle_slash_command("/debug-tool-call", &session, CompactionConfig::default())
+                .is_none()
+        );
         assert!(
             handle_slash_command("/bughunter", &session, CompactionConfig::default()).is_none()
         );
