@@ -277,6 +277,7 @@ Acceptance:
 7. Structured task packet format
 8. Lane board / machine-readable status API
 9. Isolate `render_diff_report` tests into tmpdir — currently flaky under `cargo test --workspace` because they read real working-tree git state instead of an isolated repo; breaks CI whenever active worktree ops leave staged/unstaged changes
+10. Swarm branch-lock protocol — when multiple claws target the same branch, add a lock or commit-detection signal so the second claw can skip redundant work instead of running the full explore-plan-implement-test-review cycle on already-committed code
 
 ## Suggested Session Split
 
