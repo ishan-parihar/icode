@@ -276,6 +276,7 @@ Acceptance:
 6. MCP structured degraded-startup reporting
 7. Structured task packet format
 8. Lane board / machine-readable status API
+9. Isolate `render_diff_report` tests into tmpdir — currently flaky under `cargo test --workspace` because they read real working-tree git state instead of an isolated repo; breaks CI whenever active worktree ops leave staged/unstaged changes
 
 ## Suggested Session Split
 
