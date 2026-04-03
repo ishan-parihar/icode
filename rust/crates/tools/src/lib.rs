@@ -993,15 +993,50 @@ fn maybe_enforce_permission_check(
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_ask_user_question(input: AskUserQuestionInput) -> Result<String, String> {
-    let mut result = json!({
-        "question": input.question,
-        "status": "pending",
-        "message": "Waiting for user response"
-    });
-    if let Some(options) = &input.options {
-        result["options"] = json!(options);
+    use std::io::{self, BufRead, Write};
+
+    // Display the question to the user via stdout
+    let stdout = io::stdout();
+    let stdin = io::stdin();
+    let mut out = stdout.lock();
+
+    writeln!(out, "\n[Question] {}", input.question).map_err(|e| e.to_string())?;
+
+    if let Some(ref options) = input.options {
+        for (i, option) in options.iter().enumerate() {
+            writeln!(out, "  {}. {}", i + 1, option).map_err(|e| e.to_string())?;
+        }
+        write!(out, "Enter choice (1-{}): ", options.len()).map_err(|e| e.to_string())?;
+    } else {
+        write!(out, "Your answer: ").map_err(|e| e.to_string())?;
     }
-    to_pretty_json(result)
+    out.flush().map_err(|e| e.to_string())?;
+
+    // Read user response from stdin
+    let mut response = String::new();
+    stdin.lock().read_line(&mut response).map_err(|e| e.to_string())?;
+    let response = response.trim().to_string();
+
+    // If options were provided, resolve the numeric choice
+    let answer = if let Some(ref options) = input.options {
+        if let Ok(idx) = response.parse::<usize>() {
+            if idx >= 1 && idx <= options.len() {
+                options[idx - 1].clone()
+            } else {
+                response.clone()
+            }
+        } else {
+            response.clone()
+        }
+    } else {
+        response.clone()
+    };
+
+    to_pretty_json(json!({
+        "question": input.question,
+        "answer": answer,
+        "status": "answered"
+    }))
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1275,14 +1310,62 @@ fn run_mcp_auth(input: McpAuthInput) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_remote_trigger(input: RemoteTriggerInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "url": input.url,
-        "method": input.method.unwrap_or_else(|| "GET".to_string()),
-        "headers": input.headers,
-        "body": input.body,
-        "status": "triggered",
-        "message": "Remote trigger stub response"
-    }))
+    let method = input.method.unwrap_or_else(|| "GET".to_string());
+    let client = Client::new();
+
+    let mut request = match method.to_uppercase().as_str() {
+        "GET" => client.get(&input.url),
+        "POST" => client.post(&input.url),
+        "PUT" => client.put(&input.url),
+        "DELETE" => client.delete(&input.url),
+        "PATCH" => client.patch(&input.url),
+        "HEAD" => client.head(&input.url),
+        other => return Err(format!("unsupported HTTP method: {other}")),
+    };
+
+    // Apply custom headers
+    if let Some(ref headers) = input.headers {
+        if let Some(obj) = headers.as_object() {
+            for (key, value) in obj {
+                if let Some(val) = value.as_str() {
+                    request = request.header(key.as_str(), val);
+                }
+            }
+        }
+    }
+
+    // Apply body
+    if let Some(ref body) = input.body {
+        request = request.body(body.clone());
+    }
+
+    // Execute with a 30-second timeout
+    let request = request.timeout(Duration::from_secs(30));
+
+    match request.send() {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            let body = response.text().unwrap_or_default();
+            let truncated_body = if body.len() > 8192 {
+                format!("{}\n\n[response truncated — {} bytes total]", &body[..8192], body.len())
+            } else {
+                body
+            };
+            to_pretty_json(json!({
+                "url": input.url,
+                "method": method,
+                "status_code": status,
+                "body": truncated_body,
+                "success": status >= 200 && status < 300
+            }))
+        }
+        Err(e) => to_pretty_json(json!({
+            "url": input.url,
+            "method": method,
+            "error": e.to_string(),
+            "success": false
+        })),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
