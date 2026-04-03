@@ -17,6 +17,8 @@ pub mod mcp_tool_bridge;
 mod oauth;
 pub mod permission_enforcer;
 mod policy_engine;
+||||||| f76311f
+pub mod recovery_recipes;
 mod permissions;
 pub mod plugin_lifecycle;
 mod prompt;
@@ -101,6 +103,11 @@ pub use permissions::{
 pub use plugin_lifecycle::{
     DegradedMode, DiscoveryResult, PluginHealthcheck, PluginLifecycle, PluginLifecycleEvent,
     PluginState, ResourceInfo, ServerHealth, ServerStatus, ToolInfo,
+};
+||||||| f76311f
+pub use recovery_recipes::{
+    attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
+    RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
 };
 pub use prompt::{
     load_system_prompt, prepend_bullets, ContextFile, ProjectContext, PromptBuildError,
