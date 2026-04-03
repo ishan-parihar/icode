@@ -14,6 +14,7 @@ mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod oauth;
 pub mod permission_enforcer;
+pub mod recovery_recipes;
 mod permissions;
 mod prompt;
 mod remote;
@@ -79,6 +80,10 @@ pub use oauth::{
 pub use permissions::{
     PermissionContext, PermissionMode, PermissionOutcome, PermissionOverride, PermissionPolicy,
     PermissionPromptDecision, PermissionPrompter, PermissionRequest,
+};
+pub use recovery_recipes::{
+    attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
+    RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
 };
 pub use prompt::{
     load_system_prompt, prepend_bullets, ContextFile, ProjectContext, PromptBuildError,
