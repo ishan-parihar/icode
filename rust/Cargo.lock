@@ -1208,6 +1208,7 @@ dependencies = [
  "pulldown-cmark",
  "runtime",
  "rustyline",
+ "serde",
  "serde_json",
  "syntect",
  "tokio",

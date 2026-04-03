@@ -96,7 +96,16 @@ pub struct ToolSpec {
 #[derive(Debug, Clone)]
 pub struct GlobalToolRegistry {
     plugin_tools: Vec<PluginTool>,
+    runtime_tools: Vec<RuntimeToolDefinition>,
     enforcer: Option<PermissionEnforcer>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeToolDefinition {
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema: Value,
+    pub required_permission: PermissionMode,
 }
 
 impl GlobalToolRegistry {
@@ -104,6 +113,7 @@ impl GlobalToolRegistry {
     pub fn builtin() -> Self {
         Self {
             plugin_tools: Vec::new(),
+            runtime_tools: Vec::new(),
             enforcer: None,
         }
     }
@@ -127,7 +137,38 @@ impl GlobalToolRegistry {
             }
         }
 
-        Ok(Self { plugin_tools, enforcer: None })
+        Ok(Self {
+            plugin_tools,
+            runtime_tools: Vec::new(),
+            enforcer: None,
+        })
+    }
+
+    pub fn with_runtime_tools(
+        mut self,
+        runtime_tools: Vec<RuntimeToolDefinition>,
+    ) -> Result<Self, String> {
+        let mut seen_names = mvp_tool_specs()
+            .into_iter()
+            .map(|spec| spec.name.to_string())
+            .chain(
+                self.plugin_tools
+                    .iter()
+                    .map(|tool| tool.definition().name.clone()),
+            )
+            .collect::<BTreeSet<_>>();
+
+        for tool in &runtime_tools {
+            if !seen_names.insert(tool.name.clone()) {
+                return Err(format!(
+                    "runtime tool `{}` conflicts with an existing tool name",
+                    tool.name
+                ));
+            }
+        }
+
+        self.runtime_tools = runtime_tools;
+        Ok(self)
     }
 
     #[must_use]
@@ -153,6 +194,7 @@ impl GlobalToolRegistry {
                     .iter()
                     .map(|tool| tool.definition().name.clone()),
             )
+            .chain(self.runtime_tools.iter().map(|tool| tool.name.clone()))
             .collect::<Vec<_>>();
         let mut name_map = canonical_names
             .iter()
@@ -199,6 +241,15 @@ impl GlobalToolRegistry {
                 description: Some(spec.description.to_string()),
                 input_schema: spec.input_schema,
             });
+        let runtime = self
+            .runtime_tools
+            .iter()
+            .filter(|tool| allowed_tools.is_none_or(|allowed| allowed.contains(tool.name.as_str())))
+            .map(|tool| ToolDefinition {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                input_schema: tool.input_schema.clone(),
+            });
         let plugin = self
             .plugin_tools
             .iter()
@@ -211,7 +262,7 @@ impl GlobalToolRegistry {
                 description: tool.definition().description.clone(),
                 input_schema: tool.definition().input_schema.clone(),
             });
-        builtin.chain(plugin).collect()
+        builtin.chain(runtime).chain(plugin).collect()
     }
 
     pub fn permission_specs(
@@ -222,6 +273,11 @@ impl GlobalToolRegistry {
             .into_iter()
             .filter(|spec| allowed_tools.is_none_or(|allowed| allowed.contains(spec.name)))
             .map(|spec| (spec.name.to_string(), spec.required_permission));
+        let runtime = self
+            .runtime_tools
+            .iter()
+            .filter(|tool| allowed_tools.is_none_or(|allowed| allowed.contains(tool.name.as_str())))
+            .map(|tool| (tool.name.clone(), tool.required_permission));
         let plugin = self
             .plugin_tools
             .iter()
@@ -234,7 +290,32 @@ impl GlobalToolRegistry {
                     .map(|permission| (tool.definition().name.clone(), permission))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(builtin.chain(plugin).collect())
+        Ok(builtin.chain(runtime).chain(plugin).collect())
+    }
+
+    #[must_use]
+    pub fn has_runtime_tool(&self, name: &str) -> bool {
+        self.runtime_tools.iter().any(|tool| tool.name == name)
+    }
+
+    #[must_use]
+    pub fn search(
+        &self,
+        query: &str,
+        max_results: usize,
+        pending_mcp_servers: Option<Vec<String>>,
+    ) -> ToolSearchOutput {
+        let query = query.trim().to_string();
+        let normalized_query = normalize_tool_search_query(&query);
+        let matches = search_tool_specs(&query, max_results.max(1), &self.searchable_tool_specs());
+
+        ToolSearchOutput {
+            matches,
+            query,
+            normalized_query,
+            total_deferred_tools: self.searchable_tool_specs().len(),
+            pending_mcp_servers,
+        }
     }
 
     pub fn set_enforcer(&mut self, enforcer: PermissionEnforcer) {
@@ -251,6 +332,24 @@ impl GlobalToolRegistry {
             .ok_or_else(|| format!("unsupported tool: {name}"))?
             .execute(input)
             .map_err(|error| error.to_string())
+    }
+
+    fn searchable_tool_specs(&self) -> Vec<SearchableToolSpec> {
+        let builtin = deferred_tool_specs()
+            .into_iter()
+            .map(|spec| SearchableToolSpec {
+                name: spec.name.to_string(),
+                description: spec.description.to_string(),
+            });
+        let runtime = self.runtime_tools.iter().map(|tool| SearchableToolSpec {
+            name: tool.name.clone(),
+            description: tool.description.clone().unwrap_or_default(),
+        });
+        let plugin = self.plugin_tools.iter().map(|tool| SearchableToolSpec {
+            name: tool.definition().name.clone(),
+            description: tool.definition().description.clone().unwrap_or_default(),
+        });
+        builtin.chain(runtime).chain(plugin).collect()
     }
 }
 
@@ -1845,8 +1944,8 @@ struct AgentJob {
     allowed_tools: BTreeSet<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct ToolSearchOutput {
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ToolSearchOutput {
     matches: Vec<String>,
     query: String,
     normalized_query: String,
@@ -1929,6 +2028,12 @@ struct PlanModeOutput {
     previous_local_mode: Option<Value>,
     #[serde(rename = "currentLocalMode")]
     current_local_mode: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct SearchableToolSpec {
+    name: String,
+    description: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -3071,19 +3176,7 @@ fn final_assistant_text(summary: &runtime::TurnSummary) -> String {
 
 #[allow(clippy::needless_pass_by_value)]
 fn execute_tool_search(input: ToolSearchInput) -> ToolSearchOutput {
-    let deferred = deferred_tool_specs();
-    let max_results = input.max_results.unwrap_or(5).max(1);
-    let query = input.query.trim().to_string();
-    let normalized_query = normalize_tool_search_query(&query);
-    let matches = search_tool_specs(&query, max_results, &deferred);
-
-    ToolSearchOutput {
-        matches,
-        query,
-        normalized_query,
-        total_deferred_tools: deferred.len(),
-        pending_mcp_servers: None,
-    }
+    GlobalToolRegistry::builtin().search(&input.query, input.max_results.unwrap_or(5), None)
 }
 
 fn deferred_tool_specs() -> Vec<ToolSpec> {
@@ -3098,7 +3191,7 @@ fn deferred_tool_specs() -> Vec<ToolSpec> {
         .collect()
 }
 
-fn search_tool_specs(query: &str, max_results: usize, specs: &[ToolSpec]) -> Vec<String> {
+fn search_tool_specs(query: &str, max_results: usize, specs: &[SearchableToolSpec]) -> Vec<String> {
     let lowered = query.to_lowercase();
     if let Some(selection) = lowered.strip_prefix("select:") {
         return selection
@@ -3109,8 +3202,8 @@ fn search_tool_specs(query: &str, max_results: usize, specs: &[ToolSpec]) -> Vec
                 let wanted = canonical_tool_token(wanted);
                 specs
                     .iter()
-                    .find(|spec| canonical_tool_token(spec.name) == wanted)
-                    .map(|spec| spec.name.to_string())
+                    .find(|spec| canonical_tool_token(&spec.name) == wanted)
+                    .map(|spec| spec.name.clone())
             })
             .take(max_results)
             .collect();
@@ -3137,8 +3230,8 @@ fn search_tool_specs(query: &str, max_results: usize, specs: &[ToolSpec]) -> Vec
         .iter()
         .filter_map(|spec| {
             let name = spec.name.to_lowercase();
-            let canonical_name = canonical_tool_token(spec.name);
-            let normalized_description = normalize_tool_search_query(spec.description);
+            let canonical_name = canonical_tool_token(&spec.name);
+            let normalized_description = normalize_tool_search_query(&spec.description);
             let haystack = format!(
                 "{name} {} {canonical_name}",
                 spec.description.to_lowercase()
@@ -3171,7 +3264,7 @@ fn search_tool_specs(query: &str, max_results: usize, specs: &[ToolSpec]) -> Vec
             if score == 0 && !lowered.is_empty() {
                 return None;
             }
-            Some((score, spec.name.to_string()))
+            Some((score, spec.name.clone()))
         })
         .collect::<Vec<_>>();
 
@@ -4332,8 +4425,8 @@ mod tests {
     use super::{
         agent_permission_policy, allowed_tools_for_subagent, execute_agent_with_spawn,
         execute_tool, final_assistant_text, mvp_tool_specs, permission_mode_from_plugin,
-        persist_agent_terminal_state, push_output_block, AgentInput, AgentJob,
-        GlobalToolRegistry, SubagentToolExecutor,
+        persist_agent_terminal_state, push_output_block, AgentInput, AgentJob, GlobalToolRegistry,
+        SubagentToolExecutor,
     };
     use api::OutputContentBlock;
     use runtime::{
@@ -4446,6 +4539,48 @@ mod tests {
         let empty_permission =
             permission_mode_from_plugin("").expect_err("empty plugin permission should fail");
         assert!(empty_permission.contains("unsupported plugin permission: "));
+    }
+
+    #[test]
+    fn runtime_tools_extend_registry_definitions_permissions_and_search() {
+        let registry = GlobalToolRegistry::builtin()
+            .with_runtime_tools(vec![super::RuntimeToolDefinition {
+                name: "mcp__demo__echo".to_string(),
+                description: Some("Echo text from the demo MCP server".to_string()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "text": { "type": "string" } },
+                    "additionalProperties": false
+                }),
+                required_permission: runtime::PermissionMode::ReadOnly,
+            }])
+            .expect("runtime tools should register");
+
+        let allowed = registry
+            .normalize_allowed_tools(&["mcp__demo__echo".to_string()])
+            .expect("runtime tool should be allow-listable")
+            .expect("allow-list should be populated");
+        assert!(allowed.contains("mcp__demo__echo"));
+
+        let definitions = registry.definitions(Some(&allowed));
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].name, "mcp__demo__echo");
+
+        let permissions = registry
+            .permission_specs(Some(&allowed))
+            .expect("runtime tool permissions should resolve");
+        assert_eq!(
+            permissions,
+            vec![(
+                "mcp__demo__echo".to_string(),
+                runtime::PermissionMode::ReadOnly
+            )]
+        );
+
+        let search = registry.search("demo echo", 5, Some(vec!["pending-server".to_string()]));
+        let output = serde_json::to_value(search).expect("search output should serialize");
+        assert_eq!(output["matches"][0], "mcp__demo__echo");
+        assert_eq!(output["pending_mcp_servers"][0], "pending-server");
     }
 
     #[test]
