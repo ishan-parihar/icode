@@ -268,19 +268,28 @@ Acceptance:
 
 ## Immediate Backlog (from current real pain)
 
-1. Worker readiness handshake + trust resolution
-2. Prompt misdelivery detection and recovery
-3. Canonical lane event schema in clawhip
-4. Failure taxonomy + blocker normalization
-5. Stale-branch detection before workspace tests
-6. MCP structured degraded-startup reporting
-7. Structured task packet format
-8. Lane board / machine-readable status API
-9. Isolate `render_diff_report` tests into tmpdir — currently flaky under `cargo test --workspace` because they read real working-tree git state instead of an isolated repo; breaks CI whenever active worktree ops leave staged/unstaged changes
-10. Swarm branch-lock protocol — when multiple claws target the same branch, add a lock or commit-detection signal so the second claw can skip redundant work instead of running the full explore-plan-implement-test-review cycle on already-committed code
-11. Wire lane-completion emitter — `LaneContext::completed` is a passive bool set by callers; nothing fires it automatically; need a runtime path that sets `completed = true` and triggers the policy engine lane-closeout rule when a branch is pushed, tests pass, and session control reports done
-12. Wire `SummaryCompressor` into the lane event pipeline — `summary_compression.rs` is exported but called nowhere; `LaneEvent` stream is never fed through the compressor; orchestrating claws receive raw events instead of compressed actionable summaries
-13. Add cross-module integration tests — every Phase 1-2 module has unit tests but no integration test connects adjacent modules (e.g. `WorkerFailure` from `worker_boot` into `RecoveryRecipe`, `LaneEvent` through `SummaryCompressor`, `GreenContract::can_merge` after `StaleCheck`); without these, wiring gaps are invisible to CI
+Priority order: P0 = blocks CI/green state, P1 = blocks integration wiring, P2 = clawability hardening, P3 = swarm-efficiency improvements.
+
+**P0 — Fix first (CI reliability)**
+1. Isolate `render_diff_report` tests into tmpdir — flaky under `cargo test --workspace`; reads real working-tree state; breaks CI during active worktree ops
+
+**P1 — Next (integration wiring, unblocks verification)**
+2. Add cross-module integration tests — every Phase 1-2 module has unit tests but no integration test connects adjacent modules; wiring gaps are invisible to CI without these
+3. Wire lane-completion emitter — `LaneContext::completed` is a passive bool; nothing sets it automatically; need a runtime path from push+green+session-done to policy engine lane-closeout
+4. Wire `SummaryCompressor` into the lane event pipeline — exported but called nowhere; `LaneEvent` stream never fed through compressor
+
+**P2 — Clawability hardening (original backlog)**
+5. Worker readiness handshake + trust resolution
+6. Prompt misdelivery detection and recovery
+7. Canonical lane event schema in clawhip
+8. Failure taxonomy + blocker normalization
+9. Stale-branch detection before workspace tests
+10. MCP structured degraded-startup reporting
+11. Structured task packet format
+12. Lane board / machine-readable status API
+
+**P3 — Swarm efficiency**
+13. Swarm branch-lock protocol — detect same-module/same-branch collision before parallel workers drift into duplicate implementation
 
 ## Suggested Session Split
 
