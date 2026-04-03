@@ -10,6 +10,7 @@ mod json;
 pub mod lsp_client;
 mod mcp;
 mod mcp_client;
+pub mod mcp_lifecycle_hardened;
 mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod oauth;
@@ -60,6 +61,10 @@ pub use mcp_client::{
     McpClientAuth, McpClientBootstrap, McpClientTransport, McpManagedProxyTransport,
     McpRemoteTransport, McpSdkTransport, McpStdioTransport,
 };
+pub use mcp_lifecycle_hardened::{
+    McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase, McpLifecycleState,
+    McpLifecycleValidator, McpPhaseResult,
+};
 pub use mcp_stdio::{
     spawn_mcp_stdio_process, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse,
     ManagedMcpTool, McpDiscoveryFailure, McpInitializeClientInfo, McpInitializeParams,
@@ -100,12 +105,12 @@ pub use session::{
     SessionFork,
 };
 pub use sse::{IncrementalSseParser, SseEvent};
+pub use usage::{
+    format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
+};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
     WorkerRegistry, WorkerStatus,
-};
-pub use usage::{
-    format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
 
 #[cfg(test)]
