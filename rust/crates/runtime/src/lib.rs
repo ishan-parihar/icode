@@ -21,6 +21,7 @@ mod permissions;
 pub mod plugin_lifecycle;
 mod prompt;
 mod remote;
+pub mod session_control;
 pub mod sandbox;
 mod session;
 mod sse;
