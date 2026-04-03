@@ -12,6 +12,7 @@ mod mcp_client;
 mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod oauth;
+pub mod permission_enforcer;
 mod permissions;
 mod prompt;
 mod remote;
