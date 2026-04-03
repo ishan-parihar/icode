@@ -17,6 +17,7 @@ pub mod permission_enforcer;
 mod permissions;
 mod prompt;
 mod remote;
+pub mod session_control;
 pub mod sandbox;
 mod session;
 mod sse;
