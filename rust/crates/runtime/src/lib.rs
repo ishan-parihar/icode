@@ -26,6 +26,8 @@ pub mod sandbox;
 mod session;
 mod sse;
 pub mod stale_branch;
+||||||| f76311f
+pub mod summary_compression;
 pub mod task_registry;
 pub mod task_packet;
 pub mod team_cron_registry;
