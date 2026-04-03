@@ -22,6 +22,7 @@ mod session;
 mod sse;
 pub mod task_registry;
 pub mod team_cron_registry;
+mod trust_resolver;
 mod usage;
 pub mod worker_boot;
 
@@ -100,6 +101,7 @@ pub use session::{
     SessionFork,
 };
 pub use sse::{IncrementalSseParser, SseEvent};
+pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
     WorkerRegistry, WorkerStatus,
