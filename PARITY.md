@@ -5,8 +5,8 @@ Last updated: 2026-04-03
 ## Summary
 
 - Canonical document: this top-level `PARITY.md` is the file consumed by `rust/scripts/run_mock_parity_diff.py`.
-- Requested 9-lane checkpoint: **8 lanes are merged on `main`; 1 lane (`bash-validation`) is implemented on a branch but not merged**.
-- Current `main` HEAD: `336f820` (`Merge jobdori/permission-enforcement: PermissionEnforcer with workspace + bash enforcement`).
+- Requested 9-lane checkpoint: **All 9 lanes merged on `main`.**
+- Current `main` HEAD: `ee31e00` (stub implementations replaced with real AskUserQuestion + RemoteTrigger).
 - Repository stats at this checkpoint: **292 commits on `main` / 293 across all branches**, **9 crates**, **48,599 tracked Rust LOC**, **2,568 test LOC**, **3 authors**, date range **2026-03-31 → 2026-04-03**.
 - Mock parity harness stats: **10 scripted scenarios**, **19 captured `/v1/messages` requests** in `rust/crates/rusty-claude-cli/tests/mock_parity_harness.rs`.
 
@@ -53,7 +53,7 @@ Canonical scenario map: `rust/mock_parity_scenarios.json`
 
 ### Lane 1 — Bash validation
 
-- **Status:** implemented on branch `jobdori/bash-validation-submodules`, not merged into `main`.
+- **Status:** merged on `main`.
 - **Feature commit:** `36dac6c` — `feat: add bash validation submodules — readOnlyValidation, destructiveCommandWarning, modeValidation, sedValidation, pathValidation, commandSemantics`
 - **Evidence:** branch-only diff adds `rust/crates/runtime/src/bash_validation.rs` and a `runtime::lib` export (`+1005` across 2 files).
 - **Main-branch reality:** `rust/crates/runtime/src/bash.rs` is still the active on-`main` implementation at **283 LOC**, with timeout/background/sandbox execution. `PermissionEnforcer::check_bash()` adds read-only gating on `main`, but the dedicated validation module is not landed.
