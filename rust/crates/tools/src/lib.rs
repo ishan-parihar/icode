@@ -93,7 +93,7 @@ pub struct ToolSpec {
     pub required_permission: PermissionMode,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct GlobalToolRegistry {
     plugin_tools: Vec<PluginTool>,
     enforcer: Option<PermissionEnforcer>,
@@ -128,6 +128,12 @@ impl GlobalToolRegistry {
         }
 
         Ok(Self { plugin_tools, enforcer: None })
+    }
+
+    #[must_use]
+    pub fn with_enforcer(mut self, enforcer: PermissionEnforcer) -> Self {
+        self.set_enforcer(enforcer);
+        self
     }
 
     pub fn normalize_allowed_tools(
@@ -2481,12 +2487,14 @@ fn build_agent_runtime(
         .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_string());
     let allowed_tools = job.allowed_tools.clone();
     let api_client = ProviderRuntimeClient::new(model, allowed_tools.clone())?;
-    let tool_executor = SubagentToolExecutor::new(allowed_tools);
+    let permission_policy = agent_permission_policy();
+    let tool_executor = SubagentToolExecutor::new(allowed_tools)
+        .with_enforcer(PermissionEnforcer::new(permission_policy.clone()));
     Ok(ConversationRuntime::new(
         Session::new(),
         api_client,
         tool_executor,
-        agent_permission_policy(),
+        permission_policy,
         job.system_prompt.clone(),
     ))
 }
@@ -2791,6 +2799,11 @@ struct SubagentToolExecutor {
 impl SubagentToolExecutor {
     fn new(allowed_tools: BTreeSet<String>) -> Self {
         Self { allowed_tools, enforcer: None }
+    }
+
+    fn with_enforcer(mut self, enforcer: PermissionEnforcer) -> Self {
+        self.enforcer = Some(enforcer);
+        self
     }
 }
 
@@ -4207,10 +4220,13 @@ mod tests {
         agent_permission_policy, allowed_tools_for_subagent, execute_agent_with_spawn,
         execute_tool, final_assistant_text, mvp_tool_specs, permission_mode_from_plugin,
         persist_agent_terminal_state, push_output_block, AgentInput, AgentJob,
-        SubagentToolExecutor,
+        GlobalToolRegistry, SubagentToolExecutor,
     };
     use api::OutputContentBlock;
-    use runtime::{ApiRequest, AssistantEvent, ConversationRuntime, RuntimeError, Session};
+    use runtime::{
+        permission_enforcer::PermissionEnforcer, ApiRequest, AssistantEvent, ConversationRuntime,
+        PermissionMode, PermissionPolicy, RuntimeError, Session, ToolExecutor,
+    };
     use serde_json::json;
 
     fn env_lock() -> &'static Mutex<()> {
@@ -4224,6 +4240,13 @@ mod tests {
             .expect("time")
             .as_nanos();
         std::env::temp_dir().join(format!("clawd-tools-{unique}-{name}"))
+    }
+
+    fn permission_policy_for_mode(mode: PermissionMode) -> PermissionPolicy {
+        mvp_tool_specs().into_iter().fold(
+            PermissionPolicy::new(mode),
+            |policy, spec| policy.with_tool_requirement(spec.name, spec.required_permission),
+        )
     }
 
     #[test]
@@ -4255,6 +4278,50 @@ mod tests {
     fn rejects_unknown_tool_names() {
         let error = execute_tool("nope", &json!({})).expect_err("tool should be rejected");
         assert!(error.contains("unsupported tool"));
+    }
+
+    #[test]
+    fn global_tool_registry_denies_blocked_tool_before_dispatch() {
+        // given
+        let policy = permission_policy_for_mode(PermissionMode::ReadOnly);
+        let registry = GlobalToolRegistry::builtin().with_enforcer(PermissionEnforcer::new(policy));
+
+        // when
+        let error = registry
+            .execute(
+                "write_file",
+                &json!({
+                    "path": "blocked.txt",
+                    "content": "blocked"
+                }),
+            )
+            .expect_err("write tool should be denied before dispatch");
+
+        // then
+        assert!(error.contains("requires workspace-write permission"));
+    }
+
+    #[test]
+    fn subagent_tool_executor_denies_blocked_tool_before_dispatch() {
+        // given
+        let policy = permission_policy_for_mode(PermissionMode::ReadOnly);
+        let mut executor = SubagentToolExecutor::new(BTreeSet::from([String::from("write_file")]))
+            .with_enforcer(PermissionEnforcer::new(policy));
+
+        // when
+        let error = executor
+            .execute(
+                "write_file",
+                &json!({
+                    "path": "blocked.txt",
+                    "content": "blocked"
+                })
+                .to_string(),
+            )
+            .expect_err("subagent write tool should be denied before dispatch");
+
+        // then
+        assert!(error.to_string().contains("requires workspace-write permission"));
     }
 
     #[test]
@@ -5715,6 +5782,98 @@ printf 'pwsh:%s' "$1"
         let _ = std::fs::remove_dir_all(empty_dir);
 
         assert!(err.contains("PowerShell executable not found"));
+    }
+
+    fn read_only_registry() -> super::GlobalToolRegistry {
+        use runtime::permission_enforcer::PermissionEnforcer;
+        use runtime::PermissionPolicy;
+
+        let policy = mvp_tool_specs().into_iter().fold(
+            PermissionPolicy::new(runtime::PermissionMode::ReadOnly),
+            |policy, spec| policy.with_tool_requirement(spec.name, spec.required_permission),
+        );
+        let mut registry = super::GlobalToolRegistry::builtin();
+        registry.set_enforcer(PermissionEnforcer::new(policy));
+        registry
+    }
+
+    #[test]
+    fn given_read_only_enforcer_when_bash_then_denied() {
+        let registry = read_only_registry();
+        let err = registry
+            .execute("bash", &json!({ "command": "echo hi" }))
+            .expect_err("bash should be denied in read-only mode");
+        assert!(
+            err.contains("current mode is read-only"),
+            "should cite active mode: {err}"
+        );
+    }
+
+    #[test]
+    fn given_read_only_enforcer_when_write_file_then_denied() {
+        let registry = read_only_registry();
+        let err = registry
+            .execute("write_file", &json!({ "path": "/tmp/x.txt", "content": "x" }))
+            .expect_err("write_file should be denied in read-only mode");
+        assert!(
+            err.contains("current mode is read-only"),
+            "should cite active mode: {err}"
+        );
+    }
+
+    #[test]
+    fn given_read_only_enforcer_when_edit_file_then_denied() {
+        let registry = read_only_registry();
+        let err = registry
+            .execute(
+                "edit_file",
+                &json!({ "path": "/tmp/x.txt", "old_string": "a", "new_string": "b" }),
+            )
+            .expect_err("edit_file should be denied in read-only mode");
+        assert!(
+            err.contains("current mode is read-only"),
+            "should cite active mode: {err}"
+        );
+    }
+
+    #[test]
+    fn given_read_only_enforcer_when_read_file_then_not_permission_denied() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = temp_path("perm-read");
+        fs::create_dir_all(&root).expect("create root");
+        let file = root.join("readable.txt");
+        fs::write(&file, "content\n").expect("write test file");
+
+        let registry = read_only_registry();
+        let result = registry.execute(
+            "read_file",
+            &json!({ "path": file.display().to_string() }),
+        );
+        assert!(result.is_ok(), "read_file should be allowed: {result:?}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn given_read_only_enforcer_when_glob_search_then_not_permission_denied() {
+        let registry = read_only_registry();
+        let result = registry.execute("glob_search", &json!({ "pattern": "*.rs" }));
+        assert!(
+            result.is_ok(),
+            "glob_search should be allowed in read-only mode: {result:?}"
+        );
+    }
+
+    #[test]
+    fn given_no_enforcer_when_bash_then_executes_normally() {
+        let registry = super::GlobalToolRegistry::builtin();
+        let result = registry
+            .execute("bash", &json!({ "command": "printf 'ok'" }))
+            .expect("bash should succeed without enforcer");
+        let output: serde_json::Value = serde_json::from_str(&result).expect("json");
+        assert_eq!(output["stdout"], "ok");
     }
 
     struct TestServer {

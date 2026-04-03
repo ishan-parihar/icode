@@ -16,11 +16,6 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-// ─────────────────────────────────────────────
-// Team registry
-// ─────────────────────────────────────────────
-
-/// A team groups multiple tasks for parallel execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Team {
     pub team_id: String,
@@ -51,7 +46,6 @@ impl std::fmt::Display for TeamStatus {
     }
 }
 
-/// Thread-safe team registry.
 #[derive(Debug, Clone, Default)]
 pub struct TeamRegistry {
     inner: Arc<Mutex<TeamInner>>,
@@ -69,7 +63,6 @@ impl TeamRegistry {
         Self::default()
     }
 
-    /// Create a new team with the given name and task IDs.
     pub fn create(&self, name: &str, task_ids: Vec<String>) -> Team {
         let mut inner = self.inner.lock().expect("team registry lock poisoned");
         inner.counter += 1;
@@ -87,19 +80,16 @@ impl TeamRegistry {
         team
     }
 
-    /// Get a team by ID.
     pub fn get(&self, team_id: &str) -> Option<Team> {
         let inner = self.inner.lock().expect("team registry lock poisoned");
         inner.teams.get(team_id).cloned()
     }
 
-    /// List all teams.
     pub fn list(&self) -> Vec<Team> {
         let inner = self.inner.lock().expect("team registry lock poisoned");
         inner.teams.values().cloned().collect()
     }
 
-    /// Delete a team.
     pub fn delete(&self, team_id: &str) -> Result<Team, String> {
         let mut inner = self.inner.lock().expect("team registry lock poisoned");
         let team = inner
@@ -111,7 +101,6 @@ impl TeamRegistry {
         Ok(team.clone())
     }
 
-    /// Remove a team entirely from the registry.
     pub fn remove(&self, team_id: &str) -> Option<Team> {
         let mut inner = self.inner.lock().expect("team registry lock poisoned");
         inner.teams.remove(team_id)
@@ -129,11 +118,6 @@ impl TeamRegistry {
     }
 }
 
-// ─────────────────────────────────────────────
-// Cron registry
-// ─────────────────────────────────────────────
-
-/// A cron entry schedules a prompt to run on a recurring schedule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronEntry {
     pub cron_id: String,
@@ -147,7 +131,6 @@ pub struct CronEntry {
     pub run_count: u64,
 }
 
-/// Thread-safe cron registry.
 #[derive(Debug, Clone, Default)]
 pub struct CronRegistry {
     inner: Arc<Mutex<CronInner>>,
@@ -165,7 +148,6 @@ impl CronRegistry {
         Self::default()
     }
 
-    /// Create a new cron entry.
     pub fn create(&self, schedule: &str, prompt: &str, description: Option<&str>) -> CronEntry {
         let mut inner = self.inner.lock().expect("cron registry lock poisoned");
         inner.counter += 1;
@@ -186,13 +168,11 @@ impl CronRegistry {
         entry
     }
 
-    /// Get a cron entry by ID.
     pub fn get(&self, cron_id: &str) -> Option<CronEntry> {
         let inner = self.inner.lock().expect("cron registry lock poisoned");
         inner.entries.get(cron_id).cloned()
     }
 
-    /// List all cron entries, optionally filtered to enabled only.
     pub fn list(&self, enabled_only: bool) -> Vec<CronEntry> {
         let inner = self.inner.lock().expect("cron registry lock poisoned");
         inner
@@ -203,7 +183,6 @@ impl CronRegistry {
             .collect()
     }
 
-    /// Delete (remove) a cron entry.
     pub fn delete(&self, cron_id: &str) -> Result<CronEntry, String> {
         let mut inner = self.inner.lock().expect("cron registry lock poisoned");
         inner
@@ -359,5 +338,171 @@ mod tests {
         assert!(registry.disable("nonexistent").is_err());
         assert!(registry.record_run("nonexistent").is_err());
         assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn team_status_display_all_variants() {
+        // given
+        let cases = [
+            (TeamStatus::Created, "created"),
+            (TeamStatus::Running, "running"),
+            (TeamStatus::Completed, "completed"),
+            (TeamStatus::Deleted, "deleted"),
+        ];
+
+        // when
+        let rendered: Vec<_> = cases
+            .into_iter()
+            .map(|(status, expected)| (status.to_string(), expected))
+            .collect();
+
+        // then
+        assert_eq!(
+            rendered,
+            vec![
+                ("created".to_string(), "created"),
+                ("running".to_string(), "running"),
+                ("completed".to_string(), "completed"),
+                ("deleted".to_string(), "deleted"),
+            ]
+        );
+    }
+
+    #[test]
+    fn new_team_registry_is_empty() {
+        // given
+        let registry = TeamRegistry::new();
+
+        // when
+        let teams = registry.list();
+
+        // then
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+        assert!(teams.is_empty());
+    }
+
+    #[test]
+    fn team_remove_nonexistent_returns_none() {
+        // given
+        let registry = TeamRegistry::new();
+
+        // when
+        let removed = registry.remove("missing");
+
+        // then
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn team_len_transitions() {
+        // given
+        let registry = TeamRegistry::new();
+
+        // when
+        let alpha = registry.create("Alpha", vec![]);
+        let beta = registry.create("Beta", vec![]);
+        let after_create = registry.len();
+        registry.remove(&alpha.team_id);
+        let after_first_remove = registry.len();
+        registry.remove(&beta.team_id);
+
+        // then
+        assert_eq!(after_create, 2);
+        assert_eq!(after_first_remove, 1);
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn cron_list_all_disabled_returns_empty_for_enabled_only() {
+        // given
+        let registry = CronRegistry::new();
+        let first = registry.create("* * * * *", "Task 1", None);
+        let second = registry.create("0 * * * *", "Task 2", None);
+        registry
+            .disable(&first.cron_id)
+            .expect("disable should succeed");
+        registry
+            .disable(&second.cron_id)
+            .expect("disable should succeed");
+
+        // when
+        let enabled_only = registry.list(true);
+        let all_entries = registry.list(false);
+
+        // then
+        assert!(enabled_only.is_empty());
+        assert_eq!(all_entries.len(), 2);
+    }
+
+    #[test]
+    fn cron_create_without_description() {
+        // given
+        let registry = CronRegistry::new();
+
+        // when
+        let entry = registry.create("*/15 * * * *", "Check health", None);
+
+        // then
+        assert!(entry.cron_id.starts_with("cron_"));
+        assert_eq!(entry.description, None);
+        assert!(entry.enabled);
+        assert_eq!(entry.run_count, 0);
+        assert_eq!(entry.last_run_at, None);
+    }
+
+    #[test]
+    fn new_cron_registry_is_empty() {
+        // given
+        let registry = CronRegistry::new();
+
+        // when
+        let enabled_only = registry.list(true);
+        let all_entries = registry.list(false);
+
+        // then
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+        assert!(enabled_only.is_empty());
+        assert!(all_entries.is_empty());
+    }
+
+    #[test]
+    fn cron_record_run_updates_timestamp_and_counter() {
+        // given
+        let registry = CronRegistry::new();
+        let entry = registry.create("*/5 * * * *", "Recurring", None);
+
+        // when
+        registry
+            .record_run(&entry.cron_id)
+            .expect("first run should succeed");
+        registry
+            .record_run(&entry.cron_id)
+            .expect("second run should succeed");
+        let fetched = registry.get(&entry.cron_id).expect("entry should exist");
+
+        // then
+        assert_eq!(fetched.run_count, 2);
+        assert!(fetched.last_run_at.is_some());
+        assert!(fetched.updated_at >= entry.updated_at);
+    }
+
+    #[test]
+    fn cron_disable_updates_timestamp() {
+        // given
+        let registry = CronRegistry::new();
+        let entry = registry.create("0 0 * * *", "Nightly", None);
+
+        // when
+        registry
+            .disable(&entry.cron_id)
+            .expect("disable should succeed");
+        let fetched = registry.get(&entry.cron_id).expect("entry should exist");
+
+        // then
+        assert!(!fetched.enabled);
+        assert!(fetched.updated_at >= entry.updated_at);
     }
 }

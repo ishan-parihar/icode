@@ -37,7 +37,6 @@ impl LspAction {
     }
 }
 
-/// A diagnostic entry from an LSP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspDiagnostic {
     pub path: String,
@@ -48,7 +47,6 @@ pub struct LspDiagnostic {
     pub source: Option<String>,
 }
 
-/// A location result (definition, references).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspLocation {
     pub path: String,
@@ -59,14 +57,12 @@ pub struct LspLocation {
     pub preview: Option<String>,
 }
 
-/// A hover result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspHoverResult {
     pub content: String,
     pub language: Option<String>,
 }
 
-/// A completion item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspCompletionItem {
     pub label: String,
@@ -75,7 +71,6 @@ pub struct LspCompletionItem {
     pub insert_text: Option<String>,
 }
 
-/// A document symbol.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspSymbol {
     pub name: String,
@@ -85,7 +80,6 @@ pub struct LspSymbol {
     pub character: u32,
 }
 
-/// Connection status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LspServerStatus {
@@ -106,7 +100,6 @@ impl std::fmt::Display for LspServerStatus {
     }
 }
 
-/// Tracked state of an LSP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerState {
     pub language: String,
@@ -116,7 +109,6 @@ pub struct LspServerState {
     pub diagnostics: Vec<LspDiagnostic>,
 }
 
-/// Thread-safe LSP server registry.
 #[derive(Debug, Clone, Default)]
 pub struct LspRegistry {
     inner: Arc<Mutex<RegistryInner>>,
@@ -133,7 +125,6 @@ impl LspRegistry {
         Self::default()
     }
 
-    /// Register an LSP server for a language.
     pub fn register(
         &self,
         language: &str,
@@ -154,7 +145,6 @@ impl LspRegistry {
         );
     }
 
-    /// Get server state by language.
     pub fn get(&self, language: &str) -> Option<LspServerState> {
         let inner = self.inner.lock().expect("lsp registry lock poisoned");
         inner.servers.get(language).cloned()
@@ -434,5 +424,327 @@ mod tests {
         let removed = registry.disconnect("rust");
         assert!(removed.is_some());
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn lsp_action_from_str_all_aliases() {
+        // given
+        let cases = [
+            ("diagnostics", Some(LspAction::Diagnostics)),
+            ("hover", Some(LspAction::Hover)),
+            ("definition", Some(LspAction::Definition)),
+            ("goto_definition", Some(LspAction::Definition)),
+            ("references", Some(LspAction::References)),
+            ("find_references", Some(LspAction::References)),
+            ("completion", Some(LspAction::Completion)),
+            ("completions", Some(LspAction::Completion)),
+            ("symbols", Some(LspAction::Symbols)),
+            ("document_symbols", Some(LspAction::Symbols)),
+            ("format", Some(LspAction::Format)),
+            ("formatting", Some(LspAction::Format)),
+            ("unknown", None),
+        ];
+
+        // when
+        let resolved: Vec<_> = cases
+            .into_iter()
+            .map(|(input, expected)| (input, LspAction::from_str(input), expected))
+            .collect();
+
+        // then
+        for (input, actual, expected) in resolved {
+            assert_eq!(actual, expected, "unexpected action resolution for {input}");
+        }
+    }
+
+    #[test]
+    fn lsp_server_status_display_all_variants() {
+        // given
+        let cases = [
+            (LspServerStatus::Connected, "connected"),
+            (LspServerStatus::Disconnected, "disconnected"),
+            (LspServerStatus::Starting, "starting"),
+            (LspServerStatus::Error, "error"),
+        ];
+
+        // when
+        let rendered: Vec<_> = cases
+            .into_iter()
+            .map(|(status, expected)| (status.to_string(), expected))
+            .collect();
+
+        // then
+        assert_eq!(
+            rendered,
+            vec![
+                ("connected".to_string(), "connected"),
+                ("disconnected".to_string(), "disconnected"),
+                ("starting".to_string(), "starting"),
+                ("error".to_string(), "error"),
+            ]
+        );
+    }
+
+    #[test]
+    fn dispatch_diagnostics_without_path_aggregates() {
+        // given
+        let registry = LspRegistry::new();
+        registry.register("rust", LspServerStatus::Connected, None, vec![]);
+        registry.register("python", LspServerStatus::Connected, None, vec![]);
+        registry
+            .add_diagnostics(
+                "rust",
+                vec![LspDiagnostic {
+                    path: "src/lib.rs".into(),
+                    line: 1,
+                    character: 0,
+                    severity: "warning".into(),
+                    message: "unused import".into(),
+                    source: Some("rust-analyzer".into()),
+                }],
+            )
+            .expect("rust diagnostics should add");
+        registry
+            .add_diagnostics(
+                "python",
+                vec![LspDiagnostic {
+                    path: "script.py".into(),
+                    line: 2,
+                    character: 4,
+                    severity: "error".into(),
+                    message: "undefined name".into(),
+                    source: Some("pyright".into()),
+                }],
+            )
+            .expect("python diagnostics should add");
+
+        // when
+        let result = registry
+            .dispatch("diagnostics", None, None, None, None)
+            .expect("aggregate diagnostics should work");
+
+        // then
+        assert_eq!(result["action"], "diagnostics");
+        assert_eq!(result["count"], 2);
+        assert_eq!(result["diagnostics"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn dispatch_non_diagnostics_requires_path() {
+        // given
+        let registry = LspRegistry::new();
+
+        // when
+        let result = registry.dispatch("hover", None, Some(1), Some(0), None);
+
+        // then
+        assert_eq!(
+            result.expect_err("path should be required"),
+            "path is required for this LSP action"
+        );
+    }
+
+    #[test]
+    fn dispatch_no_server_for_path_errors() {
+        // given
+        let registry = LspRegistry::new();
+
+        // when
+        let result = registry.dispatch("hover", Some("notes.md"), Some(1), Some(0), None);
+
+        // then
+        let error = result.expect_err("missing server should fail");
+        assert!(error.contains("no LSP server available for path: notes.md"));
+    }
+
+    #[test]
+    fn dispatch_disconnected_server_error_payload() {
+        // given
+        let registry = LspRegistry::new();
+        registry.register("typescript", LspServerStatus::Disconnected, None, vec![]);
+
+        // when
+        let result = registry.dispatch("hover", Some("src/index.ts"), Some(3), Some(2), None);
+
+        // then
+        let error = result.expect_err("disconnected server should fail");
+        assert!(error.contains("typescript"));
+        assert!(error.contains("disconnected"));
+    }
+
+    #[test]
+    fn find_server_for_all_extensions() {
+        // given
+        let registry = LspRegistry::new();
+        for language in [
+            "rust",
+            "typescript",
+            "javascript",
+            "python",
+            "go",
+            "java",
+            "c",
+            "cpp",
+            "ruby",
+            "lua",
+        ] {
+            registry.register(language, LspServerStatus::Connected, None, vec![]);
+        }
+        let cases = [
+            ("src/main.rs", "rust"),
+            ("src/index.ts", "typescript"),
+            ("src/view.tsx", "typescript"),
+            ("src/app.js", "javascript"),
+            ("src/app.jsx", "javascript"),
+            ("script.py", "python"),
+            ("main.go", "go"),
+            ("Main.java", "java"),
+            ("native.c", "c"),
+            ("native.h", "c"),
+            ("native.cpp", "cpp"),
+            ("native.hpp", "cpp"),
+            ("native.cc", "cpp"),
+            ("script.rb", "ruby"),
+            ("script.lua", "lua"),
+        ];
+
+        // when
+        let resolved: Vec<_> = cases
+            .into_iter()
+            .map(|(path, expected)| {
+                (
+                    path,
+                    registry
+                        .find_server_for_path(path)
+                        .map(|server| server.language),
+                    expected,
+                )
+            })
+            .collect();
+
+        // then
+        for (path, actual, expected) in resolved {
+            assert_eq!(
+                actual.as_deref(),
+                Some(expected),
+                "unexpected mapping for {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_server_for_path_no_extension() {
+        // given
+        let registry = LspRegistry::new();
+        registry.register("rust", LspServerStatus::Connected, None, vec![]);
+
+        // when
+        let result = registry.find_server_for_path("Makefile");
+
+        // then
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn list_servers_with_multiple() {
+        // given
+        let registry = LspRegistry::new();
+        registry.register("rust", LspServerStatus::Connected, None, vec![]);
+        registry.register("typescript", LspServerStatus::Starting, None, vec![]);
+        registry.register("python", LspServerStatus::Error, None, vec![]);
+
+        // when
+        let servers = registry.list_servers();
+
+        // then
+        assert_eq!(servers.len(), 3);
+        assert!(servers.iter().any(|server| server.language == "rust"));
+        assert!(servers.iter().any(|server| server.language == "typescript"));
+        assert!(servers.iter().any(|server| server.language == "python"));
+    }
+
+    #[test]
+    fn get_missing_server_returns_none() {
+        // given
+        let registry = LspRegistry::new();
+
+        // when
+        let server = registry.get("missing");
+
+        // then
+        assert!(server.is_none());
+    }
+
+    #[test]
+    fn add_diagnostics_missing_language_errors() {
+        // given
+        let registry = LspRegistry::new();
+
+        // when
+        let result = registry.add_diagnostics("missing", vec![]);
+
+        // then
+        let error = result.expect_err("missing language should fail");
+        assert!(error.contains("LSP server not found for language: missing"));
+    }
+
+    #[test]
+    fn get_diagnostics_across_servers() {
+        // given
+        let registry = LspRegistry::new();
+        let shared_path = "shared/file.txt";
+        registry.register("rust", LspServerStatus::Connected, None, vec![]);
+        registry.register("python", LspServerStatus::Connected, None, vec![]);
+        registry
+            .add_diagnostics(
+                "rust",
+                vec![LspDiagnostic {
+                    path: shared_path.into(),
+                    line: 4,
+                    character: 1,
+                    severity: "warning".into(),
+                    message: "warn".into(),
+                    source: None,
+                }],
+            )
+            .expect("rust diagnostics should add");
+        registry
+            .add_diagnostics(
+                "python",
+                vec![LspDiagnostic {
+                    path: shared_path.into(),
+                    line: 8,
+                    character: 3,
+                    severity: "error".into(),
+                    message: "err".into(),
+                    source: None,
+                }],
+            )
+            .expect("python diagnostics should add");
+
+        // when
+        let diagnostics = registry.get_diagnostics(shared_path);
+
+        // then
+        assert_eq!(diagnostics.len(), 2);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "warn"));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "err"));
+    }
+
+    #[test]
+    fn clear_diagnostics_missing_language_errors() {
+        // given
+        let registry = LspRegistry::new();
+
+        // when
+        let result = registry.clear_diagnostics("missing");
+
+        // then
+        let error = result.expect_err("missing language should fail");
+        assert!(error.contains("LSP server not found for language: missing"));
     }
 }

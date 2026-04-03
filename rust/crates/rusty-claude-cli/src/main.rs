@@ -40,9 +40,11 @@ use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
-    parse_oauth_callback_request_target, resolve_sandbox_status, save_oauth_credentials, ApiClient,
-    ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
-    ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
+    parse_oauth_callback_request_target,
+    permission_enforcer::PermissionEnforcer,
+    resolve_sandbox_status, save_oauth_credentials, ApiClient, ApiRequest, AssistantEvent,
+    CompactionConfig, ConfigLoader, ConfigSource, ContentBlock, ConversationMessage,
+    ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
     OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
     ResolvedPermissionMode, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
     UsageTracker,
@@ -1939,7 +1941,7 @@ impl LiveCli {
                 false
             }
             SlashCommand::Teleport { target } => {
-                self.run_teleport(target.as_deref())?;
+                Self::run_teleport(target.as_deref())?;
                 false
             }
             SlashCommand::DebugToolCall => {
@@ -2507,8 +2509,7 @@ impl LiveCli {
         Ok(())
     }
 
-    #[allow(clippy::unused_self)]
-    fn run_teleport(&self, target: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_teleport(target: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) else {
             println!("Usage: /teleport <symbol-or-path>");
             return Ok(());
@@ -3983,6 +3984,10 @@ fn build_runtime_with_plugin_state(
         plugin_registry,
     } = runtime_plugin_state;
     plugin_registry.initialize()?;
+    let policy = permission_policy(permission_mode, &feature_config, &tool_registry)
+        .map_err(std::io::Error::other)?;
+    let mut tool_registry = tool_registry;
+    tool_registry.set_enforcer(PermissionEnforcer::new(policy.clone()));
     let mut runtime = ConversationRuntime::new_with_features(
         session,
         AnthropicRuntimeClient::new(
@@ -3994,9 +3999,8 @@ fn build_runtime_with_plugin_state(
             tool_registry.clone(),
             progress_reporter,
         )?,
-        CliToolExecutor::new(allowed_tools.clone(), emit_output, tool_registry.clone()),
-        permission_policy(permission_mode, &feature_config, &tool_registry)
-            .map_err(std::io::Error::other)?,
+        CliToolExecutor::new(allowed_tools.clone(), emit_output, tool_registry),
+        policy,
         system_prompt,
         &feature_config,
     );

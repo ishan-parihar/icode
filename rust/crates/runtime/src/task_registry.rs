@@ -332,4 +332,139 @@ mod tests {
             .set_status("nonexistent", TaskStatus::Running)
             .is_err());
     }
+
+    #[test]
+    fn task_status_display_all_variants() {
+        // given
+        let cases = [
+            (TaskStatus::Created, "created"),
+            (TaskStatus::Running, "running"),
+            (TaskStatus::Completed, "completed"),
+            (TaskStatus::Failed, "failed"),
+            (TaskStatus::Stopped, "stopped"),
+        ];
+
+        // when
+        let rendered: Vec<_> = cases
+            .into_iter()
+            .map(|(status, expected)| (status.to_string(), expected))
+            .collect();
+
+        // then
+        assert_eq!(
+            rendered,
+            vec![
+                ("created".to_string(), "created"),
+                ("running".to_string(), "running"),
+                ("completed".to_string(), "completed"),
+                ("failed".to_string(), "failed"),
+                ("stopped".to_string(), "stopped"),
+            ]
+        );
+    }
+
+    #[test]
+    fn stop_rejects_completed_task() {
+        // given
+        let registry = TaskRegistry::new();
+        let task = registry.create("done", None);
+        registry
+            .set_status(&task.task_id, TaskStatus::Completed)
+            .expect("set status should succeed");
+
+        // when
+        let result = registry.stop(&task.task_id);
+
+        // then
+        let error = result.expect_err("completed task should be rejected");
+        assert!(error.contains("already in terminal state"));
+        assert!(error.contains("completed"));
+    }
+
+    #[test]
+    fn stop_rejects_failed_task() {
+        // given
+        let registry = TaskRegistry::new();
+        let task = registry.create("failed", None);
+        registry
+            .set_status(&task.task_id, TaskStatus::Failed)
+            .expect("set status should succeed");
+
+        // when
+        let result = registry.stop(&task.task_id);
+
+        // then
+        let error = result.expect_err("failed task should be rejected");
+        assert!(error.contains("already in terminal state"));
+        assert!(error.contains("failed"));
+    }
+
+    #[test]
+    fn stop_succeeds_from_created_state() {
+        // given
+        let registry = TaskRegistry::new();
+        let task = registry.create("created task", None);
+
+        // when
+        let stopped = registry.stop(&task.task_id).expect("stop should succeed");
+
+        // then
+        assert_eq!(stopped.status, TaskStatus::Stopped);
+        assert!(stopped.updated_at >= task.updated_at);
+    }
+
+    #[test]
+    fn new_registry_is_empty() {
+        // given
+        let registry = TaskRegistry::new();
+
+        // when
+        let all_tasks = registry.list(None);
+
+        // then
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+        assert!(all_tasks.is_empty());
+    }
+
+    #[test]
+    fn create_without_description() {
+        // given
+        let registry = TaskRegistry::new();
+
+        // when
+        let task = registry.create("Do the thing", None);
+
+        // then
+        assert!(task.task_id.starts_with("task_"));
+        assert_eq!(task.description, None);
+        assert!(task.messages.is_empty());
+        assert!(task.output.is_empty());
+        assert_eq!(task.team_id, None);
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_none() {
+        // given
+        let registry = TaskRegistry::new();
+
+        // when
+        let removed = registry.remove("missing");
+
+        // then
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn assign_team_rejects_missing_task() {
+        // given
+        let registry = TaskRegistry::new();
+
+        // when
+        let result = registry.assign_team("missing", "team_123");
+
+        // then
+        let error = result.expect_err("missing task should be rejected");
+        assert_eq!(error, "task not found: missing");
+    }
 }
