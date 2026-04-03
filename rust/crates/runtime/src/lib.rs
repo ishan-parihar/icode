@@ -6,6 +6,7 @@ mod conversation;
 mod file_ops;
 mod hooks;
 mod json;
+pub mod lsp_client;
 mod mcp;
 mod mcp_client;
 mod mcp_stdio;

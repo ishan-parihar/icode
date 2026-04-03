@@ -12,6 +12,7 @@ use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
     edit_file, execute_bash, glob_search, grep_search, load_system_prompt,
+    lsp_client::LspRegistry,
     mcp_tool_bridge::McpToolRegistry,
     read_file,
     task_registry::TaskRegistry,
@@ -24,6 +25,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Global task registry shared across tool invocations within a session.
+fn global_lsp_registry() -> &'static LspRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<LspRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(LspRegistry::new)
+}
+
 fn global_mcp_registry() -> &'static McpToolRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<McpToolRegistry> = OnceLock::new();
@@ -1113,15 +1120,21 @@ fn run_cron_list(_input: Value) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_lsp(input: LspInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "action": input.action,
-        "path": input.path,
-        "line": input.line,
-        "character": input.character,
-        "query": input.query,
-        "results": [],
-        "message": "LSP server not connected"
-    }))
+    let registry = global_lsp_registry();
+    let action = &input.action;
+    let path = input.path.as_deref();
+    let line = input.line;
+    let character = input.character;
+    let query = input.query.as_deref();
+
+    match registry.dispatch(action, path, line, character, query) {
+        Ok(result) => to_pretty_json(result),
+        Err(e) => to_pretty_json(json!({
+            "action": action,
+            "error": e,
+            "status": "error"
+        })),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
