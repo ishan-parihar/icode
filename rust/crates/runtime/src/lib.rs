@@ -17,7 +17,6 @@ pub mod mcp_tool_bridge;
 mod oauth;
 pub mod permission_enforcer;
 mod policy_engine;
-||||||| f76311f
 pub mod recovery_recipes;
 mod permissions;
 pub mod plugin_lifecycle;
@@ -28,7 +27,6 @@ pub mod sandbox;
 mod session;
 mod sse;
 pub mod stale_branch;
-||||||| f76311f
 pub mod summary_compression;
 pub mod task_registry;
 pub mod task_packet;
@@ -104,7 +102,6 @@ pub use plugin_lifecycle::{
     DegradedMode, DiscoveryResult, PluginHealthcheck, PluginLifecycle, PluginLifecycleEvent,
     PluginState, ResourceInfo, ServerHealth, ServerStatus, ToolInfo,
 };
-||||||| f76311f
 pub use recovery_recipes::{
     attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
     RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
@@ -134,20 +131,14 @@ pub use stale_branch::{
 };
 pub use sse::{IncrementalSseParser, SseEvent};
 pub use task_packet::{
-    validate_packet, AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy, GreenLevel,
+    validate_packet, AcceptanceTest, BranchPolicy, CommitPolicy,
     RepoConfig, ReportingContract, TaskPacket, TaskPacketValidationError, TaskScope,
     ValidatedPacket,
 };
-||||||| f76311f
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
-||||||| f76311f
 pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
-||||||| f76311f
-pub use usage::{
-    format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
-};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
     WorkerRegistry, WorkerStatus,
