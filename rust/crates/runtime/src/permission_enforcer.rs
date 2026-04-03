@@ -32,6 +32,12 @@ impl PermissionEnforcer {
     /// Check whether a tool can be executed under the current permission policy.
     /// Auto-denies when prompting is required but no prompter is provided.
     pub fn check(&self, tool_name: &str, input: &str) -> EnforcementResult {
+        // When the active mode is Prompt, defer to the caller's interactive
+        // prompt flow rather than hard-denying (the enforcer has no prompter).
+        if self.policy.active_mode() == PermissionMode::Prompt {
+            return EnforcementResult::Allowed;
+        }
+
         let outcome = self.policy.authorize(tool_name, input, None);
 
         match outcome {
