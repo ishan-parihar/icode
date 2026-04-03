@@ -12,15 +12,28 @@ use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
     edit_file, execute_bash, glob_search, grep_search, load_system_prompt, read_file,
-    task_registry::TaskRegistry, write_file, ApiClient, ApiRequest, AssistantEvent,
-    BashCommandInput, ContentBlock, ConversationMessage, ConversationRuntime, GrepSearchInput,
-    MessageRole, PermissionMode, PermissionPolicy, PromptCacheEvent, RuntimeError, Session,
-    ToolError, ToolExecutor,
+    task_registry::TaskRegistry,
+    team_cron_registry::{CronRegistry, TeamRegistry},
+    write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock,
+    ConversationMessage, ConversationRuntime, GrepSearchInput, MessageRole, PermissionMode,
+    PermissionPolicy, PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Global task registry shared across tool invocations within a session.
+fn global_team_registry() -> &'static TeamRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<TeamRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(TeamRegistry::new)
+}
+
+fn global_cron_registry() -> &'static CronRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<CronRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(CronRegistry::new)
+}
+
 fn global_task_registry() -> &'static TaskRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<TaskRegistry> = OnceLock::new();
@@ -1007,59 +1020,86 @@ fn run_task_output(input: TaskIdInput) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_team_create(input: TeamCreateInput) -> Result<String, String> {
-    let team_id = format!(
-        "team_{:08x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    );
+    let task_ids: Vec<String> = input
+        .tasks
+        .iter()
+        .filter_map(|t| t.get("task_id").and_then(|v| v.as_str()).map(str::to_owned))
+        .collect();
+    let team = global_team_registry().create(&input.name, task_ids);
+    // Register team assignment on each task
+    for task_id in &team.task_ids {
+        let _ = global_task_registry().assign_team(task_id, &team.team_id);
+    }
     to_pretty_json(json!({
-        "team_id": team_id,
-        "name": input.name,
-        "task_count": input.tasks.len(),
-        "status": "created"
+        "team_id": team.team_id,
+        "name": team.name,
+        "task_count": team.task_ids.len(),
+        "task_ids": team.task_ids,
+        "status": team.status,
+        "created_at": team.created_at
     }))
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_team_delete(input: TeamDeleteInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "team_id": input.team_id,
-        "status": "deleted"
-    }))
+    match global_team_registry().delete(&input.team_id) {
+        Ok(team) => to_pretty_json(json!({
+            "team_id": team.team_id,
+            "name": team.name,
+            "status": team.status,
+            "message": "Team deleted"
+        })),
+        Err(e) => Err(e),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_cron_create(input: CronCreateInput) -> Result<String, String> {
-    let cron_id = format!(
-        "cron_{:08x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    );
+    let entry =
+        global_cron_registry().create(&input.schedule, &input.prompt, input.description.as_deref());
     to_pretty_json(json!({
-        "cron_id": cron_id,
-        "schedule": input.schedule,
-        "prompt": input.prompt,
-        "description": input.description,
-        "status": "created"
+        "cron_id": entry.cron_id,
+        "schedule": entry.schedule,
+        "prompt": entry.prompt,
+        "description": entry.description,
+        "enabled": entry.enabled,
+        "created_at": entry.created_at
     }))
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_cron_delete(input: CronDeleteInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "cron_id": input.cron_id,
-        "status": "deleted"
-    }))
+    match global_cron_registry().delete(&input.cron_id) {
+        Ok(entry) => to_pretty_json(json!({
+            "cron_id": entry.cron_id,
+            "schedule": entry.schedule,
+            "status": "deleted",
+            "message": "Cron entry removed"
+        })),
+        Err(e) => Err(e),
+    }
 }
 
 fn run_cron_list(_input: Value) -> Result<String, String> {
+    let entries: Vec<_> = global_cron_registry()
+        .list(false)
+        .into_iter()
+        .map(|e| {
+            json!({
+                "cron_id": e.cron_id,
+                "schedule": e.schedule,
+                "prompt": e.prompt,
+                "description": e.description,
+                "enabled": e.enabled,
+                "run_count": e.run_count,
+                "last_run_at": e.last_run_at,
+                "created_at": e.created_at
+            })
+        })
+        .collect();
     to_pretty_json(json!({
-        "crons": [],
-        "message": "No scheduled tasks found"
+        "crons": entries,
+        "count": entries.len()
     }))
 }
 
