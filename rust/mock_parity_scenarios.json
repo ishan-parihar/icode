@@ -4,7 +4,7 @@
     "category": "baseline",
     "description": "Validates streamed assistant text with no tool calls.",
     "parity_refs": [
-      "Mock parity harness — milestone 1",
+      "Mock parity harness \u2014 milestone 1",
       "Streaming response support validated by the mock parity harness"
     ]
   },
@@ -13,8 +13,8 @@
     "category": "file-tools",
     "description": "Exercises read_file tool execution and final assistant synthesis.",
     "parity_refs": [
-      "Mock parity harness — milestone 1",
-      "File tools — harness-validated flows"
+      "Mock parity harness \u2014 milestone 1",
+      "File tools \u2014 harness-validated flows"
     ]
   },
   {
@@ -22,8 +22,8 @@
     "category": "file-tools",
     "description": "Validates grep_search partial JSON chunk assembly and follow-up synthesis.",
     "parity_refs": [
-      "Mock parity harness — milestone 1",
-      "File tools — harness-validated flows"
+      "Mock parity harness \u2014 milestone 1",
+      "File tools \u2014 harness-validated flows"
     ]
   },
   {
@@ -31,8 +31,8 @@
     "category": "file-tools",
     "description": "Confirms workspace-write write_file success and filesystem side effects.",
     "parity_refs": [
-      "Mock parity harness — milestone 1",
-      "File tools — harness-validated flows"
+      "Mock parity harness \u2014 milestone 1",
+      "File tools \u2014 harness-validated flows"
     ]
   },
   {
@@ -40,7 +40,7 @@
     "category": "permissions",
     "description": "Confirms read-only mode blocks write_file with an error result.",
     "parity_refs": [
-      "Mock parity harness — milestone 1",
+      "Mock parity harness \u2014 milestone 1",
       "Permission enforcement across tool paths"
     ]
   },
@@ -49,7 +49,7 @@
     "category": "multi-tool-turns",
     "description": "Executes read_file and grep_search in the same assistant turn before the final reply.",
     "parity_refs": [
-      "Mock parity harness — milestone 2 (behavioral expansion)",
+      "Mock parity harness \u2014 milestone 2 (behavioral expansion)",
       "Multi-tool assistant turns"
     ]
   },
@@ -58,8 +58,8 @@
     "category": "bash",
     "description": "Validates bash execution and stdout roundtrip in danger-full-access mode.",
     "parity_refs": [
-      "Mock parity harness — milestone 2 (behavioral expansion)",
-      "Bash tool — upstream has 18 submodules, Rust has 1:"
+      "Mock parity harness \u2014 milestone 2 (behavioral expansion)",
+      "Bash tool \u2014 upstream has 18 submodules, Rust has 1:"
     ]
   },
   {
@@ -67,7 +67,7 @@
     "category": "permissions",
     "description": "Exercises workspace-write to bash escalation with a positive approval response.",
     "parity_refs": [
-      "Mock parity harness — milestone 2 (behavioral expansion)",
+      "Mock parity harness \u2014 milestone 2 (behavioral expansion)",
       "Permission enforcement across tool paths"
     ]
   },
@@ -76,7 +76,7 @@
     "category": "permissions",
     "description": "Exercises workspace-write to bash escalation with a denied approval response.",
     "parity_refs": [
-      "Mock parity harness — milestone 2 (behavioral expansion)",
+      "Mock parity harness \u2014 milestone 2 (behavioral expansion)",
       "Permission enforcement across tool paths"
     ]
   },
@@ -85,8 +85,25 @@
     "category": "plugin-paths",
     "description": "Loads an external plugin tool and executes it through the runtime tool registry.",
     "parity_refs": [
-      "Mock parity harness — milestone 2 (behavioral expansion)",
+      "Mock parity harness \u2014 milestone 2 (behavioral expansion)",
       "Plugin tool execution path"
+    ]
+  },
+  {
+    "name": "auto_compact_triggered",
+    "category": "session-compaction",
+    "description": "Verifies auto-compact fires when cumulative input tokens exceed the configured threshold.",
+    "parity_refs": [
+      "Session compaction behavior matching",
+      "auto_compaction threshold from env"
+    ]
+  },
+  {
+    "name": "token_cost_reporting",
+    "category": "token-usage",
+    "description": "Confirms usage token counts and estimated_cost appear in JSON output.",
+    "parity_refs": [
+      "Token counting / cost tracking accuracy"
     ]
   }
 ]

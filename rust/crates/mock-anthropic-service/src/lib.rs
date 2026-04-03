@@ -98,6 +98,8 @@ enum Scenario {
     BashPermissionPromptApproved,
     BashPermissionPromptDenied,
     PluginToolRoundtrip,
+    AutoCompactTriggered,
+    TokenCostReporting,
 }
 
 impl Scenario {
@@ -113,6 +115,8 @@ impl Scenario {
             "bash_permission_prompt_approved" => Some(Self::BashPermissionPromptApproved),
             "bash_permission_prompt_denied" => Some(Self::BashPermissionPromptDenied),
             "plugin_tool_roundtrip" => Some(Self::PluginToolRoundtrip),
+            "auto_compact_triggered" => Some(Self::AutoCompactTriggered),
+            "token_cost_reporting" => Some(Self::TokenCostReporting),
             _ => None,
         }
     }
@@ -129,6 +133,8 @@ impl Scenario {
             Self::BashPermissionPromptApproved => "bash_permission_prompt_approved",
             Self::BashPermissionPromptDenied => "bash_permission_prompt_denied",
             Self::PluginToolRoundtrip => "plugin_tool_roundtrip",
+            Self::AutoCompactTriggered => "auto_compact_triggered",
+            Self::TokenCostReporting => "token_cost_reporting",
         }
     }
 }
@@ -452,6 +458,12 @@ fn build_stream_body(request: &MessageRequest, scenario: Scenario) -> String {
                 &[r#"{"message":"hello from plugin parity"}"#],
             ),
         },
+        Scenario::AutoCompactTriggered => {
+            final_text_sse_with_usage("auto compact parity complete.", 50_000, 200)
+        }
+        Scenario::TokenCostReporting => {
+            final_text_sse_with_usage("token cost reporting parity complete.", 1_000, 500)
+        }
     }
 }
 
@@ -610,6 +622,18 @@ fn build_message_response(request: &MessageRequest, scenario: Scenario) -> Messa
                 json!({"message": "hello from plugin parity"}),
             ),
         },
+        Scenario::AutoCompactTriggered => text_message_response_with_usage(
+            "msg_auto_compact_triggered",
+            "auto compact parity complete.",
+            50_000,
+            200,
+        ),
+        Scenario::TokenCostReporting => text_message_response_with_usage(
+            "msg_token_cost_reporting",
+            "token cost reporting parity complete.",
+            1_000,
+            500,
+        ),
     }
 }
 
@@ -625,6 +649,8 @@ fn request_id_for(scenario: Scenario) -> &'static str {
         Scenario::BashPermissionPromptApproved => "req_bash_permission_prompt_approved",
         Scenario::BashPermissionPromptDenied => "req_bash_permission_prompt_denied",
         Scenario::PluginToolRoundtrip => "req_plugin_tool_roundtrip",
+        Scenario::AutoCompactTriggered => "req_auto_compact_triggered",
+        Scenario::TokenCostReporting => "req_token_cost_reporting",
     }
 }
 
@@ -656,6 +682,32 @@ fn text_message_response(id: &str, text: &str) -> MessageResponse {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
             output_tokens: 6,
+        },
+        request_id: None,
+    }
+}
+
+fn text_message_response_with_usage(
+    id: &str,
+    text: &str,
+    input_tokens: u32,
+    output_tokens: u32,
+) -> MessageResponse {
+    MessageResponse {
+        id: id.to_string(),
+        kind: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![OutputContentBlock::Text {
+            text: text.to_string(),
+        }],
+        model: DEFAULT_MODEL.to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        usage: Usage {
+            input_tokens,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            output_tokens,
         },
         request_id: None,
     }
@@ -913,6 +965,74 @@ fn final_text_sse(text: &str) -> String {
             "type": "message_delta",
             "delta": {"stop_reason": "end_turn", "stop_sequence": null},
             "usage": usage_json(14, 7)
+        }),
+    );
+    append_sse(&mut body, "message_stop", json!({"type": "message_stop"}));
+    body
+}
+
+fn final_text_sse_with_usage(text: &str, input_tokens: u32, output_tokens: u32) -> String {
+    let mut body = String::new();
+    append_sse(
+        &mut body,
+        "message_start",
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": unique_message_id(),
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": DEFAULT_MODEL,
+                "stop_reason": null,
+                "stop_sequence": null,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 0
+                }
+            }
+        }),
+    );
+    append_sse(
+        &mut body,
+        "content_block_start",
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        }),
+    );
+    append_sse(
+        &mut body,
+        "content_block_delta",
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text}
+        }),
+    );
+    append_sse(
+        &mut body,
+        "content_block_stop",
+        json!({
+            "type": "content_block_stop",
+            "index": 0
+        }),
+    );
+    append_sse(
+        &mut body,
+        "message_delta",
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+            "usage": {
+                "input_tokens": input_tokens,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": output_tokens
+            }
         }),
     );
     append_sse(&mut body, "message_stop", json!({"type": "message_stop"}));

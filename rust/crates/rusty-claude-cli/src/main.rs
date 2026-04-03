@@ -46,7 +46,7 @@ use runtime::{
     ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
     OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
     ResolvedPermissionMode, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
-    UsageTracker,
+    UsageTracker, ModelPricing, format_usd, pricing_for_model,
 };
 use serde_json::json;
 use tools::GlobalToolRegistry;
@@ -1899,7 +1899,13 @@ impl LiveCli {
                     "output_tokens": summary.usage.output_tokens,
                     "cache_creation_input_tokens": summary.usage.cache_creation_input_tokens,
                     "cache_read_input_tokens": summary.usage.cache_read_input_tokens,
-                }
+                },
+                "estimated_cost": format_usd(
+                    summary.usage.estimate_cost_usd_with_pricing(
+                        pricing_for_model(&self.model)
+                            .unwrap_or_else(runtime::ModelPricing::default_sonnet_tier)
+                    ).total_cost_usd()
+                )
             })
         );
         Ok(())

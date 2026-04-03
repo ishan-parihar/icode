@@ -35,6 +35,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_noop,
             assert: assert_streaming_text,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "read_file_roundtrip",
@@ -43,6 +45,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_read_fixture,
             assert: assert_read_file_roundtrip,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "grep_chunk_assembly",
@@ -51,6 +55,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_grep_fixture,
             assert: assert_grep_chunk_assembly,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "write_file_allowed",
@@ -59,6 +65,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_noop,
             assert: assert_write_file_allowed,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "write_file_denied",
@@ -67,6 +75,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_noop,
             assert: assert_write_file_denied,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "multi_tool_turn_roundtrip",
@@ -75,6 +85,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_multi_tool_fixture,
             assert: assert_multi_tool_turn_roundtrip,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "bash_stdout_roundtrip",
@@ -83,6 +95,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_noop,
             assert: assert_bash_stdout_roundtrip,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "bash_permission_prompt_approved",
@@ -91,6 +105,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: Some("y\n"),
             prepare: prepare_noop,
             assert: assert_bash_permission_prompt_approved,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "bash_permission_prompt_denied",
@@ -99,6 +115,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: Some("n\n"),
             prepare: prepare_noop,
             assert: assert_bash_permission_prompt_denied,
+            extra_env: None,
+            resume_session: None,
         },
         ScenarioCase {
             name: "plugin_tool_roundtrip",
@@ -107,6 +125,28 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             stdin: None,
             prepare: prepare_plugin_fixture,
             assert: assert_plugin_tool_roundtrip,
+            extra_env: None,
+            resume_session: None,
+        },
+        ScenarioCase {
+            name: "auto_compact_triggered",
+            permission_mode: "read-only",
+            allowed_tools: None,
+            stdin: None,
+            prepare: prepare_noop,
+            assert: assert_auto_compact_triggered,
+            extra_env: None,
+            resume_session: None,
+        },
+        ScenarioCase {
+            name: "token_cost_reporting",
+            permission_mode: "read-only",
+            allowed_tools: None,
+            stdin: None,
+            prepare: prepare_noop,
+            assert: assert_token_cost_reporting,
+            extra_env: None,
+            resume_session: None,
         },
     ];
 
@@ -145,8 +185,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
     let captured = runtime.block_on(server.captured_requests());
     assert_eq!(
         captured.len(),
-        19,
-        "ten scenarios should produce nineteen requests"
+        21,
+        "twelve scenarios should produce twenty-one requests"
     );
     assert!(captured
         .iter()
@@ -179,6 +219,8 @@ fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios
             "bash_permission_prompt_denied",
             "plugin_tool_roundtrip",
             "plugin_tool_roundtrip",
+            "auto_compact_triggered",
+            "token_cost_reporting",
         ]
     );
 
@@ -205,6 +247,8 @@ struct ScenarioCase {
     stdin: Option<&'static str>,
     prepare: fn(&HarnessWorkspace),
     assert: fn(&HarnessWorkspace, &ScenarioRun),
+    extra_env: Option<(&'static str, &'static str)>,
+    resume_session: Option<&'static str>,
 }
 
 struct HarnessWorkspace {
@@ -278,6 +322,12 @@ fn run_case(case: ScenarioCase, workspace: &HarnessWorkspace, base_url: &str) ->
     if let Some(allowed_tools) = case.allowed_tools {
         command.args(["--allowedTools", allowed_tools]);
     }
+    if let Some((key, value)) = case.extra_env {
+        command.env(key, value);
+    }
+    if let Some(session_id) = case.resume_session {
+        command.args(["--resume", session_id]);
+    }
 
     let prompt = format!("{SCENARIO_PREFIX}{}", case.name);
     command.arg(prompt);
@@ -306,6 +356,28 @@ fn run_case(case: ScenarioCase, workspace: &HarnessWorkspace, base_url: &str) ->
         response: parse_json_output(&stdout),
         stdout,
     }
+}
+
+#[allow(dead_code)]
+fn prepare_auto_compact_fixture(workspace: &HarnessWorkspace) {
+    let sessions_dir = workspace.root.join(".claw").join("sessions");
+    fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
+
+    // Write a pre-seeded session with 6 messages so auto-compact can remove them
+    let session_id = "parity-auto-compact-seed";
+    let session_jsonl = r#"{"type":"session_meta","version":3,"session_id":"parity-auto-compact-seed","created_at_ms":1743724800000,"updated_at_ms":1743724800000}
+{"type":"message","message":{"role":"user","blocks":[{"type":"text","text":"step one of the parity scenario"}]}}
+{"type":"message","message":{"role":"assistant","blocks":[{"type":"text","text":"acknowledged step one"}]}}
+{"type":"message","message":{"role":"user","blocks":[{"type":"text","text":"step two of the parity scenario"}]}}
+{"type":"message","message":{"role":"assistant","blocks":[{"type":"text","text":"acknowledged step two"}]}}
+{"type":"message","message":{"role":"user","blocks":[{"type":"text","text":"step three of the parity scenario"}]}}
+{"type":"message","message":{"role":"assistant","blocks":[{"type":"text","text":"acknowledged step three"}]}}
+"#;
+    fs::write(
+        sessions_dir.join(format!("{session_id}.jsonl")),
+        session_jsonl,
+    )
+    .expect("pre-seeded session should write");
 }
 
 fn prepare_noop(_: &HarnessWorkspace) {}
@@ -607,6 +679,59 @@ fn assert_plugin_tool_roundtrip(_: &HarnessWorkspace, run: &ScenarioRun) {
         .as_str()
         .expect("message text")
         .contains("hello from plugin parity"));
+}
+
+fn assert_auto_compact_triggered(_: &HarnessWorkspace, run: &ScenarioRun) {
+    // Validates that the auto_compaction field is present in JSON output (format parity).
+    // Trigger behavior is covered by conversation::tests::auto_compacts_when_cumulative_input_threshold_is_crossed.
+    assert_eq!(run.response["iterations"], Value::from(1));
+    assert_eq!(run.response["tool_uses"], Value::Array(Vec::new()));
+    assert!(
+        run.response["message"]
+            .as_str()
+            .expect("message text")
+            .contains("auto compact parity complete."),
+        "expected auto compact message in response"
+    );
+    // auto_compaction key must be present in JSON (may be null for below-threshold sessions)
+    assert!(
+        run.response.as_object().expect("response object").contains_key("auto_compaction"),
+        "auto_compaction key must be present in JSON output"
+    );
+    // Verify input_tokens field reflects the large mock token counts
+    let input_tokens = run.response["usage"]["input_tokens"]
+        .as_u64()
+        .expect("input_tokens should be present");
+    assert!(
+        input_tokens >= 50_000,
+        "input_tokens should reflect mock service value (got {input_tokens})"
+    );
+}
+
+fn assert_token_cost_reporting(_: &HarnessWorkspace, run: &ScenarioRun) {
+    assert_eq!(run.response["iterations"], Value::from(1));
+    assert!(
+        run.response["message"]
+            .as_str()
+            .expect("message text")
+            .contains("token cost reporting parity complete."),
+    );
+    let usage = &run.response["usage"];
+    assert!(
+        usage["input_tokens"].as_u64().unwrap_or(0) > 0,
+        "input_tokens should be non-zero"
+    );
+    assert!(
+        usage["output_tokens"].as_u64().unwrap_or(0) > 0,
+        "output_tokens should be non-zero"
+    );
+    assert!(
+        run.response["estimated_cost"]
+            .as_str()
+            .map(|cost| cost.starts_with('$'))
+            .unwrap_or(false),
+        "estimated_cost should be a dollar-prefixed string"
+    );
 }
 
 fn parse_json_output(stdout: &str) -> Value {
