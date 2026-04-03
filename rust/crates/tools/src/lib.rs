@@ -14,6 +14,7 @@ use runtime::{
     edit_file, execute_bash, glob_search, grep_search, load_system_prompt,
     lsp_client::LspRegistry,
     mcp_tool_bridge::McpToolRegistry,
+    permission_enforcer::{EnforcementResult, PermissionEnforcer},
     read_file,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
@@ -870,6 +871,21 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
             required_permission: PermissionMode::DangerFullAccess,
         },
     ]
+}
+
+/// Check permission before executing a tool. Returns Err with denial reason if blocked.
+pub fn enforce_permission_check(
+    enforcer: &PermissionEnforcer,
+    tool_name: &str,
+    input: &Value,
+) -> Result<(), String> {
+    let input_str = serde_json::to_string(input).unwrap_or_default();
+    let result = enforcer.check(tool_name, &input_str);
+
+    match result {
+        EnforcementResult::Allowed => Ok(()),
+        EnforcementResult::Denied { reason, .. } => Err(reason),
+    }
 }
 
 pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
