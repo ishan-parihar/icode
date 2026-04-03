@@ -20,6 +20,7 @@ mod remote;
 pub mod sandbox;
 mod session;
 mod sse;
+pub mod summary_compression;
 pub mod task_registry;
 pub mod team_cron_registry;
 mod usage;
