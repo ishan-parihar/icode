@@ -11,7 +11,9 @@ use api::{
 use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
-    edit_file, execute_bash, glob_search, grep_search, load_system_prompt, read_file,
+    edit_file, execute_bash, glob_search, grep_search, load_system_prompt,
+    mcp_tool_bridge::McpToolRegistry,
+    read_file,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock,
@@ -22,6 +24,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Global task registry shared across tool invocations within a session.
+fn global_mcp_registry() -> &'static McpToolRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<McpToolRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(McpToolRegistry::new)
+}
+
 fn global_team_registry() -> &'static TeamRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<TeamRegistry> = OnceLock::new();
@@ -1118,30 +1126,73 @@ fn run_lsp(input: LspInput) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_list_mcp_resources(input: McpResourceInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "server": input.server,
-        "resources": [],
-        "message": "No MCP resources available"
-    }))
+    let registry = global_mcp_registry();
+    let server = input.server.as_deref().unwrap_or("default");
+    match registry.list_resources(server) {
+        Ok(resources) => {
+            let items: Vec<_> = resources
+                .iter()
+                .map(|r| {
+                    json!({
+                        "uri": r.uri,
+                        "name": r.name,
+                        "description": r.description,
+                        "mime_type": r.mime_type,
+                    })
+                })
+                .collect();
+            to_pretty_json(json!({
+                "server": server,
+                "resources": items,
+                "count": items.len()
+            }))
+        }
+        Err(e) => to_pretty_json(json!({
+            "server": server,
+            "resources": [],
+            "error": e
+        })),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_read_mcp_resource(input: McpResourceInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "server": input.server,
-        "uri": input.uri,
-        "content": "",
-        "message": "Resource not available"
-    }))
+    let registry = global_mcp_registry();
+    let uri = input.uri.as_deref().unwrap_or("");
+    let server = input.server.as_deref().unwrap_or("default");
+    match registry.read_resource(server, uri) {
+        Ok(resource) => to_pretty_json(json!({
+            "server": server,
+            "uri": resource.uri,
+            "name": resource.name,
+            "description": resource.description,
+            "mime_type": resource.mime_type
+        })),
+        Err(e) => to_pretty_json(json!({
+            "server": server,
+            "uri": uri,
+            "error": e
+        })),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_mcp_auth(input: McpAuthInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "server": input.server,
-        "status": "auth_required",
-        "message": "MCP authentication not yet implemented"
-    }))
+    let registry = global_mcp_registry();
+    match registry.get_server(&input.server) {
+        Some(state) => to_pretty_json(json!({
+            "server": input.server,
+            "status": state.status,
+            "server_info": state.server_info,
+            "tool_count": state.tools.len(),
+            "resource_count": state.resources.len()
+        })),
+        None => to_pretty_json(json!({
+            "server": input.server,
+            "status": "disconnected",
+            "message": "Server not registered. Use MCP tool to connect first."
+        })),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1158,13 +1209,22 @@ fn run_remote_trigger(input: RemoteTriggerInput) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "server": input.server,
-        "tool": input.tool,
-        "arguments": input.arguments,
-        "result": null,
-        "message": "MCP tool proxy not yet connected"
-    }))
+    let registry = global_mcp_registry();
+    let args = input.arguments.unwrap_or(serde_json::json!({}));
+    match registry.call_tool(&input.server, &input.tool, &args) {
+        Ok(result) => to_pretty_json(json!({
+            "server": input.server,
+            "tool": input.tool,
+            "result": result,
+            "status": "success"
+        })),
+        Err(e) => to_pretty_json(json!({
+            "server": input.server,
+            "tool": input.tool,
+            "error": e,
+            "status": "error"
+        })),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
