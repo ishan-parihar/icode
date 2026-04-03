@@ -5580,7 +5580,7 @@ mod tests {
         format_unknown_slash_command_message, normalize_permission_mode, parse_args,
         parse_git_status_branch, parse_git_status_metadata_for, parse_git_workspace_summary,
         permission_policy, print_help_to, push_output_block, render_config_report,
-        render_diff_report, render_memory_report, render_repl_help, render_resume_usage,
+        render_diff_report, render_diff_report_for, render_memory_report, render_repl_help, render_resume_usage,
         resolve_model_alias, resolve_session_reference, response_to_events,
         resume_supported_slash_commands, run_resume_command,
         slash_command_completion_candidates_with_sessions, status_context, validate_no_args,
@@ -6632,9 +6632,7 @@ UU conflicted.rs",
         git(&["add", "tracked.txt"], &root);
         git(&["commit", "-m", "init", "--quiet"], &root);
 
-        let report = with_current_dir(&root, || {
-            render_diff_report().expect("diff report should render")
-        });
+        let report = render_diff_report_for(&root).expect("diff report should render");
         assert!(report.contains("clean working tree"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
@@ -6657,9 +6655,7 @@ UU conflicted.rs",
         fs::write(root.join("tracked.txt"), "hello\nstaged\nunstaged\n")
             .expect("update file twice");
 
-        let report = with_current_dir(&root, || {
-            render_diff_report().expect("diff report should render")
-        });
+        let report = render_diff_report_for(&root).expect("diff report should render");
         assert!(report.contains("Staged changes:"));
         assert!(report.contains("Unstaged changes:"));
         assert!(report.contains("tracked.txt"));
@@ -6684,9 +6680,7 @@ UU conflicted.rs",
         fs::write(root.join("ignored.txt"), "secret\n").expect("write ignored file");
         fs::write(root.join("tracked.txt"), "hello\nworld\n").expect("write tracked change");
 
-        let report = with_current_dir(&root, || {
-            render_diff_report().expect("diff report should render")
-        });
+        let report = render_diff_report_for(&root).expect("diff report should render");
         assert!(report.contains("tracked.txt"));
         assert!(!report.contains("+++ b/ignored.txt"));
         assert!(!report.contains("+++ b/.omx/state.json"));
