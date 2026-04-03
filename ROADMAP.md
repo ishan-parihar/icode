@@ -280,6 +280,7 @@ Acceptance:
 10. Swarm branch-lock protocol — when multiple claws target the same branch, add a lock or commit-detection signal so the second claw can skip redundant work instead of running the full explore-plan-implement-test-review cycle on already-committed code
 11. Wire lane-completion emitter — `LaneContext::completed` is a passive bool set by callers; nothing fires it automatically; need a runtime path that sets `completed = true` and triggers the policy engine lane-closeout rule when a branch is pushed, tests pass, and session control reports done
 12. Wire `SummaryCompressor` into the lane event pipeline — `summary_compression.rs` is exported but called nowhere; `LaneEvent` stream is never fed through the compressor; orchestrating claws receive raw events instead of compressed actionable summaries
+13. Add cross-module integration tests — every Phase 1-2 module has unit tests but no integration test connects adjacent modules (e.g. `WorkerFailure` from `worker_boot` into `RecoveryRecipe`, `LaneEvent` through `SummaryCompressor`, `GreenContract::can_merge` after `StaleCheck`); without these, wiring gaps are invisible to CI
 
 ## Suggested Session Split
 
