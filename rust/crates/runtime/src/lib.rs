@@ -20,7 +20,7 @@ mod remote;
 pub mod sandbox;
 mod session;
 mod sse;
-mod stale_branch;
+pub mod stale_branch;
 pub mod task_registry;
 pub mod team_cron_registry;
 mod usage;
