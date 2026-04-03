@@ -62,7 +62,6 @@ pub struct McpServerState {
     pub error_message: Option<String>,
 }
 
-/// Thread-safe registry of MCP server connections for tool dispatch.
 #[derive(Debug, Clone, Default)]
 pub struct McpToolRegistry {
     inner: Arc<Mutex<HashMap<String, McpServerState>>>,
@@ -82,7 +81,6 @@ impl McpToolRegistry {
         self.manager.set(manager)
     }
 
-    /// Register or update an MCP server connection.
     pub fn register_server(
         &self,
         server_name: &str,
@@ -105,19 +103,16 @@ impl McpToolRegistry {
         );
     }
 
-    /// Get current state of an MCP server.
     pub fn get_server(&self, server_name: &str) -> Option<McpServerState> {
         let inner = self.inner.lock().expect("mcp registry lock poisoned");
         inner.get(server_name).cloned()
     }
 
-    /// List all registered MCP servers.
     pub fn list_servers(&self) -> Vec<McpServerState> {
         let inner = self.inner.lock().expect("mcp registry lock poisoned");
         inner.values().cloned().collect()
     }
 
-    /// List resources from a specific server.
     pub fn list_resources(&self, server_name: &str) -> Result<Vec<McpResourceInfo>, String> {
         let inner = self.inner.lock().expect("mcp registry lock poisoned");
         match inner.get(server_name) {
@@ -134,7 +129,6 @@ impl McpToolRegistry {
         }
     }
 
-    /// Read a specific resource from a server.
     pub fn read_resource(&self, server_name: &str, uri: &str) -> Result<McpResourceInfo, String> {
         let inner = self.inner.lock().expect("mcp registry lock poisoned");
         let state = inner
@@ -156,7 +150,6 @@ impl McpToolRegistry {
             .ok_or_else(|| format!("resource '{}' not found on server '{}'", uri, server_name))
     }
 
-    /// List tools exposed by a specific server.
     pub fn list_tools(&self, server_name: &str) -> Result<Vec<McpToolInfo>, String> {
         let inner = self.inner.lock().expect("mcp registry lock poisoned");
         match inner.get(server_name) {

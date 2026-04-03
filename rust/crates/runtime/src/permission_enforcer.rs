@@ -1,9 +1,5 @@
 //! Permission enforcement layer that gates tool execution based on the
 //! active `PermissionPolicy`.
-//!
-//! This module provides `PermissionEnforcer` which wraps tool dispatch
-//! and validates that the active permission mode allows the requested tool
-//! before executing it.
 
 use crate::permissions::{PermissionMode, PermissionOutcome, PermissionPolicy};
 use serde::{Deserialize, Serialize};
@@ -34,7 +30,7 @@ impl PermissionEnforcer {
     }
 
     /// Check whether a tool can be executed under the current permission policy.
-    /// Uses the policy's `authorize` method with no prompter (auto-deny on prompt-required).
+    /// Auto-denies when prompting is required but no prompter is provided.
     pub fn check(&self, tool_name: &str, input: &str) -> EnforcementResult {
         let outcome = self.policy.authorize(tool_name, input, None);
 

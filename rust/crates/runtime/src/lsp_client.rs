@@ -1,8 +1,4 @@
 //! LSP (Language Server Protocol) client registry for tool dispatch.
-//!
-//! Provides a stateful registry of LSP server connections, supporting
-//! the LSP tool actions: diagnostics, hover, definition, references,
-//! completion, symbols, and formatting.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

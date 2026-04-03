@@ -1,8 +1,4 @@
 //! In-memory task registry for sub-agent task lifecycle management.
-//!
-//! Provides create, get, list, stop, update, and output operations
-//! matching the upstream TaskCreate/TaskGet/TaskList/TaskStop/TaskUpdate/TaskOutput
-//! tool surface.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Current status of a managed task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -33,7 +28,6 @@ impl std::fmt::Display for TaskStatus {
     }
 }
 
-/// A single managed task entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub task_id: String,
@@ -47,7 +41,6 @@ pub struct Task {
     pub team_id: Option<String>,
 }
 
-/// A message exchanged with a running task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMessage {
     pub role: String,
@@ -55,7 +48,6 @@ pub struct TaskMessage {
     pub timestamp: u64,
 }
 
-/// Thread-safe task registry.
 #[derive(Debug, Clone, Default)]
 pub struct TaskRegistry {
     inner: Arc<Mutex<RegistryInner>>,
@@ -75,13 +67,11 @@ fn now_secs() -> u64 {
 }
 
 impl TaskRegistry {
-    /// Create a new empty registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a new task and return its ID.
     pub fn create(&self, prompt: &str, description: Option<&str>) -> Task {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         inner.counter += 1;
@@ -102,13 +92,11 @@ impl TaskRegistry {
         task
     }
 
-    /// Look up a task by ID.
     pub fn get(&self, task_id: &str) -> Option<Task> {
         let inner = self.inner.lock().expect("registry lock poisoned");
         inner.tasks.get(task_id).cloned()
     }
 
-    /// List all tasks, optionally filtered by status.
     pub fn list(&self, status_filter: Option<TaskStatus>) -> Vec<Task> {
         let inner = self.inner.lock().expect("registry lock poisoned");
         inner
@@ -119,7 +107,6 @@ impl TaskRegistry {
             .collect()
     }
 
-    /// Mark a task as stopped.
     pub fn stop(&self, task_id: &str) -> Result<Task, String> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         let task = inner
@@ -142,7 +129,6 @@ impl TaskRegistry {
         Ok(task.clone())
     }
 
-    /// Send a message to a task, updating its state.
     pub fn update(&self, task_id: &str, message: &str) -> Result<Task, String> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         let task = inner
@@ -159,7 +145,6 @@ impl TaskRegistry {
         Ok(task.clone())
     }
 
-    /// Get the accumulated output of a task.
     pub fn output(&self, task_id: &str) -> Result<String, String> {
         let inner = self.inner.lock().expect("registry lock poisoned");
         let task = inner
@@ -169,7 +154,6 @@ impl TaskRegistry {
         Ok(task.output.clone())
     }
 
-    /// Append output to a task (used by the task executor).
     pub fn append_output(&self, task_id: &str, output: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         let task = inner
@@ -181,7 +165,6 @@ impl TaskRegistry {
         Ok(())
     }
 
-    /// Transition a task to a new status.
     pub fn set_status(&self, task_id: &str, status: TaskStatus) -> Result<(), String> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         let task = inner
@@ -193,7 +176,6 @@ impl TaskRegistry {
         Ok(())
     }
 
-    /// Assign a task to a team.
     pub fn assign_team(&self, task_id: &str, team_id: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         let task = inner
@@ -205,20 +187,17 @@ impl TaskRegistry {
         Ok(())
     }
 
-    /// Remove a task from the registry.
     pub fn remove(&self, task_id: &str) -> Option<Task> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         inner.tasks.remove(task_id)
     }
 
-    /// Number of tasks in the registry.
     #[must_use]
     pub fn len(&self) -> usize {
         let inner = self.inner.lock().expect("registry lock poisoned");
         inner.tasks.len()
     }
 
-    /// Whether the registry has no tasks.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0

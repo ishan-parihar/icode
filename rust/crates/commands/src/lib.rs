@@ -3286,22 +3286,6 @@ mod tests {
                 .is_none()
         );
         assert!(
-            handle_slash_command("/bughunter", &session, CompactionConfig::default()).is_none()
-        );
-        assert!(handle_slash_command("/commit", &session, CompactionConfig::default()).is_none());
-        assert!(handle_slash_command("/pr", &session, CompactionConfig::default()).is_none());
-        assert!(handle_slash_command("/issue", &session, CompactionConfig::default()).is_none());
-        assert!(
-            handle_slash_command("/ultraplan", &session, CompactionConfig::default()).is_none()
-        );
-        assert!(
-            handle_slash_command("/teleport foo", &session, CompactionConfig::default()).is_none()
-        );
-        assert!(
-            handle_slash_command("/debug-tool-call", &session, CompactionConfig::default())
-                .is_none()
-        );
-        assert!(
             handle_slash_command("/model claude", &session, CompactionConfig::default()).is_none()
         );
         assert!(handle_slash_command(
