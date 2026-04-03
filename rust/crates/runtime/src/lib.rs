@@ -26,6 +26,7 @@ pub mod stale_branch;
 pub mod task_registry;
 pub mod task_packet;
 pub mod team_cron_registry;
+pub mod trust_resolver;
 mod usage;
 pub mod worker_boot;
 
@@ -125,6 +126,8 @@ pub use task_packet::{
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
+||||||| f76311f
+pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
     WorkerRegistry, WorkerStatus,
