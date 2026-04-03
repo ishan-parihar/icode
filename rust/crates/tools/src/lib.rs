@@ -1912,6 +1912,53 @@ struct SkillOutput {
     prompt: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+enum LaneEventName {
+    #[serde(rename = "lane.started")]
+    Started,
+    #[serde(rename = "lane.blocked")]
+    Blocked,
+    #[serde(rename = "lane.finished")]
+    Finished,
+    #[serde(rename = "lane.failed")]
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum LaneFailureClass {
+    PromptDelivery,
+    TrustGate,
+    BranchDivergence,
+    Compile,
+    Test,
+    PluginStartup,
+    McpStartup,
+    McpHandshake,
+    GatewayRouting,
+    ToolRuntime,
+    Infra,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LaneBlocker {
+    #[serde(rename = "failureClass")]
+    failure_class: LaneFailureClass,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LaneEvent {
+    event: LaneEventName,
+    status: String,
+    #[serde(rename = "emittedAt")]
+    emitted_at: String,
+    #[serde(rename = "failureClass", skip_serializing_if = "Option::is_none")]
+    failure_class: Option<LaneFailureClass>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentOutput {
     #[serde(rename = "agentId")]
@@ -1932,6 +1979,10 @@ struct AgentOutput {
     started_at: Option<String>,
     #[serde(rename = "completedAt", skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
+    #[serde(rename = "laneEvents", default, skip_serializing_if = "Vec::is_empty")]
+    lane_events: Vec<LaneEvent>,
+    #[serde(rename = "currentBlocker", skip_serializing_if = "Option::is_none")]
+    current_blocker: Option<LaneBlocker>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -2643,6 +2694,14 @@ where
         created_at: created_at.clone(),
         started_at: Some(created_at),
         completed_at: None,
+        lane_events: vec![LaneEvent {
+            event: LaneEventName::Started,
+            status: String::from("running"),
+            emitted_at: iso8601_now(),
+            failure_class: None,
+            detail: None,
+        }],
+        current_blocker: None,
         error: None,
     };
     write_agent_manifest(&manifest)?;
@@ -2846,14 +2905,41 @@ fn persist_agent_terminal_state(
     result: Option<&str>,
     error: Option<String>,
 ) -> Result<(), String> {
+    let blocker = error.as_deref().map(classify_lane_blocker);
     append_agent_output(
         &manifest.output_file,
-        &format_agent_terminal_output(status, result, error.as_deref()),
+        &format_agent_terminal_output(status, result, blocker.as_ref(), error.as_deref()),
     )?;
     let mut next_manifest = manifest.clone();
     next_manifest.status = status.to_string();
     next_manifest.completed_at = Some(iso8601_now());
+    next_manifest.current_blocker = blocker.clone();
     next_manifest.error = error;
+    if let Some(blocker) = blocker {
+        next_manifest.lane_events.push(LaneEvent {
+            event: LaneEventName::Blocked,
+            status: status.to_string(),
+            emitted_at: iso8601_now(),
+            failure_class: Some(blocker.failure_class.clone()),
+            detail: Some(blocker.detail.clone()),
+        });
+        next_manifest.lane_events.push(LaneEvent {
+            event: LaneEventName::Failed,
+            status: status.to_string(),
+            emitted_at: iso8601_now(),
+            failure_class: Some(blocker.failure_class),
+            detail: Some(blocker.detail),
+        });
+    } else {
+        next_manifest.current_blocker = None;
+        next_manifest.lane_events.push(LaneEvent {
+            event: LaneEventName::Finished,
+            status: status.to_string(),
+            emitted_at: iso8601_now(),
+            failure_class: None,
+            detail: None,
+        });
+    }
     write_agent_manifest(&next_manifest)
 }
 
@@ -2868,8 +2954,22 @@ fn append_agent_output(path: &str, suffix: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn format_agent_terminal_output(status: &str, result: Option<&str>, error: Option<&str>) -> String {
+fn format_agent_terminal_output(
+    status: &str,
+    result: Option<&str>,
+    blocker: Option<&LaneBlocker>,
+    error: Option<&str>,
+) -> String {
     let mut sections = vec![format!("\n## Result\n\n- status: {status}\n")];
+    if let Some(blocker) = blocker {
+        sections.push(format!(
+            "\n### Blocker\n\n- failure_class: {}\n- detail: {}\n",
+            serde_json::to_string(&blocker.failure_class)
+                .unwrap_or_else(|_| "\"infra\"".to_string())
+                .trim_matches('"'),
+            blocker.detail.trim()
+        ));
+    }
     if let Some(result) = result.filter(|value| !value.trim().is_empty()) {
         sections.push(format!("\n### Final response\n\n{}\n", result.trim()));
     }
@@ -2877,6 +2977,51 @@ fn format_agent_terminal_output(status: &str, result: Option<&str>, error: Optio
         sections.push(format!("\n### Error\n\n{}\n", error.trim()));
     }
     sections.join("")
+}
+
+fn classify_lane_blocker(error: &str) -> LaneBlocker {
+    let detail = error.trim().to_string();
+    LaneBlocker {
+        failure_class: classify_lane_failure(error),
+        detail,
+    }
+}
+
+fn classify_lane_failure(error: &str) -> LaneFailureClass {
+    let normalized = error.to_ascii_lowercase();
+
+    if normalized.contains("prompt") && normalized.contains("deliver") {
+        LaneFailureClass::PromptDelivery
+    } else if normalized.contains("trust") {
+        LaneFailureClass::TrustGate
+    } else if normalized.contains("branch")
+        && (normalized.contains("stale") || normalized.contains("diverg"))
+    {
+        LaneFailureClass::BranchDivergence
+    } else if normalized.contains("compile")
+        || normalized.contains("build failed")
+        || normalized.contains("cargo check")
+    {
+        LaneFailureClass::Compile
+    } else if normalized.contains("test") {
+        LaneFailureClass::Test
+    } else if normalized.contains("plugin") {
+        LaneFailureClass::PluginStartup
+    } else if normalized.contains("mcp") && normalized.contains("handshake") {
+        LaneFailureClass::McpHandshake
+    } else if normalized.contains("mcp") {
+        LaneFailureClass::McpStartup
+    } else if normalized.contains("gateway") || normalized.contains("routing") {
+        LaneFailureClass::GatewayRouting
+    } else if normalized.contains("tool")
+        || normalized.contains("hook")
+        || normalized.contains("permission")
+        || normalized.contains("denied")
+    {
+        LaneFailureClass::ToolRuntime
+    } else {
+        LaneFailureClass::Infra
+    }
 }
 
 struct ProviderRuntimeClient {
@@ -4423,10 +4568,10 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        agent_permission_policy, allowed_tools_for_subagent, execute_agent_with_spawn,
-        execute_tool, final_assistant_text, mvp_tool_specs, permission_mode_from_plugin,
-        persist_agent_terminal_state, push_output_block, AgentInput, AgentJob, GlobalToolRegistry,
-        SubagentToolExecutor,
+        agent_permission_policy, allowed_tools_for_subagent, classify_lane_failure,
+        execute_agent_with_spawn, execute_tool, final_assistant_text, mvp_tool_specs,
+        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block, AgentInput,
+        AgentJob, GlobalToolRegistry, LaneFailureClass, SubagentToolExecutor,
     };
     use api::OutputContentBlock;
     use runtime::{
@@ -5036,10 +5181,15 @@ mod tests {
         let contents = std::fs::read_to_string(&manifest.output_file).expect("agent file exists");
         let manifest_contents =
             std::fs::read_to_string(&manifest.manifest_file).expect("manifest file exists");
+        let manifest_json: serde_json::Value =
+            serde_json::from_str(&manifest_contents).expect("manifest should be valid json");
         assert!(contents.contains("Audit the branch"));
         assert!(contents.contains("Check tests and outstanding work."));
         assert!(manifest_contents.contains("\"subagentType\": \"Explore\""));
         assert!(manifest_contents.contains("\"status\": \"running\""));
+        assert_eq!(manifest_json["laneEvents"][0]["event"], "lane.started");
+        assert_eq!(manifest_json["laneEvents"][0]["status"], "running");
+        assert!(manifest_json["currentBlocker"].is_null());
         let captured_job = captured
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -5105,10 +5255,21 @@ mod tests {
 
         let completed_manifest = std::fs::read_to_string(&completed.manifest_file)
             .expect("completed manifest should exist");
+        let completed_manifest_json: serde_json::Value =
+            serde_json::from_str(&completed_manifest).expect("completed manifest json");
         let completed_output =
             std::fs::read_to_string(&completed.output_file).expect("completed output should exist");
         assert!(completed_manifest.contains("\"status\": \"completed\""));
         assert!(completed_output.contains("Finished successfully"));
+        assert_eq!(
+            completed_manifest_json["laneEvents"][0]["event"],
+            "lane.started"
+        );
+        assert_eq!(
+            completed_manifest_json["laneEvents"][1]["event"],
+            "lane.finished"
+        );
+        assert!(completed_manifest_json["currentBlocker"].is_null());
 
         let failed = execute_agent_with_spawn(
             AgentInput {
@@ -5123,7 +5284,7 @@ mod tests {
                     &job.manifest,
                     "failed",
                     None,
-                    Some(String::from("simulated failure")),
+                    Some(String::from("tool failed: simulated failure")),
                 )
             },
         )
@@ -5131,11 +5292,30 @@ mod tests {
 
         let failed_manifest =
             std::fs::read_to_string(&failed.manifest_file).expect("failed manifest should exist");
+        let failed_manifest_json: serde_json::Value =
+            serde_json::from_str(&failed_manifest).expect("failed manifest json");
         let failed_output =
             std::fs::read_to_string(&failed.output_file).expect("failed output should exist");
         assert!(failed_manifest.contains("\"status\": \"failed\""));
         assert!(failed_manifest.contains("simulated failure"));
         assert!(failed_output.contains("simulated failure"));
+        assert!(failed_output.contains("failure_class: tool_runtime"));
+        assert_eq!(
+            failed_manifest_json["currentBlocker"]["failureClass"],
+            "tool_runtime"
+        );
+        assert_eq!(
+            failed_manifest_json["laneEvents"][1]["event"],
+            "lane.blocked"
+        );
+        assert_eq!(
+            failed_manifest_json["laneEvents"][2]["event"],
+            "lane.failed"
+        );
+        assert_eq!(
+            failed_manifest_json["laneEvents"][2]["failureClass"],
+            "tool_runtime"
+        );
 
         let spawn_error = execute_agent_with_spawn(
             AgentInput {
@@ -5161,11 +5341,59 @@ mod tests {
                     .then_some(contents)
             })
             .expect("failed manifest should still be written");
+        let spawn_error_manifest_json: serde_json::Value =
+            serde_json::from_str(&spawn_error_manifest).expect("spawn error manifest json");
         assert!(spawn_error_manifest.contains("\"status\": \"failed\""));
         assert!(spawn_error_manifest.contains("thread creation failed"));
+        assert_eq!(
+            spawn_error_manifest_json["currentBlocker"]["failureClass"],
+            "infra"
+        );
 
         std::env::remove_var("CLAWD_AGENT_STORE");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lane_failure_taxonomy_normalizes_common_blockers() {
+        let cases = [
+            (
+                "prompt delivery failed in tmux pane",
+                LaneFailureClass::PromptDelivery,
+            ),
+            (
+                "trust prompt is still blocking startup",
+                LaneFailureClass::TrustGate,
+            ),
+            (
+                "branch stale against main after divergence",
+                LaneFailureClass::BranchDivergence,
+            ),
+            (
+                "compile failed after cargo check",
+                LaneFailureClass::Compile,
+            ),
+            ("targeted tests failed", LaneFailureClass::Test),
+            ("plugin bootstrap failed", LaneFailureClass::PluginStartup),
+            ("mcp handshake timed out", LaneFailureClass::McpHandshake),
+            (
+                "mcp startup failed before listing tools",
+                LaneFailureClass::McpStartup,
+            ),
+            (
+                "gateway routing rejected the request",
+                LaneFailureClass::GatewayRouting,
+            ),
+            (
+                "denied tool execution from hook",
+                LaneFailureClass::ToolRuntime,
+            ),
+            ("thread creation failed", LaneFailureClass::Infra),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(classify_lane_failure(message), expected, "{message}");
+        }
     }
 
     #[test]
@@ -6061,7 +6289,10 @@ printf 'pwsh:%s' "$1"
     fn given_read_only_enforcer_when_write_file_then_denied() {
         let registry = read_only_registry();
         let err = registry
-            .execute("write_file", &json!({ "path": "/tmp/x.txt", "content": "x" }))
+            .execute(
+                "write_file",
+                &json!({ "path": "/tmp/x.txt", "content": "x" }),
+            )
             .expect_err("write_file should be denied in read-only mode");
         assert!(
             err.contains("current mode is read-only"),
