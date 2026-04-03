@@ -1,10 +1,12 @@
-//! Self-contained trust resolution for repository and worktree paths.
-//!
-//! Evaluates a `(repo_path, worktree_path)` pair against a [`TrustConfig`]
-//! of allowlisted and denied paths, returning a [`TrustDecision`] with the
-//! chosen [`TrustPolicy`] and a log of [`TrustEvent`]s.
-
 use std::path::{Path, PathBuf};
+
+const TRUST_PROMPT_CUES: &[&str] = &[
+    "do you trust the files in this folder",
+    "trust the files in this folder",
+    "trust this folder",
+    "allow and continue",
+    "yes, proceed",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustPolicy {
@@ -15,9 +17,9 @@ pub enum TrustPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustEvent {
-    TrustRequired { repo: String, worktree: String },
-    TrustResolved { repo: String, policy: TrustPolicy },
-    TrustDenied { repo: String, reason: String },
+    TrustRequired { cwd: String },
+    TrustResolved { cwd: String, policy: TrustPolicy },
+    TrustDenied { cwd: String, reason: String },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -46,9 +48,30 @@ impl TrustConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrustDecision {
-    pub policy: TrustPolicy,
-    pub events: Vec<TrustEvent>,
+pub enum TrustDecision {
+    NotRequired,
+    Required {
+        policy: TrustPolicy,
+        events: Vec<TrustEvent>,
+    },
+}
+
+impl TrustDecision {
+    #[must_use]
+    pub fn policy(&self) -> Option<TrustPolicy> {
+        match self {
+            Self::NotRequired => None,
+            Self::Required { policy, .. } => Some(*policy),
+        }
+    }
+
+    #[must_use]
+    pub fn events(&self) -> &[TrustEvent] {
+        match self {
+            Self::NotRequired => &[],
+            Self::Required { events, .. } => events,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,26 +86,27 @@ impl TrustResolver {
     }
 
     #[must_use]
-    pub fn resolve_trust(&self, repo_path: &str, worktree_path: &str) -> TrustDecision {
-        let mut events = Vec::new();
+    pub fn resolve(&self, cwd: &str, screen_text: &str) -> TrustDecision {
+        if !detect_trust_prompt(screen_text) {
+            return TrustDecision::NotRequired;
+        }
 
-        events.push(TrustEvent::TrustRequired {
-            repo: repo_path.to_owned(),
-            worktree: worktree_path.to_owned(),
-        });
+        let mut events = vec![TrustEvent::TrustRequired {
+            cwd: cwd.to_owned(),
+        }];
 
-        if self
+        if let Some(matched_root) = self
             .config
             .denied
             .iter()
-            .any(|root| path_matches(repo_path, root) || path_matches(worktree_path, root))
+            .find(|root| path_matches(cwd, root))
         {
-            let reason = format!("repository path matches deny list: {repo_path}");
+            let reason = format!("cwd matches denied trust root: {}", matched_root.display());
             events.push(TrustEvent::TrustDenied {
-                repo: repo_path.to_owned(),
+                cwd: cwd.to_owned(),
                 reason,
             });
-            return TrustDecision {
+            return TrustDecision::Required {
                 policy: TrustPolicy::Deny,
                 events,
             };
@@ -92,27 +116,50 @@ impl TrustResolver {
             .config
             .allowlisted
             .iter()
-            .any(|root| path_matches(repo_path, root) || path_matches(worktree_path, root))
+            .any(|root| path_matches(cwd, root))
         {
             events.push(TrustEvent::TrustResolved {
-                repo: repo_path.to_owned(),
+                cwd: cwd.to_owned(),
                 policy: TrustPolicy::AutoTrust,
             });
-            return TrustDecision {
+            return TrustDecision::Required {
                 policy: TrustPolicy::AutoTrust,
                 events,
             };
         }
 
-        TrustDecision {
+        TrustDecision::Required {
             policy: TrustPolicy::RequireApproval,
             events,
         }
     }
+
+    #[must_use]
+    pub fn trusts(&self, cwd: &str) -> bool {
+        !self
+            .config
+            .denied
+            .iter()
+            .any(|root| path_matches(cwd, root))
+            && self
+                .config
+                .allowlisted
+                .iter()
+                .any(|root| path_matches(cwd, root))
+    }
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+#[must_use]
+pub fn detect_trust_prompt(screen_text: &str) -> bool {
+    let lowered = screen_text.to_ascii_lowercase();
+    TRUST_PROMPT_CUES
+        .iter()
+        .any(|needle| lowered.contains(needle))
+}
+
+#[must_use]
+pub fn path_matches_trusted_root(cwd: &str, trusted_root: &str) -> bool {
+    path_matches(cwd, &normalize_path(Path::new(trusted_root)))
 }
 
 fn path_matches(candidate: &str, root: &Path) -> bool {
@@ -121,106 +168,132 @@ fn path_matches(candidate: &str, root: &Path) -> bool {
     candidate == root || candidate.starts_with(&root)
 }
 
+fn normalize_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        detect_trust_prompt, path_matches_trusted_root, TrustConfig, TrustDecision, TrustEvent,
+        TrustPolicy, TrustResolver,
+    };
 
     #[test]
-    fn allowlisted_repo_auto_trusts_and_records_events() {
-        // Given: a resolver whose allowlist contains /tmp/trusted
-        let config = TrustConfig::new().with_allowlisted("/tmp/trusted");
-        let resolver = TrustResolver::new(config);
+    fn detects_known_trust_prompt_copy() {
+        // given
+        let screen_text = "Do you trust the files in this folder?\n1. Yes, proceed\n2. No";
 
-        // When: we resolve trust for a repo under the allowlisted root
-        let decision =
-            resolver.resolve_trust("/tmp/trusted/repo-a", "/tmp/trusted/repo-a/worktree");
+        // when
+        let detected = detect_trust_prompt(screen_text);
 
-        // Then: the policy is AutoTrust
-        assert_eq!(decision.policy, TrustPolicy::AutoTrust);
-
-        // And: both TrustRequired and TrustResolved events are recorded
-        assert!(decision.events.iter().any(|e| matches!(
-            e,
-            TrustEvent::TrustRequired { repo, worktree }
-                if repo == "/tmp/trusted/repo-a"
-                    && worktree == "/tmp/trusted/repo-a/worktree"
-        )));
-        assert!(decision.events.iter().any(|e| matches!(
-            e,
-            TrustEvent::TrustResolved { policy, .. }
-                if *policy == TrustPolicy::AutoTrust
-        )));
+        // then
+        assert!(detected);
     }
 
     #[test]
-    fn unknown_repo_requires_approval_and_remains_gated() {
-        // Given: a resolver with no matching paths for the tested repo
-        let config = TrustConfig::new().with_allowlisted("/tmp/other");
-        let resolver = TrustResolver::new(config);
+    fn does_not_emit_events_when_prompt_is_absent() {
+        // given
+        let resolver = TrustResolver::new(TrustConfig::new().with_allowlisted("/tmp/worktrees"));
 
-        // When: we resolve trust for an unknown repo
-        let decision =
-            resolver.resolve_trust("/tmp/unknown/repo-b", "/tmp/unknown/repo-b/worktree");
+        // when
+        let decision = resolver.resolve("/tmp/worktrees/repo-a", "Ready for your input\n>");
 
-        // Then: the policy is RequireApproval
-        assert_eq!(decision.policy, TrustPolicy::RequireApproval);
-
-        // And: only the TrustRequired event is recorded (no resolution)
-        assert_eq!(decision.events.len(), 1);
-        assert!(matches!(
-            &decision.events[0],
-            TrustEvent::TrustRequired { .. }
-        ));
+        // then
+        assert_eq!(decision, TrustDecision::NotRequired);
+        assert_eq!(decision.events(), &[]);
+        assert_eq!(decision.policy(), None);
     }
 
     #[test]
-    fn denied_repo_blocks_and_records_denial_events() {
-        // Given: a resolver whose deny list contains /tmp/blocked
-        let config = TrustConfig::new().with_denied("/tmp/blocked");
-        let resolver = TrustResolver::new(config);
+    fn auto_trusts_allowlisted_cwd_after_prompt_detection() {
+        // given
+        let resolver = TrustResolver::new(TrustConfig::new().with_allowlisted("/tmp/worktrees"));
 
-        // When: we resolve trust for a repo under the denied root
-        let decision =
-            resolver.resolve_trust("/tmp/blocked/repo-c", "/tmp/blocked/repo-c/worktree");
+        // when
+        let decision = resolver.resolve(
+            "/tmp/worktrees/repo-a",
+            "Do you trust the files in this folder?\n1. Yes, proceed\n2. No",
+        );
 
-        // Then: the policy is Deny
-        assert_eq!(decision.policy, TrustPolicy::Deny);
-
-        // And: both TrustRequired and TrustDenied events are recorded
-        assert!(decision
-            .events
-            .iter()
-            .any(|e| matches!(e, TrustEvent::TrustRequired { .. })));
-        assert!(decision.events.iter().any(|e| matches!(
-            e,
-            TrustEvent::TrustDenied { reason, .. }
-                if reason.contains("deny list")
-        )));
+        // then
+        assert_eq!(decision.policy(), Some(TrustPolicy::AutoTrust));
+        assert_eq!(
+            decision.events(),
+            &[
+                TrustEvent::TrustRequired {
+                    cwd: "/tmp/worktrees/repo-a".to_string(),
+                },
+                TrustEvent::TrustResolved {
+                    cwd: "/tmp/worktrees/repo-a".to_string(),
+                    policy: TrustPolicy::AutoTrust,
+                },
+            ]
+        );
     }
 
     #[test]
-    fn denied_takes_precedence_over_allowlisted() {
-        // Given: a resolver where the same root appears in both lists
-        let config = TrustConfig::new()
-            .with_allowlisted("/tmp/contested")
-            .with_denied("/tmp/contested");
-        let resolver = TrustResolver::new(config);
+    fn requires_approval_for_unknown_cwd_after_prompt_detection() {
+        // given
+        let resolver = TrustResolver::new(TrustConfig::new().with_allowlisted("/tmp/worktrees"));
 
-        // When: we resolve trust for a repo under the contested root
-        let decision =
-            resolver.resolve_trust("/tmp/contested/repo-d", "/tmp/contested/repo-d/worktree");
+        // when
+        let decision = resolver.resolve(
+            "/tmp/other/repo-b",
+            "Do you trust the files in this folder?\n1. Yes, proceed\n2. No",
+        );
 
-        // Then: deny takes precedence — policy is Deny
-        assert_eq!(decision.policy, TrustPolicy::Deny);
+        // then
+        assert_eq!(decision.policy(), Some(TrustPolicy::RequireApproval));
+        assert_eq!(
+            decision.events(),
+            &[TrustEvent::TrustRequired {
+                cwd: "/tmp/other/repo-b".to_string(),
+            }]
+        );
+    }
 
-        // And: TrustDenied is recorded, but TrustResolved is not
-        assert!(decision
-            .events
-            .iter()
-            .any(|e| matches!(e, TrustEvent::TrustDenied { .. })));
-        assert!(!decision
-            .events
-            .iter()
-            .any(|e| matches!(e, TrustEvent::TrustResolved { .. })));
+    #[test]
+    fn denied_root_takes_precedence_over_allowlist() {
+        // given
+        let resolver = TrustResolver::new(
+            TrustConfig::new()
+                .with_allowlisted("/tmp/worktrees")
+                .with_denied("/tmp/worktrees/repo-c"),
+        );
+
+        // when
+        let decision = resolver.resolve(
+            "/tmp/worktrees/repo-c",
+            "Do you trust the files in this folder?\n1. Yes, proceed\n2. No",
+        );
+
+        // then
+        assert_eq!(decision.policy(), Some(TrustPolicy::Deny));
+        assert_eq!(
+            decision.events(),
+            &[
+                TrustEvent::TrustRequired {
+                    cwd: "/tmp/worktrees/repo-c".to_string(),
+                },
+                TrustEvent::TrustDenied {
+                    cwd: "/tmp/worktrees/repo-c".to_string(),
+                    reason: "cwd matches denied trust root: /tmp/worktrees/repo-c".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn sibling_prefix_does_not_match_trusted_root() {
+        // given
+        let trusted_root = "/tmp/worktrees";
+        let sibling_path = "/tmp/worktrees-other/repo-d";
+
+        // when
+        let matched = path_matches_trusted_root(sibling_path, trusted_root);
+
+        // then
+        assert!(!matched);
     }
 }

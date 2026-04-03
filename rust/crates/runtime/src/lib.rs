@@ -22,7 +22,7 @@ mod session;
 mod sse;
 pub mod task_registry;
 pub mod team_cron_registry;
-mod trust_resolver;
+pub mod trust_resolver;
 mod usage;
 pub mod worker_boot;
 
