@@ -23,6 +23,7 @@ mod sse;
 pub mod task_registry;
 pub mod team_cron_registry;
 mod usage;
+pub mod worker_boot;
 
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
@@ -99,6 +100,10 @@ pub use session::{
     SessionFork,
 };
 pub use sse::{IncrementalSseParser, SseEvent};
+pub use worker_boot::{
+    Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
+    WorkerRegistry, WorkerStatus,
+};
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
