@@ -39,7 +39,7 @@ Canonical scenario map: `rust/mock_parity_scenarios.json`
 
 | Lane | Status | Feature commit | Merge commit | Evidence |
 |---|---|---|---|---|
-| 1. Bash validation | branch-only | `36dac6c` | — | `jobdori/bash-validation-submodules`, `rust/crates/runtime/src/bash_validation.rs` (`+1005` on branch) |
+| 1. Bash validation | merged | `36dac6c` | `1cfd78a` | `jobdori/bash-validation-submodules`, `rust/crates/runtime/src/bash_validation.rs` (`+1004` on `main`) |
 | 2. CI fix | merged | `89104eb` | `f1969ce` | `rust/crates/runtime/src/sandbox.rs` (`+22/-1`) |
 | 3. File-tool | merged | `284163b` | `a98f2b6` | `rust/crates/runtime/src/file_ops.rs` (`+195/-1`) |
 | 4. TaskRegistry | merged | `5ea138e` | `21a1e1d` | `rust/crates/runtime/src/task_registry.rs` (`+336`) |
@@ -171,17 +171,17 @@ Canonical scenario map: `rust/mock_parity_scenarios.json`
 ## Still open
 
 - [ ] End-to-end MCP runtime lifecycle beyond the registry bridge now on `main`
-- [ ] Output truncation (large stdout/file content)
+- [x] Output truncation (large stdout/file content)
 - [ ] Session compaction behavior matching
 - [ ] Token counting / cost tracking accuracy
-- [ ] Bash validation lane merged onto `main`
+- [x] Bash validation lane merged onto `main`
 - [ ] CI green on every commit
 
 ## Migration Readiness
 
 - [x] `PARITY.md` maintained and honest
 - [x] 9 requested lanes documented with commit hashes and current status
-- [ ] All 9 requested lanes landed on `main` (`bash-validation` is still branch-only)
+- [x] All 9 requested lanes landed on `main` (`bash-validation` is still branch-only)
 - [x] No `#[ignore]` tests hiding failures
 - [ ] CI green on every commit
 - [x] Codebase shape clean enough for handoff documentation
