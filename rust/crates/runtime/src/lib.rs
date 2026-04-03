@@ -20,6 +20,7 @@ mod remote;
 pub mod sandbox;
 mod session;
 mod sse;
+mod stale_branch;
 pub mod task_registry;
 pub mod team_cron_registry;
 mod usage;
@@ -98,6 +99,10 @@ pub use sandbox::{
 pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
+};
+pub use stale_branch::{
+    apply_policy, check_freshness, BranchFreshness, StaleBranchAction, StaleBranchEvent,
+    StaleBranchPolicy,
 };
 pub use sse::{IncrementalSseParser, SseEvent};
 pub use worker_boot::{
