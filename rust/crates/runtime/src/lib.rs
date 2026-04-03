@@ -22,6 +22,7 @@ mod session;
 mod sse;
 pub mod stale_branch;
 pub mod task_registry;
+pub mod task_packet;
 pub mod team_cron_registry;
 mod usage;
 pub mod worker_boot;
@@ -105,6 +106,11 @@ pub use stale_branch::{
     StaleBranchPolicy,
 };
 pub use sse::{IncrementalSseParser, SseEvent};
+pub use task_packet::{
+    validate_packet, AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy, GreenLevel,
+    RepoConfig, ReportingContract, TaskPacket, TaskPacketValidationError, TaskScope,
+    ValidatedPacket,
+};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
     WorkerRegistry, WorkerStatus,
