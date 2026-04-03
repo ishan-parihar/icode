@@ -279,6 +279,7 @@ Acceptance:
 9. Isolate `render_diff_report` tests into tmpdir — currently flaky under `cargo test --workspace` because they read real working-tree git state instead of an isolated repo; breaks CI whenever active worktree ops leave staged/unstaged changes
 10. Swarm branch-lock protocol — when multiple claws target the same branch, add a lock or commit-detection signal so the second claw can skip redundant work instead of running the full explore-plan-implement-test-review cycle on already-committed code
 11. Wire lane-completion emitter — `LaneContext::completed` is a passive bool set by callers; nothing fires it automatically; need a runtime path that sets `completed = true` and triggers the policy engine lane-closeout rule when a branch is pushed, tests pass, and session control reports done
+12. Wire `SummaryCompressor` into the lane event pipeline — `summary_compression.rs` is exported but called nowhere; `LaneEvent` stream is never fed through the compressor; orchestrating claws receive raw events instead of compressed actionable summaries
 
 ## Suggested Session Split
 
