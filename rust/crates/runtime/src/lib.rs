@@ -16,6 +16,7 @@ mod remote;
 pub mod sandbox;
 mod session;
 mod sse;
+pub mod task_registry;
 mod usage;
 
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
