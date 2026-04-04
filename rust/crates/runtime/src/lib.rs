@@ -16,20 +16,20 @@ mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod oauth;
 pub mod permission_enforcer;
-mod policy_engine;
-pub mod recovery_recipes;
 mod permissions;
 pub mod plugin_lifecycle;
+mod policy_engine;
 mod prompt;
+pub mod recovery_recipes;
 mod remote;
-pub mod session_control;
 pub mod sandbox;
 mod session;
+pub mod session_control;
 mod sse;
 pub mod stale_branch;
 pub mod summary_compression;
-pub mod task_registry;
 pub mod task_packet;
+pub mod task_registry;
 pub mod team_cron_registry;
 pub mod trust_resolver;
 mod usage;
@@ -90,10 +90,6 @@ pub use oauth::{
     OAuthCallbackParams, OAuthRefreshRequest, OAuthTokenExchangeRequest, OAuthTokenSet,
     PkceChallengeMethod, PkceCodePair,
 };
-pub use policy_engine::{
-    evaluate, DiffScope, GreenLevel, LaneBlocker, LaneContext, PolicyAction, PolicyCondition,
-    PolicyEngine, PolicyRule, ReviewStatus,
-};
 pub use permissions::{
     PermissionContext, PermissionMode, PermissionOutcome, PermissionOverride, PermissionPolicy,
     PermissionPromptDecision, PermissionPrompter, PermissionRequest,
@@ -102,13 +98,17 @@ pub use plugin_lifecycle::{
     DegradedMode, DiscoveryResult, PluginHealthcheck, PluginLifecycle, PluginLifecycleEvent,
     PluginState, ResourceInfo, ServerHealth, ServerStatus, ToolInfo,
 };
-pub use recovery_recipes::{
-    attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
-    RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
+pub use policy_engine::{
+    evaluate, DiffScope, GreenLevel, LaneBlocker, LaneContext, PolicyAction, PolicyCondition,
+    PolicyEngine, PolicyRule, ReviewStatus,
 };
 pub use prompt::{
     load_system_prompt, prepend_bullets, ContextFile, ProjectContext, PromptBuildError,
     SystemPromptBuilder, FRONTIER_MODEL_NAME, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+};
+pub use recovery_recipes::{
+    attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
+    RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
 };
 pub use remote::{
     inherited_upstream_proxy_env, no_proxy_list, read_token, upstream_proxy_ws_url,
@@ -125,20 +125,19 @@ pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
 };
+pub use sse::{IncrementalSseParser, SseEvent};
 pub use stale_branch::{
     apply_policy, check_freshness, BranchFreshness, StaleBranchAction, StaleBranchEvent,
     StaleBranchPolicy,
 };
-pub use sse::{IncrementalSseParser, SseEvent};
 pub use task_packet::{
-    validate_packet, AcceptanceTest, BranchPolicy, CommitPolicy,
-    RepoConfig, ReportingContract, TaskPacket, TaskPacketValidationError, TaskScope,
-    ValidatedPacket,
+    validate_packet, AcceptanceTest, BranchPolicy, CommitPolicy, RepoConfig, ReportingContract,
+    TaskPacket, TaskPacketValidationError, TaskScope, ValidatedPacket,
 };
+pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
-pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
     WorkerRegistry, WorkerStatus,
