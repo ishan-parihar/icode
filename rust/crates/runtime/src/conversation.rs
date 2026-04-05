@@ -47,10 +47,14 @@ pub struct PromptCacheEvent {
 }
 
 pub trait ApiClient {
-    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError>;
+    fn stream(
+        &mut self,
+        request: ApiRequest,
+        progress: Option<&dyn Fn(AssistantEvent)>,
+    ) -> Result<Vec<AssistantEvent>, RuntimeError>;
 }
 
-pub trait ToolExecutor {
+pub trait ToolExecutor: Send {
     fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError>;
 }
 
@@ -287,6 +291,7 @@ where
         &mut self,
         user_input: impl Into<String>,
         mut prompter: Option<&mut dyn PermissionPrompter>,
+        progress: Option<&dyn Fn(AssistantEvent)>,
     ) -> Result<TurnSummary, RuntimeError> {
         let user_input = user_input.into();
         self.record_turn_started(&user_input);
@@ -313,7 +318,7 @@ where
                 system_prompt: self.system_prompt.clone(),
                 messages: self.session.messages.clone(),
             };
-            let events = match self.api_client.stream(request) {
+            let events = match self.api_client.stream(request, progress) {
                 Ok(events) => events,
                 Err(error) => {
                     self.record_turn_failed(iterations, &error);
@@ -492,6 +497,11 @@ where
     #[must_use]
     pub fn session(&self) -> &Session {
         &self.session
+    }
+
+    pub fn set_session(&mut self, session: Session) {
+        self.usage_tracker = UsageTracker::from_session(&session);
+        self.session = session;
     }
 
     #[must_use]
@@ -737,7 +747,7 @@ fn merge_hook_feedback(messages: &[String], output: String, is_error: bool) -> S
     sections.join("\n\n")
 }
 
-type ToolHandler = Box<dyn FnMut(&str) -> Result<String, ToolError>>;
+type ToolHandler = Box<dyn FnMut(&str) -> Result<String, ToolError> + Send>;
 
 #[derive(Default)]
 pub struct StaticToolExecutor {
@@ -754,7 +764,7 @@ impl StaticToolExecutor {
     pub fn register(
         mut self,
         tool_name: impl Into<String>,
-        handler: impl FnMut(&str) -> Result<String, ToolError> + 'static,
+        handler: impl FnMut(&str) -> Result<String, ToolError> + Send + 'static,
     ) -> Self {
         self.handlers.insert(tool_name.into(), Box::new(handler));
         self
@@ -797,7 +807,11 @@ mod tests {
     }
 
     impl ApiClient for ScriptedApiClient {
-        fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        fn stream(
+            &mut self,
+            request: ApiRequest,
+            _progress: Option<&dyn Fn(AssistantEvent)>,
+        ) -> Result<Vec<AssistantEvent>, RuntimeError> {
             self.call_count += 1;
             match self.call_count {
                 1 => {
@@ -891,7 +905,7 @@ mod tests {
         );
 
         let summary = runtime
-            .run_turn("what is 2 + 2?", Some(&mut PromptAllowOnce))
+            .run_turn("what is 2 + 2?", Some(&mut PromptAllowOnce), None)
             .expect("conversation loop should succeed");
 
         assert_eq!(summary.iterations, 2);
@@ -928,7 +942,7 @@ mod tests {
         .with_session_tracer(tracer);
 
         runtime
-            .run_turn("what is 2 + 2?", Some(&mut PromptAllowOnce))
+            .run_turn("what is 2 + 2?", Some(&mut PromptAllowOnce), None)
             .expect("conversation loop should succeed");
 
         let events = sink.events();
@@ -960,7 +974,11 @@ mod tests {
 
         struct SingleCallApiClient;
         impl ApiClient for SingleCallApiClient {
-            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 if request
                     .messages
                     .iter()
@@ -991,7 +1009,7 @@ mod tests {
         );
 
         let summary = runtime
-            .run_turn("use the tool", Some(&mut RejectPrompter))
+            .run_turn("use the tool", Some(&mut RejectPrompter), None)
             .expect("conversation should continue after denied tool");
 
         assert_eq!(summary.tool_results.len(), 1);
@@ -1005,7 +1023,11 @@ mod tests {
     fn denies_tool_use_when_pre_tool_hook_blocks() {
         struct SingleCallApiClient;
         impl ApiClient for SingleCallApiClient {
-            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 if request
                     .messages
                     .iter()
@@ -1043,7 +1065,7 @@ mod tests {
         );
 
         let summary = runtime
-            .run_turn("use the tool", None)
+            .run_turn("use the tool", None, None)
             .expect("conversation should continue after hook denial");
 
         assert_eq!(summary.tool_results.len(), 1);
@@ -1067,7 +1089,11 @@ mod tests {
     fn denies_tool_use_when_pre_tool_hook_fails() {
         struct SingleCallApiClient;
         impl ApiClient for SingleCallApiClient {
-            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 if request
                     .messages
                     .iter()
@@ -1107,7 +1133,7 @@ mod tests {
 
         // when
         let summary = runtime
-            .run_turn("use the tool", None)
+            .run_turn("use the tool", None, None)
             .expect("conversation should continue after hook failure");
 
         // then
@@ -1135,7 +1161,11 @@ mod tests {
         }
 
         impl ApiClient for TwoCallApiClient {
-            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
@@ -1175,7 +1205,7 @@ mod tests {
         );
 
         let summary = runtime
-            .run_turn("use add", None)
+            .run_turn("use add", None, None)
             .expect("tool loop succeeds");
 
         assert_eq!(summary.tool_results.len(), 1);
@@ -1210,7 +1240,11 @@ mod tests {
         }
 
         impl ApiClient for TwoCallApiClient {
-            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
@@ -1253,7 +1287,7 @@ mod tests {
 
         // when
         let summary = runtime
-            .run_turn("use fail", None)
+            .run_turn("use fail", None, None)
             .expect("tool loop succeeds");
 
         // then
@@ -1289,6 +1323,7 @@ mod tests {
             fn stream(
                 &mut self,
                 _request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
             ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 Ok(vec![
                     AssistantEvent::TextDelta("done".to_string()),
@@ -1331,6 +1366,7 @@ mod tests {
             fn stream(
                 &mut self,
                 _request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
             ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 Ok(vec![
                     AssistantEvent::TextDelta("done".to_string()),
@@ -1346,9 +1382,9 @@ mod tests {
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
         );
-        runtime.run_turn("a", None).expect("turn a");
-        runtime.run_turn("b", None).expect("turn b");
-        runtime.run_turn("c", None).expect("turn c");
+        runtime.run_turn("a", None, None).expect("turn a");
+        runtime.run_turn("b", None, None).expect("turn b");
+        runtime.run_turn("c", None, None).expect("turn c");
 
         let result = runtime.compact(CompactionConfig {
             preserve_recent_messages: 2,
@@ -1373,6 +1409,7 @@ mod tests {
             fn stream(
                 &mut self,
                 _request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
             ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 Ok(vec![
                     AssistantEvent::TextDelta("done".to_string()),
@@ -1392,7 +1429,7 @@ mod tests {
         );
 
         runtime
-            .run_turn("persist this turn", None)
+            .run_turn("persist this turn", None, None)
             .expect("turn should succeed");
 
         let restored = Session::load_from_path(&path).expect("persisted session should reload");
@@ -1458,6 +1495,7 @@ mod tests {
             fn stream(
                 &mut self,
                 _request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
             ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 Ok(vec![
                     AssistantEvent::TextDelta("done".to_string()),
@@ -1494,7 +1532,7 @@ mod tests {
         .with_auto_compaction_input_tokens_threshold(100_000);
 
         let summary = runtime
-            .run_turn("trigger", None)
+            .run_turn("trigger", None, None)
             .expect("turn should succeed");
 
         assert_eq!(
@@ -1513,6 +1551,7 @@ mod tests {
             fn stream(
                 &mut self,
                 _request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
             ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 Ok(vec![
                     AssistantEvent::TextDelta("done".to_string()),
@@ -1537,7 +1576,7 @@ mod tests {
         .with_auto_compaction_input_tokens_threshold(100_000);
 
         let summary = runtime
-            .run_turn("trigger", None)
+            .run_turn("trigger", None, None)
             .expect("turn should succeed");
         assert_eq!(summary.auto_compaction, None);
         assert_eq!(runtime.session().messages.len(), 2);
@@ -1612,6 +1651,7 @@ mod tests {
             fn stream(
                 &mut self,
                 _request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
             ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 Ok(vec![
                     AssistantEvent::ToolUse {
@@ -1636,7 +1676,7 @@ mod tests {
 
         // when
         let error = runtime
-            .run_turn("loop", None)
+            .run_turn("loop", None, None)
             .expect_err("conversation loop should stop after the configured limit");
 
         // then
@@ -1653,6 +1693,7 @@ mod tests {
             fn stream(
                 &mut self,
                 _request: ApiRequest,
+                _progress: Option<&dyn Fn(AssistantEvent)>,
             ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 Err(RuntimeError::new("upstream failed"))
             }
@@ -1669,7 +1710,7 @@ mod tests {
 
         // when
         let error = runtime
-            .run_turn("hello", None)
+            .run_turn("hello", None, None)
             .expect_err("API failures should propagate");
 
         // then

@@ -1,191 +1,178 @@
-# Rewriting Project Claw Code
-
-<p align="center">
-  <strong>⭐ The fastest repo in history to surpass 50K stars, reaching the milestone in just 2 hours after publication ⭐</strong>
-</p>
-
-<p align="center">
-  <a href="https://star-history.com/#instructkr/claw-code&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=instructkr/claw-code&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=instructkr/claw-code&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=instructkr/claw-code&type=Date" width="600" />
-    </picture>
-  </a>
-</p>
-
-<p align="center">
-  <img src="assets/clawd-hero.jpeg" alt="Claw" width="300" />
-</p>
-
-<p align="center">
-  <strong>Better Harness Tools, not merely storing the archive of leaked Claude Code</strong>
-</p>
-
-<p align="center">
-  <a href="https://github.com/sponsors/instructkr"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github&style=for-the-badge" alt="Sponsor on GitHub" /></a>
-</p>
-
-> [!IMPORTANT]
-> **Rust port is now in progress** on the [`dev/rust`](https://github.com/instructkr/claw-code/tree/dev/rust) branch and is expected to be merged into main today. The Rust implementation aims to deliver a faster, memory-safe harness runtime. Stay tuned — this will be the definitive version of the project.
-
-> If you find this work useful, consider [sponsoring @instructkr on GitHub](https://github.com/sponsors/instructkr) to support continued open-source harness engineering research.
-
----
-
-## Backstory
-
-At 4 AM on March 31, 2026, I woke up to my phone blowing up with notifications. The Claude Code source had been exposed, and the entire dev community was in a frenzy. My girlfriend in Korea was genuinely worried I might face legal action from Anthropic just for having the code on my machine — so I did what any engineer would do under pressure: I sat down, ported the core features to Python from scratch, and pushed it before the sun came up.
-
-The whole thing was orchestrated end-to-end using [oh-my-codex (OmX)](https://github.com/Yeachan-Heo/oh-my-codex) by [@bellman_ych](https://x.com/bellman_ych) — a workflow layer built on top of OpenAI's Codex ([@OpenAIDevs](https://x.com/OpenAIDevs)). I used `$team` mode for parallel code review and `$ralph` mode for persistent execution loops with architect-level verification. The entire porting session — from reading the original harness structure to producing a working Python tree with tests — was driven through OmX orchestration.
-
-The result is a clean-room Python rewrite that captures the architectural patterns of Claude Code's agent harness without copying any proprietary source. I'm now actively collaborating with [@bellman_ych](https://x.com/bellman_ych) — the creator of OmX himself — to push this further. The basic Python foundation is already in place and functional, but we're just getting started. **Stay tuned — a much more capable version is on the way.**
-
-https://github.com/instructkr/claw-code
-
-![Tweet screenshot](assets/tweet-screenshot.png)
-
-## The Creators Featured in Wall Street Journal For Avid Claude Code Fans
-
-I've been deeply interested in **harness engineering** — studying how agent systems wire tools, orchestrate tasks, and manage runtime context. This isn't a sudden thing. The Wall Street Journal featured my work earlier this month, documenting how I've been one of the most active power users exploring these systems:
-
-> AI startup worker Sigrid Jin, who attended the Seoul dinner, single-handedly used 25 billion of Claude Code tokens last year. At the time, usage limits were looser, allowing early enthusiasts to reach tens of billions of tokens at a very low cost.
->
-> Despite his countless hours with Claude Code, Jin isn't faithful to any one AI lab. The tools available have different strengths and weaknesses, he said. Codex is better at reasoning, while Claude Code generates cleaner, more shareable code.
->
-> Jin flew to San Francisco in February for Claude Code's first birthday party, where attendees waited in line to compare notes with Cherny. The crowd included a practicing cardiologist from Belgium who had built an app to help patients navigate care, and a California lawyer who made a tool for automating building permit approvals using Claude Code.
->
-> "It was basically like a sharing party," Jin said. "There were lawyers, there were doctors, there were dentists. They did not have software engineering backgrounds."
->
-> — *The Wall Street Journal*, March 21, 2026, [*"The Trillion Dollar Race to Automate Our Entire Lives"*](https://lnkd.in/gs9td3qd)
-
-![WSJ Feature](assets/wsj-feature.png)
-
----
-
-## Porting Status
-
-The main source tree is now Python-first.
-
-- `src/` contains the active Python porting workspace
-- `tests/` verifies the current Python workspace
-- the exposed snapshot is no longer part of the tracked repository state
-
-The current Python workspace is not yet a complete one-to-one replacement for the original system, but the primary implementation surface is now Python.
-
-## Why this rewrite exists
-
-I originally studied the exposed codebase to understand its harness, tool wiring, and agent workflow. After spending more time with the legal and ethical questions—and after reading the essay linked below—I did not want the exposed snapshot itself to remain the main tracked source tree.
-
-This repository now focuses on Python porting work instead.
-
-## Repository Layout
-
-```text
-.
-├── src/                                # Python porting workspace
-│   ├── __init__.py
-│   ├── commands.py
-│   ├── main.py
-│   ├── models.py
-│   ├── port_manifest.py
-│   ├── query_engine.py
-│   ├── task.py
-│   └── tools.py
-├── tests/                              # Python verification
-├── assets/omx/                         # OmX workflow screenshots
-├── 2026-03-09-is-legal-the-same-as-legitimate-ai-reimplementation-and-the-erosion-of-copyleft.md
-└── README.md
+```
+__   ______                   __
+|  \ /      \                 |  \
+ \$$|  $$$$$$\  ______    ____| $$  ______
+| $$| $$   \$$ /      \  /      $$ /      \
+| $$| $$      |  $$$$$$\|  $$$$$$$|  $$$$$$\
+| $$| $$   __ | $$  | $$| $$  | $$| $$    $$
+| $$| $$__/  \| $$__/ $$| $$__| $$| $$$$$$$$
+| $$ \$$    $$ \$$    $$ \$$    $$ \$$     \
+ \$$  \$$$$$$   \$$$$$$   \$$$$$$$  \$$$$$$$
 ```
 
-## Python Workspace Overview
+**Rust-native AI coding harness** — a memory-safe, high-performance reimplementation of an agent coding runtime with tool orchestration, mock LLM testing, and plugin/MCP lifecycle management.
 
-The new Python `src/` tree currently provides:
+[![Rust](https://img.shields.io/badge/Rust-2021-ed8b00.svg)](https://www.rust-lang.org)
+[![Crates](https://img.shields.io/badge/crates-9-blue.svg)](./rust/Cargo.toml)
+[![LOC](https://img.shields.io/badge/Rust_LOC-48,599-brightgreen.svg)](./PARITY.md)
+[![Tests](https://img.shields.io/badge/Test_LOC-2,568-yellow.svg)](./PARITY.md)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-- **`port_manifest.py`** — summarizes the current Python workspace structure
-- **`models.py`** — dataclasses for subsystems, modules, and backlog state
-- **`commands.py`** — Python-side command port metadata
-- **`tools.py`** — Python-side tool port metadata
-- **`query_engine.py`** — renders a Python porting summary from the active workspace
-- **`main.py`** — a CLI entrypoint for manifest and summary output
+## Origin
 
-## Quickstart
+icode is derived from the leaked Claude Code codebase, initially forked from [claw-code](https://github.com/ultraworkers/claw-code) and subsequently reworked from the [opencode](https://github.com/anomalyco/opencode) source. What started as a TypeScript harness has been re-engineered as a **memory-safe, zero-copy, fully Rust-native** AI coding runtime — preserving the original intent while delivering strict compile-time guarantees, deterministic mock testing, and a production-grade TUI.
 
-Render the Python porting summary:
+## What It Is
+
+icode is a Rust port of an AI coding agent harness — the kind of system that sits between an LLM and your codebase, managing tool calls, permissions, sessions, and execution state. While the original projects in this space are TypeScript or Python, icode targets **memory safety, zero-copy performance, and strict compile-time guarantees** through Rust.
+
+The codebase implements a **9-crate workspace** with 48,599 lines of Rust, covering bash execution, file operations, task management, team/cron registries, MCP server lifecycle, LSP client dispatch, and permission enforcement — all with a mock Anthropic API for deterministic integration testing.
+
+## Architecture
+
+```
+icode/rust/
+├── crates/
+│   ├── rusty-claude-cli/        # Main CLI entrypoint + TUI
+│   ├── runtime/                 # Core runtime: bash, file_ops, sandbox, validation
+│   │   ├── bash.rs              # Bash execution with timeout/background/sandbox
+│   │   ├── bash_validation.rs   # 1004 LOC: readOnly, destructive, sed, path validation
+│   │   ├── file_ops.rs          # 744 LOC: read/write/edit with binary detection, size limits
+│   │   ├── sandbox.rs           # 385 LOC: unshare capability probing, container detection
+│   │   ├── task_registry.rs     # 335 LOC: in-memory task lifecycle
+│   │   ├── team_cron_registry.rs# 363 LOC: team + cron registries
+│   │   ├── mcp_tool_bridge.rs   # 406 LOC: MCP server lifecycle bridge
+│   │   ├── lsp_client.rs        # 438 LOC: LSP diagnostics, hover, definition, completion
+│   │   ├── permission_enforcer.rs# 340 LOC: tool gating, workspace boundaries, bash enforcement
+│   │   └── permissions.rs       # Permission policy definitions
+│   ├── tools/                   # Tool surface: 40 exposed tool specs
+│   ├── commands/                # Slash command handling (/plan, /plugin, etc.)
+│   ├── plugins/                 # Plugin install/enable/disable/uninstall
+│   ├── mock-anthropic-service/  # Deterministic mock Anthropic API
+│   ├── config/                  # Config loading with user > project > local precedence
+│   └── ...                      # Additional utility crates
+└── mock_parity_scenarios.json   # Canonical test scenario definitions
+```
+
+## Feature Matrix
+
+### Tool Surface — 40 Exposed Tools
+
+| Category | Tools | Status |
+|---|---|---|
+| **Core Execution** | `bash`, `read_file`, `write_file`, `edit_file`, `glob_search`, `grep_search` | ✅ Implemented |
+| **Task Management** | `TaskCreate`, `TaskGet`, `TaskList`, `TaskStop`, `TaskUpdate`, `TaskOutput` | ✅ Registry-backed |
+| **Team & Cron** | `TeamCreate`, `TeamDelete`, `CronCreate`, `CronDelete`, `CronList` | ✅ Registry-backed |
+| **MCP Lifecycle** | `ListMcpResources`, `ReadMcpResource`, `McpAuth`, `MCP` | ✅ Registry-backed |
+| **LSP Client** | `symbols`, `references`, `diagnostics`, `definition`, `hover` | ✅ Registry-backed |
+| **Product Tools** | `WebFetch`, `WebSearch`, `TodoWrite`, `Skill`, `Agent`, `ToolSearch`, `NotebookEdit`, `Sleep`, `SendUserMessage`, `Config`, `EnterPlanMode`, `ExitPlanMode`, `StructuredOutput`, `REPL`, `PowerShell` | ✅ Implemented |
+
+### Security & Permissions
+
+- **Permission modes** — read-only vs workspace-write enforced across all tool paths
+- **Workspace boundary checks** — symlink escape prevention, canonical path validation
+- **Bash validation** — 6 validation submodules: readOnly, destructive commands, sed, path, mode, command semantics
+- **File safety** — binary file detection, read/write size limits (`MAX_READ_SIZE`, `MAX_WRITE_SIZE`), NUL-byte detection
+- **Sandbox detection** — probes `unshare` capability and container signals instead of binary presence
+
+### Mock Parity Harness
+
+A deterministic testing framework for validating harness behavior against an Anthropic-compatible mock API:
+
+- **10 scripted scenarios**: streaming text, file roundtrip, grep chunk assembly, write allow/deny, multi-tool turns, bash stdout, permission prompts (approve/deny), plugin execution
+- **19 captured `/v1/messages` requests** validated for behavioral correctness
+- **Clean-environment harness** — each scenario runs in an isolated state, no cross-test pollution
+- **Behavioral diff runner** — automated parity checking between expected and actual behavior
+
+### 9 Merged Feature Lanes
+
+| # | Lane | LOC | Description |
+|---|---|---|---|
+| 1 | Bash validation | +1,004 | readOnly, destructive command, sed, path, mode, semantics validation |
+| 2 | CI sandbox fix | 385 | Probe `unshare` capability instead of binary existence |
+| 3 | File-tool edge cases | +744 | Binary detection, size limits, workspace boundaries, symlink escape |
+| 4 | TaskRegistry | +335 | In-memory task lifecycle (create/get/list/stop/update/output) |
+| 5 | Task wiring | +79 | Wire TaskRegistry into all 6 task tool dispatch paths |
+| 6 | Team + Cron | +441 | TeamRegistry + CronRegistry with tool dispatch wiring |
+| 7 | MCP lifecycle | +491 | McpToolRegistry: server connection, resources, auth, tool dispatch |
+| 8 | LSP client | +461 | LspRegistry: diagnostics, hover, definition, references, completion, symbols |
+| 9 | Permission enforcement | +357 | PermissionEnforcer: tool gating, file write boundaries, bash read-only |
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Language** | Rust 2021 edition |
+| **Workspace** | 9 crates, resolver 2 |
+| **Serialization** | serde + serde_json |
+| **Linting** | clippy pedantic (warn), unsafe_code (forbid) |
+| **Testing** | `cargo test --workspace` with mock service |
+| **CI** | GitHub Actions (fmt check, clippy, test) |
+
+## Quick Start
 
 ```bash
-python3 -m src.main summary
+# Enter Rust workspace
+cd rust/
+
+# Format all crates
+cargo fmt --all
+
+# Run clippy (strict: pedantic warnings, no unsafe code)
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Run full test suite
+cargo test --workspace
+
+# Run mock parity harness specifically
+cargo test -p rusty-claude-cli mock_parity_harness
 ```
 
-Print the current Python workspace manifest:
+### Running the Parity Diff
 
 ```bash
-python3 -m src.main manifest
+# Compare current behavior against canonical scenario expectations
+python3 rust/scripts/run_mock_parity_diff.py
 ```
 
-List the current Python modules:
+## Project Structure
 
-```bash
-python3 -m src.main subsystems --limit 16
+```
+icode/
+├── rust/                    # Rust workspace (9 crates)
+│   ├── crates/              # Individual crate implementations
+│   ├── scripts/             # Parity diff and validation scripts
+│   └── mock_parity_scenarios.json
+├── src/                     # Python porting workspace (legacy)
+├── tests/                   # Python verification tests (legacy)
+├── PARITY.md                # Current parity status and lane details
+├── ROADMAP.md               # Development roadmap — 5 phases
+└── README.md                # This file
 ```
 
-Run verification:
+## Roadmap
 
-```bash
-python3 -m unittest discover -s tests -v
-```
+The project follows a 5-phase development plan toward a fully "clawable" (machine-orchestratable) coding harness:
 
-Run the parity audit against the local ignored archive (when present):
+| Phase | Focus | Key Deliverables |
+|---|---|---|
+| **1** | Reliable Worker Boot | Ready handshake, trust prompt resolver, session control API |
+| **2** | Event-Native Integration | Canonical lane event schema, failure taxonomy, summary compression |
+| **3** | Branch/Test Awareness | Stale-branch detection, recovery recipes, green-level contracts |
+| **4** | Claws-First Execution | Typed task packets, policy engine, machine-readable lane board |
+| **5** | Plugin/MCP Maturity | Lifecycle contracts, end-to-end MCP parity, degraded-mode reporting |
 
-```bash
-python3 -m src.main parity-audit
-```
+See [ROADMAP.md](./ROADMAP.md) for the full plan with acceptance criteria.
 
-Inspect mirrored command/tool inventories:
+## Current Status
 
-```bash
-python3 -m src.main commands --limit 10
-python3 -m src.main tools --limit 10
-```
+- **514 commits** across active development
+- **48,599 Rust LOC** across 9 crates
+- **2,568 test LOC** — no `#[ignore]` tests
+- **10 mock parity scenarios** — all passing
+- **40 tool specs** exposed on the tool surface
+- **9 feature lanes** merged onto main
 
-## Current Parity Checkpoint
+## License
 
-The port now mirrors the archived root-entry file surface, top-level subsystem names, and command/tool inventories much more closely than before. However, it is **not yet** a full runtime-equivalent replacement for the original TypeScript system; the Python tree still contains fewer executable runtime slices than the archived source.
-
-
-## Built with `oh-my-codex`
-
-The restructuring and documentation work on this repository was AI-assisted and orchestrated with Yeachan Heo's [oh-my-codex (OmX)](https://github.com/Yeachan-Heo/oh-my-codex), layered on top of Codex.
-
-- **`$team` mode:** used for coordinated parallel review and architectural feedback
-- **`$ralph` mode:** used for persistent execution, verification, and completion discipline
-- **Codex-driven workflow:** used to turn the main `src/` tree into a Python-first porting workspace
-
-### OmX workflow screenshots
-
-![OmX workflow screenshot 1](assets/omx/omx-readme-review-1.png)
-
-*Ralph/team orchestration view while the README and essay context were being reviewed in terminal panes.*
-
-![OmX workflow screenshot 2](assets/omx/omx-readme-review-2.png)
-
-*Split-pane review and verification flow during the final README wording pass.*
-
-## Community
-
-<p align="center">
-  <a href="https://instruct.kr/"><img src="assets/instructkr.png" alt="instructkr" width="400" /></a>
-</p>
-
-Join the [**instructkr Discord**](https://instruct.kr/) — the best Korean language model community. Come chat about LLMs, harness engineering, agent workflows, and everything in between.
-
-[![Discord](https://img.shields.io/badge/Join%20Discord-instruct.kr-5865F2?logo=discord&style=for-the-badge)](https://instruct.kr/)
-
-## Star History
-
-See the chart at the top of this README.
-
-## Ownership / Affiliation Disclaimer
-
-- This repository does **not** claim ownership of the original Claude Code source material.
-- This repository is **not affiliated with, endorsed by, or maintained by Anthropic**.
+MIT

@@ -206,8 +206,8 @@ impl ConfigLoader {
     #[must_use]
     pub fn discover(&self) -> Vec<ConfigEntry> {
         let user_legacy_path = self.config_home.parent().map_or_else(
-            || PathBuf::from(".claw.json"),
-            |parent| parent.join(".claw.json"),
+            || PathBuf::from(".icode.json"),
+            |parent| parent.join(".icode.json"),
         );
         vec![
             ConfigEntry {
@@ -220,15 +220,15 @@ impl ConfigLoader {
             },
             ConfigEntry {
                 source: ConfigSource::Project,
-                path: self.cwd.join(".claw.json"),
+                path: self.cwd.join(".icode.json"),
             },
             ConfigEntry {
                 source: ConfigSource::Project,
-                path: self.cwd.join(".claw").join("settings.json"),
+                path: self.cwd.join(".icode").join("settings.json"),
             },
             ConfigEntry {
                 source: ConfigSource::Local,
-                path: self.cwd.join(".claw").join("settings.local.json"),
+                path: self.cwd.join(".icode").join("settings.local.json"),
             },
         ]
     }
@@ -328,6 +328,19 @@ impl RuntimeConfig {
     #[must_use]
     pub fn model(&self) -> Option<&str> {
         self.feature_config.model.as_deref()
+    }
+
+    #[must_use]
+    pub fn env_vars(&self) -> BTreeMap<String, String> {
+        self.merged
+            .get("env")
+            .and_then(|v| v.as_object())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     #[must_use]
@@ -443,8 +456,8 @@ impl RuntimePluginConfig {
 pub fn default_config_home() -> PathBuf {
     std::env::var_os("CLAW_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claw")))
-        .unwrap_or_else(|| PathBuf::from(".claw"))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".icode")))
+        .unwrap_or_else(|| PathBuf::from(".icode"))
 }
 
 impl RuntimeHookConfig {
@@ -551,7 +564,7 @@ impl McpServerConfig {
 fn read_optional_json_object(
     path: &Path,
 ) -> Result<Option<BTreeMap<String, JsonValue>>, ConfigError> {
-    let is_legacy_config = path.file_name().and_then(|name| name.to_str()) == Some(".claw.json");
+    let is_legacy_config = path.file_name().and_then(|name| name.to_str()) == Some(".icode.json");
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1065,7 +1078,7 @@ mod tests {
     fn rejects_non_object_settings_files() {
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
+        let home = root.join("home").join(".icode");
         fs::create_dir_all(&home).expect("home config dir");
         fs::create_dir_all(&cwd).expect("project dir");
         fs::write(home.join("settings.json"), "[]").expect("write bad settings");
@@ -1086,12 +1099,12 @@ mod tests {
     fn loads_and_merges_claude_code_config_files_by_precedence() {
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
-        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        let home = root.join("home").join(".icode");
+        fs::create_dir_all(cwd.join(".icode")).expect("project config dir");
         fs::create_dir_all(&home).expect("home config dir");
 
         fs::write(
-            home.parent().expect("home parent").join(".claw.json"),
+            home.parent().expect("home parent").join(".icode.json"),
             r#"{"model":"haiku","env":{"A":"1"},"mcpServers":{"home":{"command":"uvx","args":["home"]}}}"#,
         )
         .expect("write user compat config");
@@ -1101,17 +1114,17 @@ mod tests {
         )
         .expect("write user settings");
         fs::write(
-            cwd.join(".claw.json"),
+            cwd.join(".icode.json"),
             r#"{"model":"project-compat","env":{"B":"2"}}"#,
         )
         .expect("write project compat config");
         fs::write(
-            cwd.join(".claw").join("settings.json"),
+            cwd.join(".icode").join("settings.json"),
             r#"{"env":{"C":"3"},"hooks":{"PostToolUse":["project"],"PostToolUseFailure":["project-failure"]},"permissions":{"ask":["Edit"]},"mcpServers":{"project":{"command":"uvx","args":["project"]}}}"#,
         )
         .expect("write project settings");
         fs::write(
-            cwd.join(".claw").join("settings.local.json"),
+            cwd.join(".icode").join("settings.local.json"),
             r#"{"model":"opus","permissionMode":"acceptEdits"}"#,
         )
         .expect("write local settings");
@@ -1172,12 +1185,12 @@ mod tests {
     fn parses_sandbox_config() {
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
-        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        let home = root.join("home").join(".icode");
+        fs::create_dir_all(cwd.join(".icode")).expect("project config dir");
         fs::create_dir_all(&home).expect("home config dir");
 
         fs::write(
-            cwd.join(".claw").join("settings.local.json"),
+            cwd.join(".icode").join("settings.local.json"),
             r#"{
               "sandbox": {
                 "enabled": true,
@@ -1210,8 +1223,8 @@ mod tests {
     fn parses_typed_mcp_and_oauth_config() {
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
-        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        let home = root.join("home").join(".icode");
+        fs::create_dir_all(cwd.join(".icode")).expect("project config dir");
         fs::create_dir_all(&home).expect("home config dir");
 
         fs::write(
@@ -1248,7 +1261,7 @@ mod tests {
         )
         .expect("write user settings");
         fs::write(
-            cwd.join(".claw").join("settings.local.json"),
+            cwd.join(".icode").join("settings.local.json"),
             r#"{
               "mcpServers": {
                 "remote-server": {
@@ -1301,8 +1314,8 @@ mod tests {
     fn parses_plugin_config_from_enabled_plugins() {
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
-        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        let home = root.join("home").join(".icode");
+        fs::create_dir_all(cwd.join(".icode")).expect("project config dir");
         fs::create_dir_all(&home).expect("home config dir");
 
         fs::write(
@@ -1339,8 +1352,8 @@ mod tests {
     fn parses_plugin_config() {
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
-        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        let home = root.join("home").join(".icode");
+        fs::create_dir_all(cwd.join(".icode")).expect("project config dir");
         fs::create_dir_all(&home).expect("home config dir");
 
         fs::write(
@@ -1392,7 +1405,7 @@ mod tests {
         // given
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
+        let home = root.join("home").join(".icode");
         fs::create_dir_all(&home).expect("home config dir");
         fs::create_dir_all(&cwd).expect("project dir");
         fs::write(
@@ -1419,7 +1432,7 @@ mod tests {
         // given
         let root = temp_dir();
         let cwd = root.join("project");
-        let home = root.join("home").join(".claw");
+        let home = root.join("home").join(".icode");
         fs::create_dir_all(&home).expect("home config dir");
         fs::create_dir_all(&cwd).expect("project dir");
         fs::write(home.join("settings.json"), "").expect("write empty settings");

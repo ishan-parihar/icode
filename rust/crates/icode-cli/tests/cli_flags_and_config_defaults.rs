@@ -15,7 +15,7 @@ fn status_command_applies_model_and_permission_mode_flags() {
     fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
     // when
-    let output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_icode"))
         .current_dir(&temp_dir)
         .args([
             "--model",
@@ -25,7 +25,7 @@ fn status_command_applies_model_and_permission_mode_flags() {
             "status",
         ])
         .output()
-        .expect("claw should launch");
+        .expect("icode should launch");
 
     // then
     assert_success(&output);
@@ -45,7 +45,7 @@ fn resume_flag_loads_a_saved_session_and_dispatches_status() {
     let session_path = write_session(&temp_dir, "resume-status");
 
     // when
-    let output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_icode"))
         .current_dir(&temp_dir)
         .args([
             "--resume",
@@ -53,7 +53,7 @@ fn resume_flag_loads_a_saved_session_and_dispatches_status() {
             "/status",
         ])
         .output()
-        .expect("claw should launch");
+        .expect("icode should launch");
 
     // then
     assert_success(&output);
@@ -73,16 +73,16 @@ fn slash_command_names_match_known_commands_and_suggest_nearby_unknown_ones() {
     fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
     // when
-    let help_output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let help_output = Command::new(env!("CARGO_BIN_EXE_icode"))
         .current_dir(&temp_dir)
         .arg("/help")
         .output()
-        .expect("claw should launch");
-    let unknown_output = Command::new(env!("CARGO_BIN_EXE_claw"))
+        .expect("icode should launch");
+    let unknown_output = Command::new(env!("CARGO_BIN_EXE_icode"))
         .current_dir(&temp_dir)
         .arg("/zstats")
         .output()
-        .expect("claw should launch");
+        .expect("icode should launch");
 
     // then
     assert_success(&help_output);
@@ -108,16 +108,16 @@ fn slash_command_names_match_known_commands_and_suggest_nearby_unknown_ones() {
 fn config_command_loads_defaults_from_standard_config_locations() {
     // given
     let temp_dir = unique_temp_dir("config-defaults");
-    let config_home = temp_dir.join("home").join(".claw");
-    fs::create_dir_all(temp_dir.join(".claw")).expect("project config dir should exist");
+    let config_home = temp_dir.join("home").join(".icode");
+    fs::create_dir_all(temp_dir.join(".icode")).expect("project config dir should exist");
     fs::create_dir_all(&config_home).expect("home config dir should exist");
 
     fs::write(config_home.join("settings.json"), r#"{"model":"haiku"}"#)
         .expect("write user settings");
-    fs::write(temp_dir.join(".claw.json"), r#"{"model":"sonnet"}"#)
+    fs::write(temp_dir.join(".icode.json"), r#"{"model":"sonnet"}"#)
         .expect("write project settings");
     fs::write(
-        temp_dir.join(".claw").join("settings.local.json"),
+        temp_dir.join(".icode").join("settings.local.json"),
         r#"{"model":"opus"}"#,
     )
     .expect("write local settings");
@@ -125,7 +125,7 @@ fn config_command_loads_defaults_from_standard_config_locations() {
 
     // when
     let output = command_in(&temp_dir)
-        .env("CLAW_CONFIG_HOME", &config_home)
+        .env("ICODE_CONFIG_HOME", &config_home)
         .args([
             "--resume",
             session_path.to_str().expect("utf8 path"),
@@ -133,7 +133,7 @@ fn config_command_loads_defaults_from_standard_config_locations() {
             "model",
         ])
         .output()
-        .expect("claw should launch");
+        .expect("icode should launch");
 
     // then
     assert_success(&output);
@@ -148,10 +148,10 @@ fn config_command_loads_defaults_from_standard_config_locations() {
             .to_str()
             .expect("utf8 path")
     ));
-    assert!(stdout.contains(temp_dir.join(".claw.json").to_str().expect("utf8 path")));
+    assert!(stdout.contains(temp_dir.join(".icode.json").to_str().expect("utf8 path")));
     assert!(stdout.contains(
         temp_dir
-            .join(".claw")
+            .join(".icode")
             .join("settings.local.json")
             .to_str()
             .expect("utf8 path")
@@ -161,7 +161,7 @@ fn config_command_loads_defaults_from_standard_config_locations() {
 }
 
 fn command_in(cwd: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_icode"));
     command.current_dir(cwd);
     command
 }
@@ -194,7 +194,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .as_millis();
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "claw-{label}-{}-{millis}-{counter}",
+        "icode-{label}-{}-{millis}-{counter}",
         std::process::id()
     ))
 }

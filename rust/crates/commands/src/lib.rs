@@ -221,7 +221,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "plugin",
         aliases: &["plugins", "marketplace"],
-        summary: "Manage Claw Code plugins",
+        summary: "Manage icode plugins",
         argument_hint: Some(
             "[list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]",
         ),
@@ -399,6 +399,20 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "exit",
         aliases: &[],
         summary: "Exit the REPL session",
+        argument_hint: None,
+        resume_supported: false,
+    },
+    SlashCommandSpec {
+        name: "undo",
+        aliases: &[],
+        summary: "Undo the last user message and restore it to the prompt",
+        argument_hint: None,
+        resume_supported: false,
+    },
+    SlashCommandSpec {
+        name: "redo",
+        aliases: &[],
+        summary: "Restore previously undone messages",
         argument_hint: None,
         resume_supported: false,
     },
@@ -1116,6 +1130,8 @@ pub enum SlashCommand {
     Files,
     Fast,
     Exit,
+    Undo,
+    Redo,
     Summary,
     Desktop,
     Brief,
@@ -1351,6 +1367,14 @@ pub fn validate_slash_command_input(
         "exit" => {
             validate_no_args(command, &args)?;
             SlashCommand::Exit
+        }
+        "undo" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::Undo
+        }
+        "redo" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::Redo
         }
         "summary" => {
             validate_no_args(command, &args)?;
@@ -3040,7 +3064,7 @@ fn render_agents_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "Agents".to_string(),
         "  Usage            /agents [list|help]".to_string(),
-        "  Direct CLI       claw agents".to_string(),
+        "  Direct CLI       icode agents".to_string(),
         "  Sources          .codex/agents, .claude/agents, $CODEX_HOME/agents".to_string(),
     ];
     if let Some(args) = unexpected {
@@ -3053,7 +3077,7 @@ fn render_skills_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "Skills".to_string(),
         "  Usage            /skills [list|install <path>|help]".to_string(),
-        "  Direct CLI       claw skills [list|install <path>|help]".to_string(),
+        "  Direct CLI       icode skills [list|install <path>|help]".to_string(),
         "  Install root     $CODEX_HOME/skills or ~/.codex/skills".to_string(),
         "  Sources          .codex/skills, .claude/skills, legacy /commands".to_string(),
     ];
@@ -3067,8 +3091,8 @@ fn render_mcp_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "MCP".to_string(),
         "  Usage            /mcp [list|show <server>|help]".to_string(),
-        "  Direct CLI       claw mcp [list|show <server>|help]".to_string(),
-        "  Sources          .claw/settings.json, .claw/settings.local.json".to_string(),
+        "  Direct CLI       icode mcp [list|show <server>|help]".to_string(),
+        "  Sources          .icode/settings.json, .icode/settings.local.json".to_string(),
     ];
     if let Some(args) = unexpected {
         lines.push(format!("  Unexpected       {args}"));
@@ -3254,7 +3278,9 @@ pub fn handle_slash_command(
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
         | SlashCommand::AddDir { .. }
-        | SlashCommand::Unknown(_) => None,
+        | SlashCommand::Unknown(_)
+        | SlashCommand::Undo
+        | SlashCommand::Redo => None,
     }
 }
 
@@ -3699,7 +3725,7 @@ mod tests {
 
         // then
         assert!(help.contains("/plugin"));
-        assert!(help.contains("Summary          Manage Claw Code plugins"));
+        assert!(help.contains("Summary          Manage icode plugins"));
         assert!(help.contains("Aliases          /plugins, /marketplace"));
         assert!(help.contains("Category         Workspace & git"));
     }
@@ -3991,7 +4017,7 @@ mod tests {
         let agents_help =
             super::handle_agents_slash_command(Some("help"), &cwd).expect("agents help");
         assert!(agents_help.contains("Usage            /agents [list|help]"));
-        assert!(agents_help.contains("Direct CLI       claw agents"));
+        assert!(agents_help.contains("Direct CLI       icode agents"));
 
         let agents_unexpected =
             super::handle_agents_slash_command(Some("show planner"), &cwd).expect("agents usage");
@@ -4016,7 +4042,7 @@ mod tests {
 
         let help = super::handle_mcp_slash_command(Some("help"), &cwd).expect("mcp help");
         assert!(help.contains("Usage            /mcp [list|show <server>|help]"));
-        assert!(help.contains("Direct CLI       claw mcp [list|show <server>|help]"));
+        assert!(help.contains("Direct CLI       icode mcp [list|show <server>|help]"));
 
         let unexpected =
             super::handle_mcp_slash_command(Some("show alpha beta"), &cwd).expect("mcp usage");
@@ -4029,10 +4055,10 @@ mod tests {
     fn renders_mcp_reports_from_loaded_config() {
         let workspace = temp_dir("mcp-config-workspace");
         let config_home = temp_dir("mcp-config-home");
-        fs::create_dir_all(workspace.join(".claw")).expect("workspace config dir");
+        fs::create_dir_all(workspace.join(".icode")).expect("workspace config dir");
         fs::create_dir_all(&config_home).expect("config home");
         fs::write(
-            workspace.join(".claw").join("settings.json"),
+            workspace.join(".icode").join("settings.json"),
             r#"{
               "mcpServers": {
                 "alpha": {
@@ -4056,7 +4082,7 @@ mod tests {
         )
         .expect("write settings");
         fs::write(
-            workspace.join(".claw").join("settings.local.json"),
+            workspace.join(".icode").join("settings.local.json"),
             r#"{
               "mcpServers": {
                 "remote": {

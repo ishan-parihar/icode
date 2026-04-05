@@ -371,7 +371,7 @@ mod tests {
             },
             repo_config: sample_repo_config(),
             branch_policy: BranchPolicy::CreateNew {
-                prefix: "ultraclaw".to_string(),
+                prefix: "ultraicode".to_string(),
             },
             acceptance_tests: vec![
                 AcceptanceTest::CargoTest {

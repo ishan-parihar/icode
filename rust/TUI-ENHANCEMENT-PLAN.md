@@ -1,4 +1,4 @@
-# TUI Enhancement Plan — Claw Code (`rusty-claude-cli`)
+# TUI Enhancement Plan — icode (`icode-cli`)
 
 ## Executive Summary
 
@@ -12,7 +12,7 @@ This plan covers a comprehensive analysis of the current terminal user interface
 
 | Crate | Purpose | Lines | TUI Relevance |
 |---|---|---|---|
-| `rusty-claude-cli` | Main binary: REPL loop, arg parsing, rendering, API bridge | ~3,600 | **Primary TUI surface** |
+| `icode-cli` | Main binary: REPL loop, arg parsing, rendering, API bridge | ~3,600 | **Primary TUI surface** |
 | `runtime` | Session, conversation loop, config, permissions, compaction | ~5,300 | Provides data/state |
 | `api` | Anthropic HTTP client + SSE streaming | ~1,500 | Provides stream events |
 | `commands` | Slash command metadata/parsing/help | ~470 | Drives command dispatch |

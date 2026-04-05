@@ -203,8 +203,8 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
         for candidate in [
             dir.join("CLAUDE.md"),
             dir.join("CLAUDE.local.md"),
-            dir.join(".claw").join("CLAUDE.md"),
-            dir.join(".claw").join("instructions.md"),
+            dir.join(".icode").join("CLAUDE.md"),
+            dir.join(".icode").join("instructions.md"),
         ] {
             push_context_file(&mut files, candidate)?;
         }
@@ -421,7 +421,7 @@ fn render_config_section(config: &RuntimeConfig) -> String {
     let mut lines = vec!["# Runtime config".to_string()];
     if config.loaded_entries().is_empty() {
         lines.extend(prepend_bullets(vec![
-            "No Claw Code settings files loaded.".to_string()
+            "No icode settings files loaded.".to_string()
         ]));
         return lines.join("\n");
     }
@@ -524,23 +524,23 @@ mod tests {
     fn discovers_instruction_files_from_ancestor_chain() {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
-        fs::create_dir_all(nested.join(".claw")).expect("nested claw dir");
+        fs::create_dir_all(nested.join(".icode")).expect("nested icode dir");
         fs::write(root.join("CLAUDE.md"), "root instructions").expect("write root instructions");
         fs::write(root.join("CLAUDE.local.md"), "local instructions")
             .expect("write local instructions");
         fs::create_dir_all(root.join("apps")).expect("apps dir");
-        fs::create_dir_all(root.join("apps").join(".claw")).expect("apps claw dir");
+        fs::create_dir_all(root.join("apps").join(".icode")).expect("apps icode dir");
         fs::write(root.join("apps").join("CLAUDE.md"), "apps instructions")
             .expect("write apps instructions");
         fs::write(
-            root.join("apps").join(".claw").join("instructions.md"),
+            root.join("apps").join(".icode").join("instructions.md"),
             "apps dot claude instructions",
         )
         .expect("write apps dot claude instructions");
-        fs::write(nested.join(".claw").join("CLAUDE.md"), "nested rules")
+        fs::write(nested.join(".icode").join("CLAUDE.md"), "nested rules")
             .expect("write nested rules");
         fs::write(
-            nested.join(".claw").join("instructions.md"),
+            nested.join(".icode").join("instructions.md"),
             "nested instructions",
         )
         .expect("write nested instructions");
@@ -600,7 +600,7 @@ mod tests {
     #[test]
     fn displays_context_paths_compactly() {
         assert_eq!(
-            display_context_path(Path::new("/tmp/project/.claw/CLAUDE.md")),
+            display_context_path(Path::new("/tmp/project/.icode/CLAUDE.md")),
             "CLAUDE.md"
         );
     }
@@ -678,10 +678,10 @@ mod tests {
     #[test]
     fn load_system_prompt_reads_claude_files_and_config() {
         let root = temp_dir();
-        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::create_dir_all(root.join(".icode")).expect("icode dir");
         fs::write(root.join("CLAUDE.md"), "Project rules").expect("write instructions");
         fs::write(
-            root.join(".claw").join("settings.json"),
+            root.join(".icode").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("write settings");
@@ -690,9 +690,9 @@ mod tests {
         ensure_valid_cwd();
         let previous = std::env::current_dir().expect("cwd");
         let original_home = std::env::var("HOME").ok();
-        let original_claw_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_icode_home = std::env::var("ICODE_CONFIG_HOME").ok();
         std::env::set_var("HOME", &root);
-        std::env::set_var("CLAW_CONFIG_HOME", root.join("missing-home"));
+        std::env::set_var("ICODE_CONFIG_HOME", root.join("missing-home"));
         std::env::set_current_dir(&root).expect("change cwd");
         let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8")
             .expect("system prompt should load")
@@ -707,10 +707,10 @@ mod tests {
         } else {
             std::env::remove_var("HOME");
         }
-        if let Some(value) = original_claw_home {
-            std::env::set_var("CLAW_CONFIG_HOME", value);
+        if let Some(value) = original_icode_home {
+            std::env::set_var("ICODE_CONFIG_HOME", value);
         } else {
-            std::env::remove_var("CLAW_CONFIG_HOME");
+            std::env::remove_var("ICODE_CONFIG_HOME");
         }
 
         assert!(prompt.contains("Project rules"));
@@ -721,10 +721,10 @@ mod tests {
     #[test]
     fn renders_claude_code_style_sections_with_project_context() {
         let root = temp_dir();
-        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::create_dir_all(root.join(".icode")).expect("icode dir");
         fs::write(root.join("CLAUDE.md"), "Project rules").expect("write CLAUDE.md");
         fs::write(
-            root.join(".claw").join("settings.json"),
+            root.join(".icode").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("write settings");
@@ -763,9 +763,9 @@ mod tests {
     fn discovers_dot_claude_instructions_markdown() {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
-        fs::create_dir_all(nested.join(".claw")).expect("nested claw dir");
+        fs::create_dir_all(nested.join(".icode")).expect("nested icode dir");
         fs::write(
-            nested.join(".claw").join("instructions.md"),
+            nested.join(".icode").join("instructions.md"),
             "instruction markdown",
         )
         .expect("write instructions.md");
@@ -774,7 +774,7 @@ mod tests {
         assert!(context
             .instruction_files
             .iter()
-            .any(|file| file.path.ends_with(".claw/instructions.md")));
+            .any(|file| file.path.ends_with(".icode/instructions.md")));
         assert!(
             render_instruction_files(&context.instruction_files).contains("instruction markdown")
         );

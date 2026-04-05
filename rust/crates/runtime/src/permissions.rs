@@ -77,7 +77,7 @@ pub enum PermissionPromptDecision {
     Deny { reason: String },
 }
 
-pub trait PermissionPrompter {
+pub trait PermissionPrompter: Send {
     fn decide(&mut self, request: &PermissionRequest) -> PermissionPromptDecision;
 }
 

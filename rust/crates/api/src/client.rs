@@ -11,6 +11,7 @@ pub enum ProviderClient {
     Anthropic(AnthropicClient),
     Xai(OpenAiCompatClient),
     OpenAi(OpenAiCompatClient),
+    QwenProxy(OpenAiCompatClient),
 }
 
 impl ProviderClient {
@@ -34,6 +35,14 @@ impl ProviderClient {
             ProviderKind::OpenAi => Ok(Self::OpenAi(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::openai(),
             )?)),
+            ProviderKind::QwenProxy => {
+                let config = OpenAiCompatConfig::qwen_proxy();
+                let api_key = std::env::var(config.api_key_env).unwrap_or_default();
+                Ok(Self::QwenProxy(
+                    OpenAiCompatClient::new(api_key, config)
+                        .with_base_url(read_qwen_proxy_base_url()),
+                ))
+            }
         }
     }
 
@@ -43,6 +52,7 @@ impl ProviderClient {
             Self::Anthropic(_) => ProviderKind::Anthropic,
             Self::Xai(_) => ProviderKind::Xai,
             Self::OpenAi(_) => ProviderKind::OpenAi,
+            Self::QwenProxy(_) => ProviderKind::QwenProxy,
         }
     }
 
@@ -58,7 +68,7 @@ impl ProviderClient {
     pub fn prompt_cache_stats(&self) -> Option<PromptCacheStats> {
         match self {
             Self::Anthropic(client) => client.prompt_cache_stats(),
-            Self::Xai(_) | Self::OpenAi(_) => None,
+            Self::Xai(_) | Self::OpenAi(_) | Self::QwenProxy(_) => None,
         }
     }
 
@@ -66,7 +76,7 @@ impl ProviderClient {
     pub fn take_last_prompt_cache_record(&self) -> Option<PromptCacheRecord> {
         match self {
             Self::Anthropic(client) => client.take_last_prompt_cache_record(),
-            Self::Xai(_) | Self::OpenAi(_) => None,
+            Self::Xai(_) | Self::OpenAi(_) | Self::QwenProxy(_) => None,
         }
     }
 
@@ -76,7 +86,9 @@ impl ProviderClient {
     ) -> Result<MessageResponse, ApiError> {
         match self {
             Self::Anthropic(client) => client.send_message(request).await,
-            Self::Xai(client) | Self::OpenAi(client) => client.send_message(request).await,
+            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) => {
+                client.send_message(request).await
+            }
         }
     }
 
@@ -89,7 +101,7 @@ impl ProviderClient {
                 .stream_message(request)
                 .await
                 .map(MessageStream::Anthropic),
-            Self::Xai(client) | Self::OpenAi(client) => client
+            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) => client
                 .stream_message(request)
                 .await
                 .map(MessageStream::OpenAiCompat),
@@ -131,6 +143,11 @@ pub fn read_base_url() -> String {
 #[must_use]
 pub fn read_xai_base_url() -> String {
     openai_compat::read_base_url(OpenAiCompatConfig::xai())
+}
+
+#[must_use]
+pub fn read_qwen_proxy_base_url() -> String {
+    openai_compat::read_base_url(OpenAiCompatConfig::qwen_proxy())
 }
 
 #[cfg(test)]

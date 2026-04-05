@@ -2434,7 +2434,7 @@ fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("clawd-rust-tools/0.1")
+        .user_agent("icode-rust-tools/0.1")
         .build()
         .map_err(|error| error.to_string())
 }
@@ -2804,7 +2804,7 @@ fn todo_store_path() -> Result<std::path::PathBuf, String> {
         return Ok(std::path::PathBuf::from(path));
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    Ok(cwd.join(".clawd-todos.json"))
+    Ok(cwd.join(".icoded-todos.json"))
 }
 
 fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
@@ -2945,7 +2945,7 @@ where
 }
 
 fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
-    let thread_name = format!("clawd-agent-{}", job.manifest.agent_id);
+    let thread_name = format!("icode-agent-{}", job.manifest.agent_id);
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
@@ -2974,7 +2974,7 @@ fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
 fn run_agent_job(job: &AgentJob) -> Result<(), String> {
     let mut runtime = build_agent_runtime(job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
     let summary = runtime
-        .run_turn(job.prompt.clone(), None)
+        .run_turn(job.prompt.clone(), None, None)
         .map_err(|error| error.to_string())?;
     let final_text = final_assistant_text(&summary);
     persist_agent_terminal_state(&job.manifest, "completed", Some(final_text.as_str()), None)
@@ -3062,7 +3062,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "SendUserMessage",
             "PowerShell",
         ],
-        "claw-guide" => vec![
+        "icode-guide" => vec![
             "read_file",
             "glob_search",
             "grep_search",
@@ -3269,7 +3269,7 @@ impl ProviderRuntimeClient {
 
 impl ApiClient for ProviderRuntimeClient {
     #[allow(clippy::too_many_lines)]
-    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+    fn stream(&mut self, request: ApiRequest, _progress: Option<&dyn Fn(AssistantEvent)>) -> Result<Vec<AssistantEvent>, RuntimeError> {
         let tools = tool_specs_for_allowed_tools(Some(&self.allowed_tools))
             .into_iter()
             .map(|spec| ToolDefinition {
@@ -3675,9 +3675,9 @@ fn agent_store_dir() -> Result<std::path::PathBuf, String> {
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     if let Some(workspace_root) = cwd.ancestors().nth(2) {
-        return Ok(workspace_root.join(".clawd-agents"));
+        return Ok(workspace_root.join(".icoded-agents"));
     }
-    Ok(cwd.join(".clawd-agents"))
+    Ok(cwd.join(".icoded-agents"))
 }
 
 fn make_agent_id() -> String {
@@ -3718,7 +3718,7 @@ fn normalize_subagent_type(subagent_type: Option<&str>) -> String {
         "verification" | "verificationagent" | "verify" | "verifier" => {
             String::from("Verification")
         }
-        "clawguide" | "clawguideagent" | "guide" => String::from("claw-guide"),
+        "clawguide" | "icodeguideagent" | "guide" => String::from("icode-guide"),
         "statusline" | "statuslinesetup" => String::from("statusline-setup"),
         _ => trimmed.to_string(),
     }
@@ -4411,16 +4411,16 @@ fn config_file_for_scope(scope: ConfigScope) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     Ok(match scope {
         ConfigScope::Global => config_home_dir()?.join("settings.json"),
-        ConfigScope::Settings => cwd.join(".claw").join("settings.local.json"),
+        ConfigScope::Settings => cwd.join(".icode").join("settings.local.json"),
     })
 }
 
 fn config_home_dir() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAW_CONFIG_HOME") {
+    if let Ok(path) = std::env::var("ICODE_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var("HOME").map_err(|_| String::from("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".claw"))
+    Ok(PathBuf::from(home).join(".icode"))
 }
 
 fn read_json_object(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
@@ -4816,7 +4816,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("clawd-tools-{unique}-{name}"))
+        std::env::temp_dir().join(format!("icode-tools-{unique}-{name}"))
     }
 
     fn permission_policy_for_mode(mode: PermissionMode) -> PermissionPolicy {
@@ -5792,7 +5792,7 @@ mod tests {
     }
 
     impl runtime::ApiClient for MockSubagentApiClient {
-        fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        fn stream(&mut self, request: ApiRequest, _progress: Option<&dyn Fn(AssistantEvent)>) -> Result<Vec<AssistantEvent>, RuntimeError> {
             self.calls += 1;
             match self.calls {
                 1 => {
@@ -5838,7 +5838,7 @@ mod tests {
         );
 
         let summary = runtime
-            .run_turn("Inspect the delegated file", None)
+            .run_turn("Inspect the delegated file", None, None)
             .expect("subagent loop should succeed");
 
         assert_eq!(
@@ -6259,7 +6259,7 @@ mod tests {
     #[test]
     fn brief_returns_sent_message_and_attachment_metadata() {
         let attachment = std::env::temp_dir().join(format!(
-            "clawd-brief-{}.png",
+            "icode-brief-{}.png",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -6290,7 +6290,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "clawd-config-{}",
+            "icode-config-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -6298,19 +6298,19 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claw")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".icode")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".icode")).expect("cwd dir");
         std::fs::write(
-            home.join(".claw").join("settings.json"),
+            home.join(".icode").join("settings.json"),
             r#"{"verbose":false}"#,
         )
         .expect("write global settings");
 
         let original_home = std::env::var("HOME").ok();
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ICODE_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("ICODE_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
         let get = execute_tool("Config", &json!({"setting": "verbose"})).expect("get config");
@@ -6344,8 +6344,8 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ICODE_CONFIG_HOME", value),
+            None => std::env::remove_var("ICODE_CONFIG_HOME"),
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -6356,7 +6356,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "clawd-plan-mode-{}",
+            "icode-plan-mode-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -6364,19 +6364,19 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claw")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".icode")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".icode")).expect("cwd dir");
         std::fs::write(
-            cwd.join(".claw").join("settings.local.json"),
+            cwd.join(".icode").join("settings.local.json"),
             r#"{"permissions":{"defaultMode":"acceptEdits"}}"#,
         )
         .expect("write local settings");
 
         let original_home = std::env::var("HOME").ok();
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ICODE_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("ICODE_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
         let enter = execute_tool("EnterPlanMode", &json!({})).expect("enter plan mode");
@@ -6386,11 +6386,11 @@ mod tests {
         assert_eq!(enter_output["previousLocalMode"], "acceptEdits");
         assert_eq!(enter_output["currentLocalMode"], "plan");
 
-        let local_settings = std::fs::read_to_string(cwd.join(".claw").join("settings.local.json"))
+        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
             .expect("local settings after enter");
         assert!(local_settings.contains(r#""defaultMode": "plan""#));
         let state =
-            std::fs::read_to_string(cwd.join(".claw").join("tool-state").join("plan-mode.json"))
+            std::fs::read_to_string(cwd.join(".icode").join("tool-state").join("plan-mode.json"))
                 .expect("plan mode state");
         assert!(state.contains(r#""hadLocalOverride": true"#));
         assert!(state.contains(r#""previousLocalMode": "acceptEdits""#));
@@ -6402,11 +6402,11 @@ mod tests {
         assert_eq!(exit_output["previousLocalMode"], "acceptEdits");
         assert_eq!(exit_output["currentLocalMode"], "acceptEdits");
 
-        let local_settings = std::fs::read_to_string(cwd.join(".claw").join("settings.local.json"))
+        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
             .expect("local settings after exit");
         assert!(local_settings.contains(r#""defaultMode": "acceptEdits""#));
         assert!(!cwd
-            .join(".claw")
+            .join(".icode")
             .join("tool-state")
             .join("plan-mode.json")
             .exists());
@@ -6417,8 +6417,8 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ICODE_CONFIG_HOME", value),
+            None => std::env::remove_var("ICODE_CONFIG_HOME"),
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -6429,7 +6429,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "clawd-plan-mode-empty-{}",
+            "icode-plan-mode-empty-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -6437,14 +6437,14 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claw")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".icode")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".icode")).expect("cwd dir");
 
         let original_home = std::env::var("HOME").ok();
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ICODE_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("ICODE_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
         let enter = execute_tool("EnterPlanMode", &json!({})).expect("enter plan mode");
@@ -6457,7 +6457,7 @@ mod tests {
         assert_eq!(exit_output["changed"], true);
         assert_eq!(exit_output["currentLocalMode"], serde_json::Value::Null);
 
-        let local_settings = std::fs::read_to_string(cwd.join(".claw").join("settings.local.json"))
+        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
             .expect("local settings after exit");
         let local_settings_json: serde_json::Value =
             serde_json::from_str(&local_settings).expect("valid settings json");
@@ -6467,7 +6467,7 @@ mod tests {
             "permissions override should be removed on exit"
         );
         assert!(!cwd
-            .join(".claw")
+            .join(".icode")
             .join("tool-state")
             .join("plan-mode.json")
             .exists());
@@ -6478,8 +6478,8 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ICODE_CONFIG_HOME", value),
+            None => std::env::remove_var("ICODE_CONFIG_HOME"),
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -6551,7 +6551,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
-            "clawd-pwsh-bin-{}",
+            "icode-pwsh-bin-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -6608,7 +6608,7 @@ printf 'pwsh:%s' "$1"
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let original_path = std::env::var("PATH").unwrap_or_default();
         let empty_dir = std::env::temp_dir().join(format!(
-            "clawd-empty-bin-{}",
+            "icode-empty-bin-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")

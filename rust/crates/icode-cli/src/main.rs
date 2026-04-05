@@ -9,6 +9,7 @@
 mod init;
 mod input;
 mod render;
+mod tui;
 
 use std::collections::BTreeSet;
 use std::env;
@@ -24,8 +25,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
-    resolve_startup_auth_source, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
+    resolve_model_alias as api_resolve_model_alias, resolve_startup_auth_source, AnthropicClient,
+    AuthSource, ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest,
+    MessageResponse, OutputContentBlock, PromptCache, ProviderClient,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 
@@ -52,7 +54,25 @@ use serde::Deserialize;
 use serde_json::json;
 use tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput};
 
-const DEFAULT_MODEL: &str = "claude-opus-4-6";
+#[derive(Debug, Clone)]
+pub enum TurnEvent {
+    ThinkingStarted,
+    TokenDelta(String),
+    ToolCallStarted { name: String, input: String },
+    ToolCallCompleted { name: String, output: String, success: bool },
+    TurnCompleted { text: String, tool_calls: Vec<TurnToolCallInfo>, input_tokens: u32, output_tokens: u32 },
+    TurnError(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct TurnToolCallInfo {
+    pub name: String,
+    pub input: String,
+    pub output: String,
+    pub success: bool,
+}
+
+const DEFAULT_MODEL: &str = "coder-model";
 fn max_tokens_for_model(model: &str) -> u32 {
     if model.contains("opus") {
         32_000
@@ -91,13 +111,13 @@ type AllowedToolSet = BTreeSet<String>;
 fn main() {
     if let Err(error) = run() {
         let message = error.to_string();
-        if message.contains("`claw --help`") {
+        if message.contains("`icode --help`") {
             eprintln!("error: {message}");
         } else {
             eprintln!(
                 "error: {message}
 
-Run `claw --help` for usage."
+Run `icode --help` for usage."
             );
         }
         std::process::exit(1);
@@ -105,6 +125,7 @@ Run `claw --help` for usage."
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    apply_env_from_config();
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_args(&args)? {
         CliAction::DumpManifests => dump_manifests(),
@@ -210,7 +231,7 @@ impl CliOutputFormat {
 
 #[allow(clippy::too_many_lines)]
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
-    let mut model = DEFAULT_MODEL.to_string();
+    let mut model = default_model_from_config().unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let mut output_format = CliOutputFormat::Text;
     let mut permission_mode = default_permission_mode();
     let mut wants_help = false;
@@ -267,7 +288,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 index += 1;
             }
             "-p" => {
-                // Claw Code compat: -p "prompt" = one-shot prompt
+                // icode compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
                 if prompt.trim().is_empty() {
                     return Err("-p requires a prompt string".to_string());
@@ -281,7 +302,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 });
             }
             "--print" => {
-                // Claw Code compat: --print makes output non-interactive
+                // icode compat: --print makes output non-interactive
                 output_format = CliOutputFormat::Text;
                 index += 1;
             }
@@ -425,11 +446,11 @@ fn bare_slash_command_guidance(command_name: &str) -> Option<String> {
         .find(|spec| spec.name == command_name)?;
     let guidance = if slash_command.resume_supported {
         format!(
-            "`claw {command_name}` is a slash command. Use `claw --resume SESSION.jsonl /{command_name}` or start `claw` and run `/{command_name}`."
+            "`icode {command_name}` is a slash command. Use `icode --resume SESSION.jsonl /{command_name}` or start `icode` and run `/{command_name}`."
         )
     } else {
         format!(
-            "`claw {command_name}` is a slash command. Start `claw` and run `/{command_name}` inside the REPL."
+            "`icode {command_name}` is a slash command. Start `icode` and run `/{command_name}` inside the REPL."
         )
     };
     Some(guidance)
@@ -459,7 +480,7 @@ fn parse_direct_slash_cli_action(rest: &[String]) -> Result<CliAction, String> {
         Ok(Some(command)) => Err({
             let _ = command;
             format!(
-                "slash command {command_name} is interactive-only. Start `claw` and run it there, or use `claw --resume SESSION.jsonl {command_name}` / `claw --resume {latest} {command_name}` when the command is marked [resume] in /help.",
+                "slash command {command_name} is interactive-only. Start `icode` and run it there, or use `icode --resume SESSION.jsonl {command_name}` / `icode --resume {latest} {command_name}` when the command is marked [resume] in /help.",
                 command_name = rest[0],
                 latest = LATEST_SESSION_REFERENCE,
             )
@@ -476,7 +497,7 @@ fn format_unknown_option(option: &str) -> String {
         message.push_str(suggestion);
         message.push('?');
     }
-    message.push_str("\nRun `claw --help` for usage.");
+    message.push_str("\nRun `icode --help` for usage.");
     message
 }
 
@@ -487,7 +508,7 @@ fn format_unknown_direct_slash_command(name: &str) -> String {
         message.push('\n');
         message.push_str(&suggestions);
     }
-    message.push_str("\nRun `claw --help` for CLI usage, or start `claw` and use /help.");
+    message.push_str("\nRun `icode --help` for CLI usage, or start `icode` and use /help.");
     message
 }
 
@@ -643,6 +664,25 @@ fn default_permission_mode() -> PermissionMode {
         .map(permission_mode_from_label)
         .or_else(config_permission_mode_for_current_dir)
         .unwrap_or(PermissionMode::DangerFullAccess)
+}
+
+fn default_model_from_config() -> Option<String> {
+    let cwd = env::current_dir().ok()?;
+    let loader = ConfigLoader::default_for(&cwd);
+    let config = loader.load().ok()?;
+    config.model().map(str::to_string)
+}
+
+fn apply_env_from_config() {
+    let cwd = env::current_dir().ok();
+    let Some(cwd) = cwd else { return };
+    let loader = ConfigLoader::default_for(&cwd);
+    let Ok(config) = loader.load() else { return };
+    for (key, value) in config.env_vars() {
+        if std::env::var(&key).is_err() {
+            std::env::set_var(&key, &value);
+        }
+    }
 }
 
 fn config_permission_mode_for_current_dir() -> Option<PermissionMode> {
@@ -1168,7 +1208,7 @@ fn render_resume_usage() -> String {
     format!(
         "Resume
   Usage            /resume <session-path|session-id|{LATEST_SESSION_REFERENCE}>
-  Auto-save        .claw/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}
+  Auto-save        .icode/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}
   Tip              use /session list to inspect saved sessions"
     )
 }
@@ -1354,7 +1394,7 @@ fn run_resume_command(
             Ok(ResumeCommandOutcome {
                 session: cleared,
                 message: Some(format!(
-                    "Session cleared\n  Mode             resumed session reset\n  Previous session {previous_session_id}\n  Backup           {}\n  Resume previous  claw --resume {}\n  New session      {new_session_id}\n  Session file     {}",
+                    "Session cleared\n  Mode             resumed session reset\n  Previous session {previous_session_id}\n  Backup           {}\n  Resume previous  icode --resume {}\n  New session      {new_session_id}\n  Session file     {}",
                     backup_path.display(),
                     backup_path.display(),
                     session_path.display()
@@ -1512,7 +1552,9 @@ fn run_resume_command(
         | SlashCommand::Ide { .. }
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
-        | SlashCommand::AddDir { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::AddDir { .. }
+        | SlashCommand::Undo
+        | SlashCommand::Redo => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1521,15 +1563,48 @@ fn run_repl(
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cli = LiveCli::new(model, true, allowed_tools, permission_mode)?;
-    let mut editor =
-        input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
-    println!("{}", cli.startup_banner());
+    let rt = tokio::runtime::Runtime::new()?;
+    let _enter = rt.enter();
+
+    let mut cli = LiveCli::new(model.clone(), true, allowed_tools, permission_mode.clone())?;
+
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    let mut tui = tui::Tui::new(&model, permission_mode.as_str(), &cwd)?;
+
+    {
+        let state = tui.state_mut();
+        state.session.id = cli.session.id.clone();
+        let session = cli.runtime.session();
+        state.session.message_count = session.messages.len();
+
+        let tracker = runtime::UsageTracker::from_session(session);
+        let usage = tracker.cumulative_usage();
+        state.session.input_tokens = usage.input_tokens;
+        state.session.output_tokens = usage.output_tokens;
+        state.session.turns = tracker.turns();
+    }
+
+    cli.persist_session()?;
+    tui.state_mut().sessions_dialog.load_sessions();
+
+    let mut turn_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+
+    let mut completion_candidates = cli.repl_completion_candidates().unwrap_or_default();
+    tui.state_mut()
+        .set_completions(completion_candidates.clone());
 
     loop {
-        editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());
-        match editor.read_line()? {
-            input::ReadOutcome::Submit(input) => {
+        match tui.run() {
+            Ok(input) => {
+                if input.is_empty() {
+                    cli.persist_session()?;
+                    break;
+                }
+
                 let trimmed = input.trim().to_string();
                 if trimmed.is_empty() {
                     continue;
@@ -1538,11 +1613,417 @@ fn run_repl(
                     cli.persist_session()?;
                     break;
                 }
+
+                match trimmed.as_str() {
+                    "/undo" => {
+                        if tui.state_mut().undo_message() {
+                            let prompt_text = tui
+                                .state()
+                                .revert
+                                .as_ref()
+                                .map(|r| r.prompt_text.clone())
+                                .unwrap_or_default();
+                            tui.state_mut().prompt.value = prompt_text;
+                            tui.state_mut().prompt.cursor =
+                                tui.state().prompt.value.chars().count();
+                        } else {
+                            tui.state_mut().show_error("Nothing to undo".to_string());
+                        }
+                        continue;
+                    }
+                    "/redo" => {
+                        if tui.state_mut().redo_message() {
+                            let prompt_text = tui
+                                .state()
+                                .revert
+                                .as_ref()
+                                .map(|r| r.prompt_text.clone())
+                                .unwrap_or_default();
+                            tui.state_mut().prompt.value = prompt_text;
+                            tui.state_mut().prompt.cursor =
+                                tui.state().prompt.value.chars().count();
+                        } else {
+                            tui.state_mut().show_error("Nothing to redo".to_string());
+                        }
+                        continue;
+                    }
+                    "model.list" => {
+                        tui.state_mut().model_picker.open();
+                        continue;
+                    }
+                    "session.new" => {
+                        cli.persist_session()?;
+                        let new_session = runtime::Session::default();
+                        let new_id = new_session.session_id.clone();
+                        let new_path =
+                            sessions_dir()?.join(format!("{new_id}.{PRIMARY_SESSION_EXTENSION}"));
+                        new_session.save_to_path(&new_path)?;
+                        cli.runtime.set_session(new_session);
+                        cli.session = SessionHandle {
+                            id: new_id,
+                            path: new_path,
+                        };
+                        tui.state_mut().messages.clear();
+                        tui.state_mut().tools.clear();
+                        tui.state_mut().revert = None;
+                        tui.state_mut().scroll_offset = usize::MAX;
+                        continue;
+                    }
+                    "__new_session__" => {
+                        cli.persist_session()?;
+                        let new_session = runtime::Session::default();
+                        let new_id = new_session.session_id.clone();
+                        let new_path =
+                            sessions_dir()?.join(format!("{new_id}.{PRIMARY_SESSION_EXTENSION}"));
+                        new_session.save_to_path(&new_path)?;
+                        cli.runtime.set_session(new_session);
+                        cli.session = SessionHandle {
+                            id: new_id.clone(),
+                            path: new_path,
+                        };
+                        {
+                            let st = tui.state_mut();
+                            st.messages.clear();
+                            st.tools.clear();
+                            st.revert = None;
+                            st.scroll_offset = usize::MAX;
+                            st.selection = None;
+                            st.is_thinking = false;
+                            st.is_streaming = false;
+                            st.mode = crate::tui::app::AppMode::Normal;
+                            st.message_action_dialog.close();
+                            st.interrupt_count = 0;
+                            st.interrupt_timestamp = None;
+                            st.turn_in_progress = false;
+                            st.deactivate_leader();
+                            st.prompt.value.clear();
+                            st.prompt.cursor = 0;
+                            st.session.id = new_id;
+                            st.session.title = "New Session".into();
+                            st.session.message_count = 0;
+                            st.session.turns = 0;
+                            st.session.input_tokens = 0;
+                            st.session.output_tokens = 0;
+                        }
+                        continue;
+                    }
+                    other if other.starts_with("__theme_change__") => {
+                        let theme_name = other.strip_prefix("__theme_change__").unwrap_or("dark");
+                        tui.state_mut().set_theme(theme_name);
+                        tui.state_mut().deactivate_leader();
+                        continue;
+                    }
+                    "__fork_session__" => {
+                        let (fork_boundary, fork_prompt) = {
+                            let st = tui.state();
+                            if st.message_action_dialog.open {
+                                (
+                                    Some(st.message_action_dialog.message_id),
+                                    st.message_action_dialog.message_content.clone(),
+                                )
+                            } else if let Some(ref revert) = st.revert {
+                                (Some(revert.message_boundary), revert.prompt_text.clone())
+                            } else {
+                                (None, String::new())
+                            }
+                        };
+
+                        let Some(boundary) = fork_boundary else {
+                            tui.state_mut().show_error("No message to fork from".into());
+                            continue;
+                        };
+
+                        cli.persist_session()?;
+                        let new_session = runtime::Session::default();
+                        let new_id = new_session.session_id.clone();
+                        let new_path =
+                            sessions_dir()?.join(format!("{new_id}.{PRIMARY_SESSION_EXTENSION}"));
+                        new_session.save_to_path(&new_path)?;
+                        cli.runtime.set_session(new_session);
+                        cli.session = SessionHandle {
+                            id: new_id.clone(),
+                            path: new_path,
+                        };
+
+                        {
+                            let st = tui.state_mut();
+                            st.messages.truncate(boundary);
+                            st.tools.clear();
+                            st.revert = None;
+                            st.scroll_offset = usize::MAX;
+                            st.prompt.value = fork_prompt;
+                            st.prompt.cursor = st.prompt.value.chars().count();
+                            st.message_action_dialog.close();
+                            st.selection = None;
+                            st.is_thinking = false;
+                            st.interrupt_count = 0;
+                            st.interrupt_timestamp = None;
+                            st.session.turns = 0;
+                            st.session.input_tokens = 0;
+                            st.session.output_tokens = 0;
+                            st.session.id = new_id;
+                            st.session.title = "New Session".into();
+                            st.session.message_count = boundary;
+                        }
+                        continue;
+                    }
+                    "session.list" => {
+                        tui.state_mut().sessions_dialog.load_sessions();
+                        tui.state_mut().sessions_dialog.open();
+                        continue;
+                    }
+                    _ if trimmed.starts_with("__session_switch__") => {
+                        let path_str = trimmed.strip_prefix("__session_switch__").unwrap();
+                        let switch_path = PathBuf::from(path_str);
+                        match runtime::Session::load_from_path(&switch_path) {
+                            Ok(new_session) => {
+                                let session_ts = new_session.updated_at_ms / 1000;
+                                let saved_msgs = new_session.messages.clone();
+                                let msg_count = saved_msgs.len();
+                                let turns = saved_msgs.iter().filter(|m| {
+                                    matches!(m.role, runtime::MessageRole::Assistant)
+                                }).count() as u32;
+                                cli.persist_session()?;
+                                let session_id = new_session.session_id.clone();
+                                cli.runtime.set_session(new_session);
+                                cli.session = SessionHandle {
+                                    id: session_id.clone(),
+                                    path: switch_path,
+                                };
+                                {
+                                    let st = tui.state_mut();
+                                    st.messages.clear();
+                                    st.tools.clear();
+                                    st.revert = None;
+                                    st.messages =
+                                        convert_runtime_messages_to_tui(&saved_msgs, session_ts);
+                                    st.scroll_offset = usize::MAX;
+                                    st.prompt.value.clear();
+                                    st.prompt.cursor = 0;
+                                    st.sessions_dialog.close();
+                                    st.is_streaming = false;
+                                    st.is_thinking = false;
+                                    st.mode = crate::tui::app::AppMode::Normal;
+                                    st.selection = None;
+                                    st.message_action_dialog.close();
+                                    st.interrupt_count = 0;
+                                    st.interrupt_timestamp = None;
+                                    st.turn_in_progress = false;
+                                    st.deactivate_leader();
+                                    st.session.id = session_id.clone();
+                                    st.session.title = format!("Session {session_id}");
+                                    st.session.message_count = msg_count;
+                                    st.session.turns = turns;
+                                    st.session.input_tokens = 0;
+                                    st.session.output_tokens = 0;
+                                }
+                    }
+                    Err(e) => {
+                                tui.state_mut()
+                                    .show_error(format!("Failed to load session: {e}"));
+                            }
+                        }
+                        continue;
+                    }
+                    "session.clear" => {
+                        {
+                            let st = tui.state_mut();
+                            st.messages.clear();
+                            st.tools.clear();
+                            st.revert = None;
+                            st.scroll_offset = usize::MAX;
+                            st.selection = None;
+                            st.is_thinking = false;
+                            st.message_action_dialog.close();
+                            st.interrupt_count = 0;
+                            st.interrupt_timestamp = None;
+                            st.session.message_count = 0;
+                            st.session.turns = 0;
+                            st.session.input_tokens = 0;
+                            st.session.output_tokens = 0;
+                        }
+                        continue;
+                    }
+                    "sidebar.toggle" => {
+                        tui.state_mut().sidebar_visible = !tui.state_mut().sidebar_visible;
+                        continue;
+                    }
+                    "thinking.toggle" => {
+                        let is_visible = tui.state_mut().toggle_thinking();
+                        let msg = if is_visible { "Showing thinking" } else { "Hiding thinking" };
+                        tui.state_mut().add_toast(msg, tui::ToastKind::Info);
+                        continue;
+                    }
+                    "session.compact" => {
+                        let result = runtime::compact_session(
+                            cli.runtime.session(),
+                            runtime::CompactionConfig {
+                                max_estimated_tokens: 0,
+                                ..runtime::CompactionConfig::default()
+                            },
+                        );
+                        let removed = result.removed_message_count;
+                        let kept = result.compacted_session.messages.len();
+                        let skipped = removed == 0;
+                        result.compacted_session.save_to_path(&cli.session.path)?;
+                        cli.runtime.set_session(result.compacted_session);
+                        tui.state_mut().messages.clear();
+                        tui.state_mut().tools.clear();
+                        let msg = if skipped {
+                            "Skipped: below compaction threshold".to_string()
+                        } else {
+                            format!("Compacted: removed {removed} messages, {kept} kept")
+                        };
+                        tui.state_mut().add_toast(&msg, tui::ToastKind::Info);
+                        continue;
+                    }
+                    "mcp.list" => {
+                        tui.state_mut().mcp_dialog.open();
+                        continue;
+                    }
+                    "skills.list" => {
+                        tui.state_mut().skills_dialog.open();
+                        continue;
+                    }
+                    "plugins.list" => {
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        let loader = ConfigLoader::default_for(&cwd);
+                        if let Ok(runtime_config) = loader.load() {
+                            let manager = build_plugin_manager(&cwd, &loader, &runtime_config);
+                            if let Ok(plugin_list) = manager.list_installed_plugins() {
+                                let entries: Vec<tui::dialog_plugins::PluginEntry> = plugin_list
+                                    .into_iter()
+                                    .map(|p| tui::dialog_plugins::PluginEntry {
+                                        id: p.metadata.id,
+                                        name: p.metadata.name,
+                                        version: p.metadata.version,
+                                        enabled: true,
+                                        tool_count: 0,
+                                        description: Some(p.metadata.description),
+                                    })
+                                    .collect();
+                                let state = tui.state_mut();
+                                state.plugins_dialog.plugins = entries;
+                                state.plugin_count = state.plugins_dialog.plugins.len();
+                            }
+                        }
+                        tui.state_mut().plugins_dialog.open();
+                        continue;
+                    }
+                    "session.undo" => {
+                        if tui.state_mut().undo_message() {
+                            let prompt_text = tui
+                                .state()
+                                .revert
+                                .as_ref()
+                                .map(|r| r.prompt_text.clone())
+                                .unwrap_or_default();
+                            tui.state_mut().prompt.value = prompt_text;
+                            tui.state_mut().prompt.cursor =
+                                tui.state().prompt.value.chars().count();
+                            tui.state_mut().clear_tool_calls();
+                        }
+                        continue;
+                    }
+                    "session.redo" => {
+                        if tui.state_mut().redo_message() {
+                            let prompt_text = tui
+                                .state()
+                                .revert
+                                .as_ref()
+                                .map(|r| r.prompt_text.clone())
+                                .unwrap_or_default();
+                            tui.state_mut().prompt.value = prompt_text;
+                            tui.state_mut().prompt.cursor =
+                                tui.state().prompt.value.chars().count();
+                        }
+                        tui.state_mut().clear_tool_calls();
+                        continue;
+                    }
+                    "status.view" => {
+                        let status = format!(
+                            "Model: {}\nTokens: {} in / {} out\nTurns: {}",
+                            tui.state().session.model,
+                            tui.state().session.input_tokens,
+                            tui.state().session.output_tokens,
+                            tui.state().session.turns
+                        );
+                        tui.state_mut().show_error(status);
+                        continue;
+                    }
+                    "cost.show" => {
+                        let tracker = runtime::UsageTracker::from_session(cli.runtime.session());
+                        let usage = tracker.cumulative_usage();
+                        let cost = format!(
+                            "Input tokens: {}\nOutput tokens: {}\nEst. cost: ${:.4}",
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.estimate_cost_usd().total_cost_usd()
+                        );
+                        tui.state_mut().show_error(cost);
+                        continue;
+                    }
+                    "session.export" => {
+                        let export_path = format!(
+                            "{}/session-{}.txt",
+                            std::env::temp_dir().display(),
+                            cli.runtime.session().session_id
+                        );
+                        let mut content = String::new();
+                        for msg in cli.runtime.session().messages.iter() {
+                            let role = match msg.role {
+                                runtime::MessageRole::User => "user",
+                                runtime::MessageRole::Assistant => "assistant",
+                                runtime::MessageRole::System => "system",
+                                runtime::MessageRole::Tool => "tool",
+                            };
+                            for block in &msg.blocks {
+                                if let runtime::ContentBlock::Text { text } = block {
+                                    content.push_str(&format!("[{}] {}\n\n", role, text));
+                                }
+                            }
+                        }
+                        match std::fs::write(&export_path, &content) {
+                            Ok(()) => {
+                                tui.state_mut()
+                                    .show_error(format!("Exported to {export_path}"));
+                            }
+                            Err(e) => {
+                                tui.state_mut().show_error(format!("Export failed: {e}"));
+                            }
+                        }
+                        continue;
+                    }
+                    "app.exit" => {
+                        cli.persist_session()?;
+                        break;
+                    }
+                    "theme.toggle" => {
+                        let theme_name = tui.state_mut().toggle_theme();
+                        let _ = theme_name;
+                        continue;
+                    }
+                    "help.show" => {
+                        tui.state_mut().help_dialog.open();
+                        continue;
+                    }
+                    "session.fork" => {
+                        let last_msg_idx = tui.state().messages.len().saturating_sub(1);
+                        tui.state_mut().message_action_dialog.open(last_msg_idx, String::new());
+                        continue;
+                    }
+                    _ => {}
+                }
+
                 match SlashCommand::parse(&trimmed) {
                     Ok(Some(command)) => {
                         if cli.handle_repl_command(command)? {
                             cli.persist_session()?;
                         }
+                        completion_candidates =
+                            cli.repl_completion_candidates().unwrap_or_default();
+                        tui.state_mut()
+                            .set_completions(completion_candidates.clone());
                         continue;
                     }
                     Ok(None) => {}
@@ -1551,15 +2032,33 @@ fn run_repl(
                         continue;
                     }
                 }
-                editor.push_history(input);
-                cli.run_turn(&trimmed)?;
+
+                let input_clone = trimmed.clone();
+                let session_path = cli.session.path.clone();
+                if let Ok(updated) = runtime::Session::load_from_path(&session_path) {
+                    cli.runtime.set_session(updated);
+                }
+
+                let (tx, rx) = mpsc::channel();
+                tui.set_turn_receiver(rx);
+
+                let handle = cli.spawn_turn(input_clone, tx, rt.handle().clone());
+                turn_handles.push(handle);
+                completion_candidates = cli.repl_completion_candidates().unwrap_or_default();
+                tui.state_mut()
+                    .set_completions(completion_candidates.clone());
             }
-            input::ReadOutcome::Cancel => {}
-            input::ReadOutcome::Exit => {
-                cli.persist_session()?;
+            Err(e) => {
+                tui.state_mut().show_error(format!("TUI error: {e}"));
+                // Re-draw once to show the error, then break on next iteration
+                let _ = tui.run();
                 break;
             }
         }
+    }
+
+    for handle in turn_handles {
+        let _ = handle.join();
     }
 
     Ok(())
@@ -2127,28 +2626,15 @@ impl LiveCli {
     }
 
     fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
-        let mut spinner = Spinner::new();
-        let mut stdout = io::stdout();
-        spinner.tick(
-            "🦀 Thinking...",
-            TerminalRenderer::new().color_theme(),
-            &mut stdout,
-        )?;
+        let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(false)?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
-        let result = runtime.run_turn(input, Some(&mut permission_prompter));
+        let result = runtime.run_turn(input, Some(&mut permission_prompter), None);
         hook_abort_monitor.stop();
         match result {
             Ok(summary) => {
                 self.replace_runtime(runtime)?;
-                spinner.finish(
-                    "✨ Done",
-                    TerminalRenderer::new().color_theme(),
-                    &mut stdout,
-                )?;
-                println!();
                 if let Some(event) = summary.auto_compaction {
-                    println!(
+                    eprintln!(
                         "{}",
                         format_auto_compaction_notice(event.removed_message_count)
                     );
@@ -2158,14 +2644,104 @@ impl LiveCli {
             }
             Err(error) => {
                 runtime.shutdown_plugins()?;
-                spinner.fail(
-                    "❌ Request failed",
-                    TerminalRenderer::new().color_theme(),
-                    &mut stdout,
-                )?;
                 Err(Box::new(error))
             }
         }
+    }
+
+    fn spawn_turn(
+        &self,
+        input: String,
+        tx: Sender<TurnEvent>,
+        tokio_handle: tokio::runtime::Handle,
+    ) -> thread::JoinHandle<()> {
+        let session = self.runtime.session().clone();
+        let session_id = self.session.id.clone();
+        let model = self.model.clone();
+        let system_prompt = self.system_prompt.clone();
+        let allowed_tools = self.allowed_tools.clone();
+        let permission_mode = self.permission_mode;
+
+        thread::spawn(move || {
+            let _enter = tokio_handle.enter();
+            let hook_abort_signal = runtime::HookAbortSignal::new();
+            let runtime_result = build_runtime(
+                session,
+                &session_id,
+                model,
+                system_prompt,
+                true,
+                false,
+                allowed_tools,
+                permission_mode,
+                None,
+            );
+
+            let Ok(mut runtime) = runtime_result else {
+                let _ = tx.send(TurnEvent::TurnError("Failed to build runtime".to_string()));
+                return;
+            };
+            runtime = runtime.with_hook_abort_signal(hook_abort_signal.clone());
+            let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
+
+            let progress_tx = tx.clone();
+            let progress_callback = |event: AssistantEvent| {
+                let turn_event = match event {
+                    AssistantEvent::TextDelta(text) => Some(TurnEvent::TokenDelta(text)),
+                    AssistantEvent::ToolUse { id, name, input } => {
+                        Some(TurnEvent::ToolCallStarted { name, input })
+                    }
+                    AssistantEvent::Usage(_) => None,
+                    AssistantEvent::PromptCache(_) => None,
+                    AssistantEvent::MessageStop => None,
+                };
+                if let Some(ev) = turn_event {
+                    let _ = progress_tx.send(ev);
+                }
+            };
+
+            let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
+            let result = runtime.run_turn(&input, Some(&mut permission_prompter), Some(&progress_callback));
+            hook_abort_monitor.stop();
+
+            if let Ok(ref summary) = result {
+                if let Some(path) = runtime.session().persistence_path() {
+                    let _ = runtime.session().save_to_path(path);
+                }
+                let text = final_assistant_text(summary);
+                let tool_calls: Vec<TurnToolCallInfo> = summary
+                    .assistant_messages
+                    .iter()
+                    .flat_map(|msg| msg.blocks.iter())
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let output = summary.tool_results.iter()
+                                .flat_map(|rmsg| rmsg.blocks.iter())
+                                .find_map(|block| match block {
+                                    ContentBlock::ToolResult { tool_use_id, output, is_error, .. } if tool_use_id == id => {
+                                        Some((output.clone(), *is_error))
+                                    }
+                                    _ => None,
+                                });
+                            let (output, success) = output.unwrap_or_default();
+                            Some(TurnToolCallInfo {
+                                name: name.clone(),
+                                input: input.clone(),
+                                output,
+                                success: !success,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let _ = tx.send(TurnEvent::TurnCompleted { text, tool_calls, input_tokens: summary.usage.input_tokens, output_tokens: summary.usage.output_tokens });
+            } else if let Err(ref e) = result {
+                if let Some(path) = runtime.session().persistence_path() {
+                    let _ = runtime.session().save_to_path(path);
+                }
+                let _ = tx.send(TurnEvent::TurnError(e.to_string()));
+            }
+        })
     }
 
     fn run_turn_with_output(
@@ -2182,7 +2758,7 @@ impl LiveCli {
     fn run_prompt_json(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(false)?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
-        let result = runtime.run_turn(input, Some(&mut permission_prompter));
+        let result = runtime.run_turn(input, Some(&mut permission_prompter), None);
         hook_abort_monitor.stop();
         let summary = result?;
         self.replace_runtime(runtime)?;
@@ -2362,8 +2938,10 @@ impl LiveCli {
             | SlashCommand::Ide { .. }
             | SlashCommand::Tag { .. }
             | SlashCommand::OutputStyle { .. }
-            | SlashCommand::AddDir { .. } => {
-                eprintln!("Command registered but not yet implemented.");
+            | SlashCommand::AddDir { .. }
+            | SlashCommand::Undo
+            | SlashCommand::Redo => {
+                eprintln!("Use the TUI command palette (Ctrl+P) or /undo / /redo in the TUI.");
                 false
             }
             SlashCommand::Unknown(name) => {
@@ -2796,7 +3374,7 @@ impl LiveCli {
             progress,
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
-        let summary = runtime.run_turn(prompt, Some(&mut permission_prompter))?;
+        let summary = runtime.run_turn(prompt, Some(&mut permission_prompter), None)?;
         let text = final_assistant_text(&summary).trim().to_string();
         runtime.shutdown_plugins()?;
         Ok(text)
@@ -2868,7 +3446,7 @@ impl LiveCli {
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let path = cwd.join(".claw").join("sessions");
+    let path = cwd.join(".icode").join("sessions");
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -3003,13 +3581,13 @@ fn latest_managed_session() -> Result<ManagedSessionSummary, Box<dyn std::error:
 
 fn format_missing_session_reference(reference: &str) -> String {
     format!(
-        "session not found: {reference}\nHint: managed sessions live in .claw/sessions/. Try `{LATEST_SESSION_REFERENCE}` for the most recent session or `/session list` in the REPL."
+        "session not found: {reference}\nHint: managed sessions live in .icode/sessions/. Try `{LATEST_SESSION_REFERENCE}` for the most recent session or `/session list` in the REPL."
     )
 }
 
 fn format_no_managed_sessions() -> String {
     format!(
-        "no managed sessions found in .claw/sessions/\nStart `claw` to create a session, then rerun with `--resume {LATEST_SESSION_REFERENCE}`."
+        "no managed sessions found in .icode/sessions/\nStart `icode` to create a session, then rerun with `--resume {LATEST_SESSION_REFERENCE}`."
     )
 }
 
@@ -3100,7 +3678,7 @@ fn render_repl_help() -> String {
         "  Tab                  Complete commands, modes, and recent sessions".to_string(),
         "  Ctrl-C               Clear input (or exit on empty prompt)".to_string(),
         "  Shift+Enter/Ctrl+J   Insert a newline".to_string(),
-        "  Auto-save            .claw/sessions/<session-id>.jsonl".to_string(),
+        "  Auto-save            .icode/sessions/<session-id>.jsonl".to_string(),
         "  Resume latest        /resume latest".to_string(),
         "  Browse sessions      /session list".to_string(),
         String::new(),
@@ -3747,7 +4325,7 @@ fn render_version_report() -> String {
     let git_sha = GIT_SHA.unwrap_or("unknown");
     let target = BUILD_TARGET.unwrap_or("unknown");
     format!(
-        "Claw Code\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}"
+        "icode\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}"
     )
 }
 
@@ -4411,8 +4989,8 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
 }
 
 struct AnthropicRuntimeClient {
-    runtime: tokio::runtime::Runtime,
-    client: AnthropicClient,
+    handle: tokio::runtime::Handle,
+    client: ProviderClient,
     model: String,
     enable_tools: bool,
     emit_output: bool,
@@ -4431,11 +5009,11 @@ impl AnthropicRuntimeClient {
         tool_registry: GlobalToolRegistry,
         progress_reporter: Option<InternalPromptProgressReporter>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = ProviderClient::from_model(&model).map_err(|e| e.to_string())?;
+        let client = client.with_prompt_cache(PromptCache::new(session_id));
         Ok(Self {
-            runtime: tokio::runtime::Runtime::new()?,
-            client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(api::read_base_url())
-                .with_prompt_cache(PromptCache::new(session_id)),
+            handle: tokio::runtime::Handle::current(),
+            client,
             model,
             enable_tools,
             emit_output,
@@ -4458,7 +5036,7 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
 
 impl ApiClient for AnthropicRuntimeClient {
     #[allow(clippy::too_many_lines)]
-    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+    fn stream(&mut self, request: ApiRequest, progress: Option<&dyn Fn(runtime::AssistantEvent)>) -> Result<Vec<runtime::AssistantEvent>, RuntimeError> {
         if let Some(progress_reporter) = &self.progress_reporter {
             progress_reporter.mark_model_phase();
         }
@@ -4474,7 +5052,7 @@ impl ApiClient for AnthropicRuntimeClient {
             stream: true,
         };
 
-        self.runtime.block_on(async {
+        self.handle.block_on(async {
             let mut stream = self
                 .client
                 .stream_message(&message_request)
@@ -4519,12 +5097,15 @@ impl ApiClient for AnthropicRuntimeClient {
                                 if let Some(progress_reporter) = &self.progress_reporter {
                                     progress_reporter.mark_text_phase(&text);
                                 }
+                                if let Some(cb) = &progress {
+                                    cb(runtime::AssistantEvent::TextDelta(text.clone()));
+                                }
                                 if let Some(rendered) = markdown_stream.push(&renderer, &text) {
                                     write!(out, "{rendered}")
                                         .and_then(|()| out.flush())
                                         .map_err(|error| RuntimeError::new(error.to_string()))?;
                                 }
-                                events.push(AssistantEvent::TextDelta(text));
+                                events.push(runtime::AssistantEvent::TextDelta(text));
                             }
                         }
                         ContentBlockDelta::InputJsonDelta { partial_json } => {
@@ -4545,15 +5126,18 @@ impl ApiClient for AnthropicRuntimeClient {
                             if let Some(progress_reporter) = &self.progress_reporter {
                                 progress_reporter.mark_tool_phase(&name, &input);
                             }
+                            if let Some(cb) = &progress {
+                                cb(runtime::AssistantEvent::ToolUse { id: id.clone(), name: name.clone(), input: input.clone() });
+                            }
                             // Display tool call now that input is fully accumulated
                             writeln!(out, "\n{}", format_tool_call_start(&name, &input))
                                 .and_then(|()| out.flush())
                                 .map_err(|error| RuntimeError::new(error.to_string()))?;
-                            events.push(AssistantEvent::ToolUse { id, name, input });
+                            events.push(runtime::AssistantEvent::ToolUse { id, name, input });
                         }
                     }
                     ApiStreamEvent::MessageDelta(delta) => {
-                        events.push(AssistantEvent::Usage(delta.usage.token_usage()));
+                        events.push(runtime::AssistantEvent::Usage(delta.usage.token_usage()));
                     }
                     ApiStreamEvent::MessageStop(_) => {
                         saw_stop = true;
@@ -4562,7 +5146,7 @@ impl ApiClient for AnthropicRuntimeClient {
                                 .and_then(|()| out.flush())
                                 .map_err(|error| RuntimeError::new(error.to_string()))?;
                         }
-                        events.push(AssistantEvent::MessageStop);
+                        events.push(runtime::AssistantEvent::MessageStop);
                     }
                 }
             }
@@ -4571,16 +5155,16 @@ impl ApiClient for AnthropicRuntimeClient {
 
             if !saw_stop
                 && events.iter().any(|event| {
-                    matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
-                        || matches!(event, AssistantEvent::ToolUse { .. })
+                    matches!(event, runtime::AssistantEvent::TextDelta(text) if !text.is_empty())
+                        || matches!(event, runtime::AssistantEvent::ToolUse { .. })
                 })
             {
-                events.push(AssistantEvent::MessageStop);
+                events.push(runtime::AssistantEvent::MessageStop);
             }
 
             if events
                 .iter()
-                .any(|event| matches!(event, AssistantEvent::MessageStop))
+                .any(|event| matches!(event, runtime::AssistantEvent::MessageStop))
             {
                 return Ok(events);
             }
@@ -5238,7 +5822,7 @@ fn response_to_events(
     Ok(events)
 }
 
-fn push_prompt_cache_record(client: &AnthropicClient, events: &mut Vec<AssistantEvent>) {
+fn push_prompt_cache_record(client: &ProviderClient, events: &mut Vec<AssistantEvent>) {
     if let Some(record) = client.take_last_prompt_cache_record() {
         if let Some(event) = prompt_cache_record_to_runtime_event(record) {
             events.push(AssistantEvent::PromptCache(event));
@@ -5441,54 +6025,187 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
         .collect()
 }
 
+/// Convert runtime `ConversationMessage`s to TUI `Message`s for session restore.
+///
+/// Mapping semantics:
+/// - User messages → TUI `User` messages with `Text` parts
+/// - Assistant messages → TUI `Assistant` messages with `Text`/`ToolCall` parts
+/// - Tool messages → updates the matching `ToolCall`'s output in the preceding Assistant message
+/// - System messages → skipped (not displayed in TUI)
+fn convert_runtime_messages_to_tui(
+    messages: &[ConversationMessage],
+    timestamp_secs: u64,
+) -> Vec<tui::app::Message> {
+    use crate::tui::app::{Message as TuiMessage, MessagePart, MessageRole as TuiMessageRole, ToolStatus};
+
+    let mut result: Vec<TuiMessage> = Vec::new();
+
+    for msg in messages {
+        match msg.role {
+            MessageRole::System => {
+                // Skip system messages — not displayed in TUI
+            }
+            MessageRole::User => {
+                let texts: Vec<String> = msg
+                    .blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if !texts.is_empty() {
+                    result.push(TuiMessage {
+                        role: TuiMessageRole::User,
+                        parts: texts
+                            .into_iter()
+                            .map(|t| MessagePart::Text { content: t })
+                            .collect(),
+                        agent: "build".into(),
+                        timestamp: timestamp_secs,
+                        is_streaming: false,
+                    });
+                }
+            }
+            MessageRole::Assistant => {
+                let mut parts = Vec::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.is_empty() {
+                                parts.push(MessagePart::Text {
+                                    content: text.clone(),
+                                });
+                            }
+                        }
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let input_summary = if input.len() > 80 {
+                                format!("{}…", &input[..80])
+                            } else {
+                                input.clone()
+                            };
+                            parts.push(MessagePart::ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                status: ToolStatus::Completed,
+                                input_summary,
+                                output: None,
+                                expanded: false,
+                            });
+                        }
+                        ContentBlock::ToolResult { .. } => {
+                            // ToolResult should not appear in Assistant blocks, skip
+                        }
+                    }
+                }
+                if !parts.is_empty() {
+                    result.push(TuiMessage {
+                        role: TuiMessageRole::Assistant,
+                        parts,
+                        agent: "build".into(),
+                        timestamp: timestamp_secs,
+                        is_streaming: false,
+                    });
+                }
+            }
+            MessageRole::Tool => {
+                // ToolResult messages update the matching ToolCall in the most recent
+                // Assistant message, rather than creating a separate TUI message.
+                for block in &msg.blocks {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        tool_name,
+                        output,
+                        is_error,
+                    } = block
+                    {
+                        // Find the most recent Assistant message with a matching ToolCall
+                        for tui_msg in result.iter_mut().rev() {
+                            if !matches!(tui_msg.role, TuiMessageRole::Assistant) {
+                                continue;
+                            }
+                            for part in &mut tui_msg.parts {
+                                if let MessagePart::ToolCall {
+                                    id,
+                                    status,
+                                    output: tc_output,
+                                    ..
+                                } = part
+                                {
+                                    if id == tool_use_id {
+                                        *status = if *is_error {
+                                            ToolStatus::Failed
+                                        } else {
+                                            ToolStatus::Completed
+                                        };
+                                        *tc_output = Some(output.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                            // Only update the first matching Assistant message
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
 #[allow(clippy::too_many_lines)]
 fn print_help_to(out: &mut impl Write) -> io::Result<()> {
-    writeln!(out, "claw v{VERSION}")?;
+    writeln!(out, "icode v{VERSION}")?;
     writeln!(out)?;
     writeln!(out, "Usage:")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
+        "  icode [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
     )?;
     writeln!(out, "      Start the interactive REPL")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--output-format text|json] prompt TEXT"
+        "  icode [--model MODEL] [--output-format text|json] prompt TEXT"
     )?;
     writeln!(out, "      Send one prompt and exit")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--output-format text|json] TEXT"
+        "  icode [--model MODEL] [--output-format text|json] TEXT"
     )?;
     writeln!(out, "      Shorthand non-interactive prompt mode")?;
     writeln!(
         out,
-        "  claw --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
+        "  icode --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
     )?;
     writeln!(
         out,
         "      Inspect or maintain a saved session without entering the REPL"
     )?;
-    writeln!(out, "  claw help")?;
+    writeln!(out, "  icode help")?;
     writeln!(out, "      Alias for --help")?;
-    writeln!(out, "  claw version")?;
+    writeln!(out, "  icode version")?;
     writeln!(out, "      Alias for --version")?;
-    writeln!(out, "  claw status")?;
+    writeln!(out, "  icode status")?;
     writeln!(
         out,
         "      Show the current local workspace status snapshot"
     )?;
-    writeln!(out, "  claw sandbox")?;
+    writeln!(out, "  icode sandbox")?;
     writeln!(out, "      Show the current sandbox isolation snapshot")?;
-    writeln!(out, "  claw dump-manifests")?;
-    writeln!(out, "  claw bootstrap-plan")?;
-    writeln!(out, "  claw agents")?;
-    writeln!(out, "  claw mcp")?;
-    writeln!(out, "  claw skills")?;
-    writeln!(out, "  claw system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
-    writeln!(out, "  claw login")?;
-    writeln!(out, "  claw logout")?;
-    writeln!(out, "  claw init")?;
+    writeln!(out, "  icode dump-manifests")?;
+    writeln!(out, "  icode bootstrap-plan")?;
+    writeln!(out, "  icode agents")?;
+    writeln!(out, "  icode mcp")?;
+    writeln!(out, "  icode skills")?;
+    writeln!(
+        out,
+        "  icode system-prompt [--cwd PATH] [--date YYYY-MM-DD]"
+    )?;
+    writeln!(out, "  icode login")?;
+    writeln!(out, "  icode logout")?;
+    writeln!(out, "  icode init")?;
     writeln!(out)?;
     writeln!(out, "Flags:")?;
     writeln!(
@@ -5529,7 +6246,7 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Session shortcuts:")?;
     writeln!(
         out,
-        "  REPL turns auto-save to .claw/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}"
+        "  REPL turns auto-save to .icode/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}"
     )?;
     writeln!(
         out,
@@ -5540,25 +6257,25 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         "  Use /session list in the REPL to browse managed sessions"
     )?;
     writeln!(out, "Examples:")?;
-    writeln!(out, "  claw --model claude-opus \"summarize this repo\"")?;
+    writeln!(out, "  icode --model claude-opus \"summarize this repo\"")?;
     writeln!(
         out,
-        "  claw --output-format json prompt \"explain src/main.rs\""
+        "  icode --output-format json prompt \"explain src/main.rs\""
     )?;
     writeln!(
         out,
-        "  claw --allowedTools read,glob \"summarize Cargo.toml\""
+        "  icode --allowedTools read,glob \"summarize Cargo.toml\""
     )?;
-    writeln!(out, "  claw --resume {LATEST_SESSION_REFERENCE}")?;
+    writeln!(out, "  icode --resume {LATEST_SESSION_REFERENCE}")?;
     writeln!(
         out,
-        "  claw --resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
+        "  icode --resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
     )?;
-    writeln!(out, "  claw agents")?;
-    writeln!(out, "  claw mcp show my-server")?;
-    writeln!(out, "  claw /skills")?;
-    writeln!(out, "  claw login")?;
-    writeln!(out, "  claw init")?;
+    writeln!(out, "  icode agents")?;
+    writeln!(out, "  icode mcp show my-server")?;
+    writeln!(out, "  icode /skills")?;
+    writeln!(out, "  icode login")?;
+    writeln!(out, "  icode init")?;
     Ok(())
 }
 
@@ -5633,7 +6350,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("rusty-claude-cli-{nanos}"))
+        std::env::temp_dir().join(format!("icode-cli-{nanos}"))
     }
 
     fn git(args: &[&str], cwd: &Path) {
@@ -5726,24 +6443,24 @@ mod tests {
         let root = temp_dir();
         let cwd = root.join("project");
         let config_home = root.join("config-home");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("project config dir should exist");
+        std::fs::create_dir_all(cwd.join(".icode")).expect("project config dir should exist");
         std::fs::create_dir_all(&config_home).expect("config home should exist");
         std::fs::write(
-            cwd.join(".claw").join("settings.json"),
+            cwd.join(".icode").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("project config should write");
 
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ICODE_CONFIG_HOME").ok();
         let original_permission_mode = std::env::var("RUSTY_CLAUDE_PERMISSION_MODE").ok();
-        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::set_var("ICODE_CONFIG_HOME", &config_home);
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
 
         let resolved = with_current_dir(&cwd, super::default_permission_mode);
 
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ICODE_CONFIG_HOME", value),
+            None => std::env::remove_var("ICODE_CONFIG_HOME"),
         }
         match original_permission_mode {
             Some(value) => std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", value),
@@ -5760,24 +6477,24 @@ mod tests {
         let root = temp_dir();
         let cwd = root.join("project");
         let config_home = root.join("config-home");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("project config dir should exist");
+        std::fs::create_dir_all(cwd.join(".icode")).expect("project config dir should exist");
         std::fs::create_dir_all(&config_home).expect("config home should exist");
         std::fs::write(
-            cwd.join(".claw").join("settings.json"),
+            cwd.join(".icode").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("project config should write");
 
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ICODE_CONFIG_HOME").ok();
         let original_permission_mode = std::env::var("RUSTY_CLAUDE_PERMISSION_MODE").ok();
-        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::set_var("ICODE_CONFIG_HOME", &config_home);
         std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", "read-only");
 
         let resolved = with_current_dir(&cwd, super::default_permission_mode);
 
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ICODE_CONFIG_HOME", value),
+            None => std::env::remove_var("ICODE_CONFIG_HOME"),
         }
         match original_permission_mode {
             Some(value) => std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", value),
@@ -6058,7 +6775,7 @@ mod tests {
         let error = parse_args(&["/status".to_string()])
             .expect_err("/status should remain REPL-only when invoked directly");
         assert!(error.contains("interactive-only"));
-        assert!(error.contains("claw --resume SESSION.jsonl /status"));
+        assert!(error.contains("icode --resume SESSION.jsonl /status"));
     }
 
     #[test]
@@ -6148,7 +6865,7 @@ mod tests {
         let error = parse_args(&["--resum".to_string()]).expect_err("unknown option should fail");
         assert!(error.contains("unknown option: --resum"));
         assert!(error.contains("Did you mean --resume?"));
-        assert!(error.contains("claw --help"));
+        assert!(error.contains("icode --help"));
     }
 
     #[test]
@@ -6264,7 +6981,7 @@ mod tests {
         assert!(help.contains("/agents"));
         assert!(help.contains("/skills"));
         assert!(help.contains("/exit"));
-        assert!(help.contains("Auto-save            .claw/sessions/<session-id>.jsonl"));
+        assert!(help.contains("Auto-save            .icode/sessions/<session-id>.jsonl"));
         assert!(help.contains("Resume latest        /resume latest"));
     }
 
@@ -6390,15 +7107,15 @@ mod tests {
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("claw help"));
-        assert!(help.contains("claw version"));
-        assert!(help.contains("claw status"));
-        assert!(help.contains("claw sandbox"));
-        assert!(help.contains("claw init"));
-        assert!(help.contains("claw agents"));
-        assert!(help.contains("claw mcp"));
-        assert!(help.contains("claw skills"));
-        assert!(help.contains("claw /skills"));
+        assert!(help.contains("icode help"));
+        assert!(help.contains("icode version"));
+        assert!(help.contains("icode status"));
+        assert!(help.contains("icode sandbox"));
+        assert!(help.contains("icode init"));
+        assert!(help.contains("icode agents"));
+        assert!(help.contains("icode mcp"));
+        assert!(help.contains("icode skills"));
+        assert!(help.contains("icode /skills"));
     }
 
     #[test]
@@ -6792,10 +7509,10 @@ UU conflicted.rs",
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("claw --resume [SESSION.jsonl|session-id|latest]"));
+        assert!(help.contains("icode --resume [SESSION.jsonl|session-id|latest]"));
         assert!(help.contains("Use `latest` with --resume, /resume, or /session switch"));
-        assert!(help.contains("claw --resume latest"));
-        assert!(help.contains("claw --resume latest /status /diff /export notes.txt"));
+        assert!(help.contains("icode --resume latest"));
+        assert!(help.contains("icode --resume latest /status /diff /export notes.txt"));
     }
 
     #[test]
@@ -6809,7 +7526,7 @@ UU conflicted.rs",
         let handle = create_managed_session_handle("session-alpha").expect("jsonl handle");
         assert!(handle.path.ends_with("session-alpha.jsonl"));
 
-        let legacy_path = workspace.join(".claw/sessions/legacy.json");
+        let legacy_path = workspace.join(".icode/sessions/legacy.json");
         std::fs::create_dir_all(
             legacy_path
                 .parent()
@@ -6881,7 +7598,7 @@ UU conflicted.rs",
     fn resume_usage_mentions_latest_shortcut() {
         let usage = render_resume_usage();
         assert!(usage.contains("/resume <session-path|session-id|latest>"));
-        assert!(usage.contains(".claw/sessions/<session-id>.jsonl"));
+        assert!(usage.contains(".icode/sessions/<session-id>.jsonl"));
         assert!(usage.contains("/session list"));
     }
 
@@ -6895,7 +7612,7 @@ UU conflicted.rs",
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("claw-cli-{label}-{nanos}"))
+        std::env::temp_dir().join(format!("icode-cli-{label}-{nanos}"))
     }
 
     #[test]
@@ -7052,7 +7769,7 @@ UU conflicted.rs",
             task_label: "ship plugin progress".to_string(),
             step: 3,
             phase: "running read_file".to_string(),
-            detail: Some("reading rust/crates/rusty-claude-cli/src/main.rs".to_string()),
+            detail: Some("reading rust/crates/icode-cli/src/main.rs".to_string()),
             saw_final_text: false,
         };
 
@@ -7099,8 +7816,8 @@ UU conflicted.rs",
             "reading src/main.rs"
         );
         assert!(
-            describe_tool_progress("bash", r#"{"command":"cargo test -p rusty-claude-cli"}"#)
-                .contains("cargo test -p rusty-claude-cli")
+            describe_tool_progress("bash", r#"{"command":"cargo test -p icode-cli"}"#)
+                .contains("cargo test -p icode-cli")
         );
         assert_eq!(
             describe_tool_progress("grep_search", r#"{"pattern":"ultraplan","path":"rust"}"#),

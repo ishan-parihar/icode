@@ -28,7 +28,7 @@ fn resumed_binary_accepts_slash_commands_with_arguments() {
         .expect("session should persist");
 
     // when
-    let output = run_claw(
+    let output = run_icode(
         &temp_dir,
         &[
             "--resume",
@@ -55,7 +55,7 @@ fn resumed_binary_accepts_slash_commands_with_arguments() {
     assert!(stdout.contains("Session cleared"));
     assert!(stdout.contains("Mode             resumed session reset"));
     assert!(stdout.contains("Previous session"));
-    assert!(stdout.contains("Resume previous  claw --resume"));
+    assert!(stdout.contains("Resume previous  icode --resume"));
     assert!(stdout.contains("Backup           "));
     assert!(stdout.contains("Session file     "));
 
@@ -86,7 +86,7 @@ fn status_command_applies_cli_flags_end_to_end() {
     fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
     // when
-    let output = run_claw(
+    let output = run_icode(
         &temp_dir,
         &[
             "--model",
@@ -116,8 +116,8 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
     // given
     let temp_dir = unique_temp_dir("resume-config");
     let project_dir = temp_dir.join("project");
-    let config_home = temp_dir.join("home").join(".claw");
-    fs::create_dir_all(project_dir.join(".claw")).expect("project config dir should exist");
+    let config_home = temp_dir.join("home").join(".icode");
+    fs::create_dir_all(project_dir.join(".icode")).expect("project config dir should exist");
     fs::create_dir_all(&config_home).expect("config home should exist");
 
     let session_path = project_dir.join("session.jsonl");
@@ -129,13 +129,13 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
     fs::write(config_home.join("settings.json"), r#"{"model":"haiku"}"#)
         .expect("user config should write");
     fs::write(
-        project_dir.join(".claw").join("settings.local.json"),
+        project_dir.join(".icode").join("settings.local.json"),
         r#"{"model":"opus"}"#,
     )
     .expect("local config should write");
 
     // when
-    let output = run_claw_with_env(
+    let output = run_icode_with_env(
         &project_dir,
         &[
             "--resume",
@@ -143,7 +143,10 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
             "/config",
             "model",
         ],
-        &[("CLAW_CONFIG_HOME", config_home.to_str().expect("utf8 path"))],
+        &[(
+            "ICODE_CONFIG_HOME",
+            config_home.to_str().expect("utf8 path"),
+        )],
     );
 
     // then
@@ -165,7 +168,7 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
     ));
     assert!(stdout.contains(
         project_dir
-            .join(".claw")
+            .join(".icode")
             .join("settings.local.json")
             .to_str()
             .expect("utf8 path")
@@ -179,7 +182,7 @@ fn resume_latest_restores_the_most_recent_managed_session() {
     // given
     let temp_dir = unique_temp_dir("resume-latest");
     let project_dir = temp_dir.join("project");
-    let sessions_dir = project_dir.join(".claw").join("sessions");
+    let sessions_dir = project_dir.join(".icode").join("sessions");
     fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
 
     let older_path = sessions_dir.join("session-older.jsonl");
@@ -205,7 +208,7 @@ fn resume_latest_restores_the_most_recent_managed_session() {
         .expect("newer session should persist");
 
     // when
-    let output = run_claw(&project_dir, &["--resume", "latest", "/status"]);
+    let output = run_icode(&project_dir, &["--resume", "latest", "/status"]);
 
     // then
     assert!(
@@ -221,17 +224,17 @@ fn resume_latest_restores_the_most_recent_managed_session() {
     assert!(stdout.contains(newer_path.to_str().expect("utf8 path")));
 }
 
-fn run_claw(current_dir: &Path, args: &[&str]) -> Output {
-    run_claw_with_env(current_dir, args, &[])
+fn run_icode(current_dir: &Path, args: &[&str]) -> Output {
+    run_icode_with_env(current_dir, args, &[])
 }
 
-fn run_claw_with_env(current_dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+fn run_icode_with_env(current_dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_icode"));
     command.current_dir(current_dir).args(args);
     for (key, value) in envs {
         command.env(key, value);
     }
-    command.output().expect("claw should launch")
+    command.output().expect("icode should launch")
 }
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -241,7 +244,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .as_millis();
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "claw-{label}-{}-{millis}-{counter}",
+        "icode-{label}-{}-{millis}-{counter}",
         std::process::id()
     ))
 }

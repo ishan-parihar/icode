@@ -1,0 +1,27 @@
+[
+  {
+    "content": "Explore project structure and identify memory-related components",
+    "activeForm": "Exploring project structure",
+    "status": "in_progress"
+  },
+  {
+    "content": "Analyze prompt caching and context management",
+    "activeForm": "Analyzing prompt caching",
+    "status": "pending"
+  },
+  {
+    "content": "Investigate configuration and state persistence",
+    "activeForm": "Investigating state persistence",
+    "status": "pending"
+  },
+  {
+    "content": "Examine session management and conversation memory",
+    "activeForm": "Examining session management",
+    "status": "pending"
+  },
+  {
+    "content": "Synthesize findings and assess sophistication level",
+    "activeForm": "Synthesizing findings",
+    "status": "pending"
+  }
+]
