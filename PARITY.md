@@ -1,4 +1,4 @@
-# Parity Status — claw-code Rust Port
+# Parity Status — icode Rust Port
 
 Last updated: 2026-04-03
 
@@ -8,12 +8,12 @@ Last updated: 2026-04-03
 - Requested 9-lane checkpoint: **All 9 lanes merged on `main`.**
 - Current `main` HEAD: `ee31e00` (stub implementations replaced with real AskUserQuestion + RemoteTrigger).
 - Repository stats at this checkpoint: **292 commits on `main` / 293 across all branches**, **9 crates**, **48,599 tracked Rust LOC**, **2,568 test LOC**, **3 authors**, date range **2026-03-31 → 2026-04-03**.
-- Mock parity harness stats: **10 scripted scenarios**, **19 captured `/v1/messages` requests** in `rust/crates/rusty-claude-cli/tests/mock_parity_harness.rs`.
+- Mock parity harness stats: **10 scripted scenarios**, **19 captured `/v1/messages` requests** in `rust/crates/icode-cli/tests/mock_parity_harness.rs`.
 
 ## Mock parity harness — milestone 1
 
 - [x] Deterministic Anthropic-compatible mock service (`rust/crates/mock-anthropic-service`)
-- [x] Reproducible clean-environment CLI harness (`rust/crates/rusty-claude-cli/tests/mock_parity_harness.rs`)
+- [x] Reproducible clean-environment CLI harness (`rust/crates/icode-cli/tests/mock_parity_harness.rs`)
 - [x] Scripted scenarios: `streaming_text`, `read_file_roundtrip`, `grep_chunk_assembly`, `write_file_allowed`, `write_file_denied`
 
 ## Mock parity harness — milestone 2 (behavioral expansion)
@@ -70,7 +70,7 @@ Canonical scenario map: `rust/mock_parity_scenarios.json`
 - **Feature commit:** `89104eb` — `fix(sandbox): probe unshare capability instead of binary existence`
 - **Merge commit:** `f1969ce` — `Merge jobdori/fix-ci-sandbox: probe unshare capability for CI fix`
 - **Evidence:** `rust/crates/runtime/src/sandbox.rs` is **385 LOC** and now resolves sandbox support from actual `unshare` capability and container signals instead of assuming support from binary presence alone.
-- **Why it matters:** `.github/workflows/rust-ci.yml` runs `cargo fmt --all --check` and `cargo test -p rusty-claude-cli`; this lane removed a CI-specific sandbox assumption from runtime behavior.
+- **Why it matters:** `.github/workflows/rust-ci.yml` runs `cargo fmt --all --check` and `cargo test -p icode-cli`; this lane removed a CI-specific sandbox assumption from runtime behavior.
 
 ### Lane 3 — File-tool
 

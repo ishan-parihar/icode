@@ -4,7 +4,7 @@
 
 ## Goal
 
-Turn claw-code into the most **clawable** coding harness:
+Turn icode into the most **clawable** coding harness:
 - no human-first terminal assumptions
 - no fragile prompt injection timing
 - no opaque session state
@@ -326,7 +326,7 @@ Focus:
 
 ## MVP Success Criteria
 
-We should consider claw-code materially more clawable when:
+We should consider icode materially more clawable when:
 - a claw can start a worker and know with certainty when it is ready
 - claws no longer accidentally type tasks into the shell
 - stale-branch failures are identified before they waste debugging time
@@ -336,7 +336,7 @@ We should consider claw-code materially more clawable when:
 
 ## Short Version
 
-claw-code should evolve from:
+icode should evolve from:
 - a CLI a human can also drive
 
 to:

@@ -33,7 +33,7 @@ The codebase implements a **9-crate workspace** with 48,599 lines of Rust, cover
 ```
 icode/rust/
 ├── crates/
-│   ├── rusty-claude-cli/        # Main CLI entrypoint + TUI
+│   ├── icode-cli/               # Main CLI entrypoint + TUI
 │   ├── runtime/                 # Core runtime: bash, file_ops, sandbox, validation
 │   │   ├── bash.rs              # Bash execution with timeout/background/sandbox
 │   │   ├── bash_validation.rs   # 1004 LOC: readOnly, destructive, sed, path validation
@@ -125,7 +125,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 # Run mock parity harness specifically
-cargo test -p rusty-claude-cli mock_parity_harness
+cargo test -p icode-cli mock_parity_harness
 ```
 
 ### Running the Parity Diff
