@@ -10,6 +10,7 @@ mod hooks;
 mod json;
 mod lane_events;
 pub mod lsp_client;
+pub mod lsp_discovery;
 mod mcp;
 mod mcp_client;
 pub mod mcp_lifecycle_hardened;
