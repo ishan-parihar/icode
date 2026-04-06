@@ -2,7 +2,6 @@ use orchestration::{
     agent_config::{allow_all_permissions, deny_all_permissions, AgentConfigBuilder},
     AgentConfig, AgentMode, AgentPermissions, AgentRegistry, ModelRouter, PermissionMode,
 };
-use serde_json;
 
 fn make_agent(name: &str, model: &str) -> AgentConfig {
     AgentConfigBuilder::new()

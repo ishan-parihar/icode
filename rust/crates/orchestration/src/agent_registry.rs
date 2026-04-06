@@ -71,10 +71,9 @@ impl AgentRegistry {
         &self.cycle_order
     }
 
-    /// Resolve an agent config with fallback logic.
+    /// Return an owned clone of the agent config by name.
     ///
-    /// Returns the agent if primary model is available, otherwise tries
-    /// fallback models in order.
+    /// Use `ModelRouter` for model availability resolution.
     #[must_use]
     pub fn resolve_with_fallback(&self, name: &str) -> Option<AgentConfig> {
         let agent = self.agents.get(name)?;
