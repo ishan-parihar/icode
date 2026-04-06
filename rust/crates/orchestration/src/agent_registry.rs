@@ -43,26 +43,22 @@ impl AgentRegistry {
 
     /// Get the next agent in cycle order after `current`.
     ///
+    /// Returns `None` if the registry is empty.
     /// If `current` is not found, returns the first agent.
     /// Wraps to the first agent when at the end.
     #[must_use]
-    pub fn cycle_next(&self, current: &str) -> &str {
+    pub fn cycle_next(&self, current: &str) -> Option<&str> {
         if self.cycle_order.is_empty() {
-            return "";
+            return None;
         }
 
-        let pos = self
-            .cycle_order
-            .iter()
-            .position(|name| name == current)
-            .unwrap_or(usize::MAX);
-
-        if pos == usize::MAX {
-            return &self.cycle_order[0];
+        match self.cycle_order.iter().position(|name| name == current) {
+            Some(pos) => {
+                let next = (pos + 1) % self.cycle_order.len();
+                Some(&self.cycle_order[next])
+            }
+            None => Some(&self.cycle_order[0]),
         }
-
-        let next = (pos + 1) % self.cycle_order.len();
-        &self.cycle_order[next]
     }
 
     /// Get the full cycle ordering.
@@ -75,9 +71,8 @@ impl AgentRegistry {
     ///
     /// Use `ModelRouter` for model availability resolution.
     #[must_use]
-    pub fn resolve_with_fallback(&self, name: &str) -> Option<AgentConfig> {
-        let agent = self.agents.get(name)?;
-        Some(agent.clone())
+    pub fn get_owned(&self, name: &str) -> Option<AgentConfig> {
+        self.agents.get(name).cloned()
     }
 
     fn rebuild_cycle_order(&mut self) {

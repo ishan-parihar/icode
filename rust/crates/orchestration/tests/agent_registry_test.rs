@@ -76,9 +76,8 @@ fn cycle_wraps_at_end() {
     registry.register(make_agent("sisyphus", "model-s"));
     registry.register(make_agent("hephaestus", "model-h"));
 
-    // Last element wraps to first
     let next = registry.cycle_next("hephaestus");
-    assert_eq!(next, "sisyphus");
+    assert_eq!(next, Some("sisyphus"));
 }
 
 #[test]
@@ -88,31 +87,31 @@ fn cycle_unknown_returns_first() {
     registry.register(make_agent("hephaestus", "model-h"));
 
     let next = registry.cycle_next("unknown");
-    assert_eq!(next, "sisyphus");
+    assert_eq!(next, Some("sisyphus"));
 }
 
 #[test]
-fn cycle_empty_registry_returns_empty_string() {
+fn cycle_empty_registry_returns_none() {
     let registry = AgentRegistry::new();
-    assert_eq!(registry.cycle_next("anything"), "");
+    assert!(registry.cycle_next("anything").is_none());
 }
 
-// === Fallback Resolution ===
+// === Get Owned ===
 
 #[test]
-fn resolve_with_fallback_returns_clone() {
+fn get_owned_returns_clone() {
     let mut registry = AgentRegistry::new();
     registry.register(make_agent("test", "model-x"));
 
-    let resolved = registry.resolve_with_fallback("test");
-    assert!(resolved.is_some());
-    assert_eq!(resolved.unwrap().name, "test");
+    let owned = registry.get_owned("test");
+    assert!(owned.is_some());
+    assert_eq!(owned.unwrap().name, "test");
 }
 
 #[test]
-fn resolve_with_fallback_nonexistent_returns_none() {
+fn get_owned_nonexistent_returns_none() {
     let registry = AgentRegistry::new();
-    assert!(registry.resolve_with_fallback("missing").is_none());
+    assert!(registry.get_owned("missing").is_none());
 }
 
 // === Model Router ===
@@ -180,6 +179,17 @@ fn model_router_first_fallback_when_none_available() {
 }
 
 // === Permission Config ===
+
+// === AgentMode Serde ===
+
+#[test]
+fn agent_mode_serde_roundtrip() {
+    for mode in [AgentMode::Primary, AgentMode::Subagent, AgentMode::All] {
+        let json = serde_json::to_string(&mode).unwrap();
+        let parsed: AgentMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, mode);
+    }
+}
 
 #[test]
 fn permission_allow_serde_roundtrip() {
