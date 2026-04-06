@@ -25,6 +25,7 @@ pub mod recovery_recipes;
 mod remote;
 pub mod sandbox;
 mod session;
+pub mod snapshot;
 pub mod session_control;
 mod sse;
 pub mod stale_branch;
@@ -128,6 +129,7 @@ pub use sandbox::{
 pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
+pub use snapshot::{FileDiff, FileStatus, SnapshotError, SnapshotManager, SnapshotRecord};
 };
 pub use sse::{IncrementalSseParser, SseEvent};
 pub use stale_branch::{
