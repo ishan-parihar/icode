@@ -7,7 +7,6 @@ publish.workspace = true
 
 [dependencies]
 sha2 = "0.10"
-dirs-next = "2"
 glob = "0.3"
 plugins = { path = "../plugins" }
 regex = "1"
@@ -16,9 +15,6 @@ serde_json.workspace = true
 telemetry = { path = "../telemetry" }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }
 walkdir = "2"
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true
