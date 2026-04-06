@@ -11,6 +11,9 @@ pub use agent_config::{allow_all_permissions, deny_all_permissions, AgentConfigB
 pub use agent_registry::AgentRegistry;
 pub use agents::builtin_agents;
 pub use background::manager::BackgroundManager;
+pub use background::tools::{
+    background_cancel_tool_spec, background_output_tool_spec, background_tool_specs,
+};
 pub use background::types::{BackgroundTask, BackgroundTaskStatus};
 pub use categories::{builtin_categories, CategoryConfig, CategoryResolver};
 pub use delegation::{PromptBuilder, TaskExecutor, TaskInput, TaskOutput, TaskStatus};
