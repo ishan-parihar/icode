@@ -287,3 +287,277 @@ fn session_event_serialize() {
     assert!(json.contains("Error"));
     assert!(json.contains("oops"));
 }
+
+// -- Integration tests for new hooks --
+
+use hooks_engine::hooks::{
+    CommentChecker, ContextWindowMonitor, KeywordDetector, RalphLoop, RulesInjector,
+    SessionRecovery, StartWork, ThinkMode, TodoContinuationEnforcer, ToolOutputTruncator,
+    Ultrawork,
+};
+use hooks_engine::hook_trait::{ApiParams, Message};
+
+// KeywordDetector tests
+
+#[tokio::test]
+async fn keyword_detector_injects_ultrawork_prompt() {
+    let hook = KeywordDetector;
+    let mut ctx = HookContext::new();
+    let mut msg = Message {
+        role: "user".into(),
+        content: "let's do ultrawork".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+    assert!(ctx.injected_messages[0].contains("Ultrawork"));
+}
+
+#[tokio::test]
+async fn keyword_detector_injects_multiple_prompts() {
+    let hook = KeywordDetector;
+    let mut ctx = HookContext::new();
+    let mut msg = Message {
+        role: "user".into(),
+        content: "search and analyze the code".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 2);
+}
+
+// Ultrawork tests
+
+#[tokio::test]
+async fn ultrawork_hook_priority_is_five() {
+    let hook = Ultrawork;
+    assert_eq!(hook.priority(), 5);
+}
+
+#[tokio::test]
+async fn ultrawork_injects_system_msg() {
+    let hook = Ultrawork;
+    let mut ctx = HookContext::new();
+    let mut msg = Message {
+        role: "user".into(),
+        content: "activate ulw".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+    assert!(ctx.injected_messages[0].contains("ULTRAWORK"));
+}
+
+// TodoContinuationEnforcer tests
+
+#[tokio::test]
+async fn todo_enforcer_warnings_on_false_completion() {
+    let hook = TodoContinuationEnforcer;
+    let mut ctx = HookContext::new();
+    ctx.set_metadata("pending_todos".into(), "2".into());
+    let mut msg = Message {
+        role: "assistant".into(),
+        content: "Complete!".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+    assert!(ctx.injected_messages[0].contains("WARNING"));
+}
+
+#[tokio::test]
+async fn todo_enforcer_ignores_zero_pending() {
+    let hook = TodoContinuationEnforcer;
+    let mut ctx = HookContext::new();
+    ctx.set_metadata("pending_todos".into(), "0".into());
+    let mut msg = Message {
+        role: "assistant".into(),
+        content: "Done".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 0);
+}
+
+// CommentChecker tests
+
+#[tokio::test]
+async fn comment_checker_flags_excessive_comments() {
+    let hook = CommentChecker;
+    let mut ctx = HookContext::new();
+    let mut output = ToolOutput {
+        tool_name: "write_file".into(),
+        result: "// TODO: fix\n// HACK: temp\n/// docs here\n// FIXME: bug".into(),
+    };
+    hook.on_post_tool_use(&mut ctx, &mut output).await.unwrap();
+    assert_eq!(ctx.warnings.len(), 1);
+}
+
+// SessionRecovery tests
+
+#[tokio::test]
+async fn session_recovery_handles_empty() {
+    let hook = SessionRecovery;
+    let mut ctx = HookContext::new();
+    let mut msg = Message {
+        role: "user".into(),
+        content: "".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+}
+
+#[tokio::test]
+async fn session_recovery_handles_session_error() {
+    let hook = SessionRecovery;
+    let mut ctx = HookContext::new();
+    let event = SessionEvent {
+        r#type: SessionEventType::Error("crash".into()),
+        session_id: "s1".into(),
+        timestamp: "now".into(),
+    };
+    hook.on_event(&mut ctx, &event).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+}
+
+// ContextWindowMonitor tests
+
+#[tokio::test]
+async fn context_monitor_warns_at_threshold() {
+    let hook = ContextWindowMonitor;
+    let mut ctx = HookContext::new();
+    ctx.set_metadata("context_usage_pct".into(), "80.0".into());
+    let mut params = ApiParams {
+        model: "sonnet".into(),
+        temperature: None,
+        max_tokens: None,
+        reasoning_effort: None,
+    };
+    hook.on_params(&mut ctx, &mut params).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+}
+
+#[tokio::test]
+async fn context_monitor_silent_below_threshold() {
+    let hook = ContextWindowMonitor;
+    let mut ctx = HookContext::new();
+    ctx.set_metadata("context_usage_pct".into(), "60.0".into());
+    let mut params = ApiParams {
+        model: "sonnet".into(),
+        temperature: None,
+        max_tokens: None,
+        reasoning_effort: None,
+    };
+    hook.on_params(&mut ctx, &mut params).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 0);
+}
+
+// RulesInjector tests
+
+#[tokio::test]
+async fn rules_injector_handles_missing_dir() {
+    let hook = RulesInjector::with_base_path("/nonexistent/rules".into());
+    let mut ctx = HookContext::new();
+    let mut params = ApiParams {
+        model: "sonnet".into(),
+        temperature: None,
+        max_tokens: None,
+        reasoning_effort: None,
+    };
+    hook.on_params(&mut ctx, &mut params).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 0);
+}
+
+// ToolOutputTruncator tests
+
+#[tokio::test]
+async fn truncator_truncates_large_output() {
+    let hook = ToolOutputTruncator::with_threshold(50);
+    let mut ctx = HookContext::new();
+    let mut output = ToolOutput {
+        tool_name: "grep_search".into(),
+        result: "x".repeat(200),
+    };
+    hook.on_post_tool_use(&mut ctx, &mut output).await.unwrap();
+    assert!(output.result.contains("(truncated)"));
+    assert!(ctx.warnings.len() > 0);
+}
+
+// RalphLoop tests
+
+#[tokio::test]
+async fn ralph_loop_continues_when_work_remains() {
+    let hook = RalphLoop;
+    let mut ctx = HookContext::new();
+    ctx.set_metadata("work_remaining".into(), "more".into());
+    let mut msg = Message {
+        role: "assistant".into(),
+        content: "I am done".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+}
+
+// ThinkMode tests
+
+#[tokio::test]
+async fn think_mode_activates_on_keyword() {
+    let hook = ThinkMode;
+    let mut ctx = HookContext::new();
+    let mut msg = Message {
+        role: "user".into(),
+        content: "think deeply about this".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+    assert_eq!(ctx.get_metadata("thinking_mode"), Some("extended"));
+}
+
+// StartWork tests
+
+#[tokio::test]
+async fn start_work_detects_command() {
+    let hook = StartWork;
+    let mut ctx = HookContext::new();
+    let mut msg = Message {
+        role: "user".into(),
+        content: "/start-work".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.injected_messages.len(), 1);
+}
+
+#[tokio::test]
+async fn start_work_tracks_progress() {
+    let hook = StartWork;
+    let mut ctx = HookContext::new();
+    ctx.set_metadata("boulder_state".into(), "phase-2".into());
+    ctx.set_metadata("work_progress".into(), "50%".into());
+    let mut msg = Message {
+        role: "user".into(),
+        content: "start work".into(),
+    };
+    hook.on_message(&mut ctx, &mut msg).await.unwrap();
+    assert_eq!(ctx.get_metadata("last_checkpoint"), Some("phase-2"));
+}
+
+// Hook name uniqueness test
+
+#[test]
+fn all_hook_names_are_unique() {
+    let rules = RulesInjector::new();
+    let truncator = ToolOutputTruncator::new();
+    let hooks: Vec<&dyn Hook> = vec![
+        &KeywordDetector,
+        &Ultrawork,
+        &TodoContinuationEnforcer,
+        &CommentChecker,
+        &SessionRecovery,
+        &ContextWindowMonitor,
+        &rules,
+        &truncator,
+        &RalphLoop,
+        &ThinkMode,
+        &StartWork,
+    ];
+    let mut names: Vec<&str> = hooks.iter().map(|h| h.name()).collect();
+    names.sort();
+    let mut unique: Vec<&str> = names.clone();
+    unique.dedup();
+    assert_eq!(names.len(), unique.len(), "Duplicate hook names detected");
+}
