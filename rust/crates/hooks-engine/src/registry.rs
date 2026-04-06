@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::dispatcher::HookDispatcher;
-use crate::r#trait::Hook;
+use crate::hook_trait::Hook;
 
 pub struct HookRegistry {
     hooks: Vec<Arc<dyn Hook>>,

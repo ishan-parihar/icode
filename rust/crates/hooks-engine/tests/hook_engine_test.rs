@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use hooks_engine::context::HookContext;
 use hooks_engine::dispatcher::HookDispatcher;
 use hooks_engine::event_types::{HookEvent, SessionEvent, SessionEventType};
-use hooks_engine::r#trait::{Hook, HookResult, ToolInput, ToolOutput};
+use hooks_engine::hook_trait::{Hook, HookResult, ToolInput, ToolOutput};
 use hooks_engine::registry::HookRegistry;
 use std::sync::Arc;
 

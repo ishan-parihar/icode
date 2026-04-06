@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::context::HookContext;
 use crate::event_types::{HookEvent, SessionEvent};
-use crate::r#trait::{ApiParams, Hook, HookResult, Message, ToolInput, ToolOutput};
+use crate::hook_trait::{ApiParams, Hook, HookResult, Message, ToolInput, ToolOutput};
 
 pub struct HookDispatcher {
     hooks: Vec<Arc<dyn Hook>>,
