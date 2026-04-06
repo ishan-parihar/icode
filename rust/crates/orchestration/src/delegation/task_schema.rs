@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Input for the `task()` delegation tool.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TaskInput {
     /// Category for model routing (mutually exclusive with `subagent_type`).
     pub category: Option<String>,
@@ -26,7 +26,7 @@ pub struct TaskInput {
 }
 
 /// Output from the `task()` tool.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TaskOutput {
     pub task_id: String,
     pub session_id: String,
@@ -35,7 +35,7 @@ pub struct TaskOutput {
 }
 
 /// Lifecycle status of a delegated task.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TaskStatus {
     Spawned,
     Running,

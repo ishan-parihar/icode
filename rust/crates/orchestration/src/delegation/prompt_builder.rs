@@ -15,6 +15,12 @@ impl PromptBuilder {
             return base_prompt.to_string();
         }
 
+        debug_assert_eq!(
+            skills.len(),
+            skill_prompts.len(),
+            "skills and skill_prompts must have the same length"
+        );
+
         let mut result = String::from("[SKILL CONTEXT]\n");
 
         for (skill, prompt) in skills.iter().zip(skill_prompts.iter()) {
