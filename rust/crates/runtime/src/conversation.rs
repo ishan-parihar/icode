@@ -13,15 +13,19 @@ use crate::permissions::{
     PermissionContext, PermissionOutcome, PermissionPolicy, PermissionPrompter,
 };
 use crate::session::{ContentBlock, ConversationMessage, Session};
+use crate::skill_registry::SkillRegistry;
 use crate::usage::{TokenUsage, UsageTracker};
 
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ApiRequest {
     pub system_prompt: Vec<String>,
     pub messages: Vec<ConversationMessage>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +134,8 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
+    plugin_hook_runner: Option<plugins::HookRunner>,
+    skill_registry: Option<SkillRegistry>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -179,6 +185,8 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
+            plugin_hook_runner: None,
+            skill_registry: None,
         }
     }
 
@@ -215,8 +223,20 @@ where
         self
     }
 
+    #[must_use]
+    pub fn with_skill_registry(mut self, skill_registry: SkillRegistry) -> Self {
+        self.skill_registry = Some(skill_registry);
+        self
+    }
+
+    #[must_use]
+    pub fn with_plugin_hook_runner(mut self, plugin_hook_runner: plugins::HookRunner) -> Self {
+        self.plugin_hook_runner = Some(plugin_hook_runner);
+        self
+    }
+
     fn run_pre_tool_use_hook(&mut self, tool_name: &str, input: &str) -> HookRunResult {
-        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+        let runtime_result = if let Some(reporter) = self.hook_progress_reporter.as_mut() {
             self.hook_runner.run_pre_tool_use_with_context(
                 tool_name,
                 input,
@@ -230,7 +250,23 @@ where
                 Some(&self.hook_abort_signal),
                 None,
             )
+        };
+
+        if runtime_result.is_denied() || runtime_result.is_failed() || runtime_result.is_cancelled()
+        {
+            return runtime_result;
         }
+
+        let mut combined = runtime_result;
+        if let Some(runner) = self.plugin_hook_runner.as_ref() {
+            let plugin_result = runner.run_pre_tool_use(tool_name, input);
+            combined.merge_plugin_result(
+                plugin_result.is_denied(),
+                plugin_result.is_failed(),
+                plugin_result.messages(),
+            );
+        }
+        combined
     }
 
     fn run_post_tool_use_hook(
@@ -240,7 +276,7 @@ where
         output: &str,
         is_error: bool,
     ) -> HookRunResult {
-        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+        let runtime_result = if let Some(reporter) = self.hook_progress_reporter.as_mut() {
             self.hook_runner.run_post_tool_use_with_context(
                 tool_name,
                 input,
@@ -258,7 +294,23 @@ where
                 Some(&self.hook_abort_signal),
                 None,
             )
+        };
+
+        if runtime_result.is_denied() || runtime_result.is_failed() || runtime_result.is_cancelled()
+        {
+            return runtime_result;
         }
+
+        let mut combined = runtime_result;
+        if let Some(runner) = self.plugin_hook_runner.as_ref() {
+            let plugin_result = runner.run_post_tool_use(tool_name, input, output, is_error);
+            combined.merge_plugin_result(
+                plugin_result.is_denied(),
+                plugin_result.is_failed(),
+                plugin_result.messages(),
+            );
+        }
+        combined
     }
 
     fn run_post_tool_use_failure_hook(
@@ -267,7 +319,7 @@ where
         input: &str,
         output: &str,
     ) -> HookRunResult {
-        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+        let runtime_result = if let Some(reporter) = self.hook_progress_reporter.as_mut() {
             self.hook_runner.run_post_tool_use_failure_with_context(
                 tool_name,
                 input,
@@ -283,7 +335,23 @@ where
                 Some(&self.hook_abort_signal),
                 None,
             )
+        };
+
+        if runtime_result.is_denied() || runtime_result.is_failed() || runtime_result.is_cancelled()
+        {
+            return runtime_result;
         }
+
+        let mut combined = runtime_result;
+        if let Some(runner) = self.plugin_hook_runner.as_ref() {
+            let plugin_result = runner.run_post_tool_use_failure(tool_name, input, output);
+            combined.merge_plugin_result(
+                plugin_result.is_denied(),
+                plugin_result.is_failed(),
+                plugin_result.messages(),
+            );
+        }
+        combined
     }
 
     #[allow(clippy::too_many_lines)]
@@ -314,9 +382,24 @@ where
                 return Err(error);
             }
 
+            let chat_params_override =
+                self.hook_runner
+                    .run_chat_params_hook("", &self.session.session_id, 1.0, 1.0, 4096);
+
             let request = ApiRequest {
-                system_prompt: self.system_prompt.clone(),
+                system_prompt: {
+                    let mut parts = self.system_prompt.clone();
+                    if let Some(registry) = &self.skill_registry {
+                        if !registry.is_empty() {
+                            parts.push(registry.format_for_system_prompt());
+                        }
+                    }
+                    parts
+                },
                 messages: self.session.messages.clone(),
+                temperature: chat_params_override.temperature,
+                top_p: chat_params_override.top_p,
+                max_tokens: chat_params_override.max_tokens,
             };
             let events = match self.api_client.stream(request, progress) {
                 Ok(events) => events,
@@ -1061,6 +1144,8 @@ mod tests {
                 vec![shell_snippet("printf 'blocked by hook'; exit 2")],
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
+                Vec::new(),
             )),
         );
 
@@ -1126,6 +1211,8 @@ mod tests {
             vec!["system".to_string()],
             &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'broken hook'; exit 1")],
+                Vec::new(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )),
@@ -1200,6 +1287,8 @@ mod tests {
             &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'pre hook ran'")],
                 vec![shell_snippet("printf 'post hook ran'")],
+                Vec::new(),
+                Vec::new(),
                 Vec::new(),
             )),
         );
@@ -1282,6 +1371,8 @@ mod tests {
                 Vec::new(),
                 vec![shell_snippet("printf 'post hook should not run'")],
                 vec![shell_snippet("printf 'failure hook ran'")],
+                Vec::new(),
+                Vec::new(),
             )),
         );
 

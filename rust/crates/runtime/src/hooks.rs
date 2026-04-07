@@ -15,6 +15,13 @@ use crate::permissions::PermissionOverride;
 
 pub type HookPermissionDecision = PermissionOverride;
 
+#[derive(Debug, Clone, Default)]
+pub struct ChatParamsOverride {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub max_tokens: Option<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     PreToolUse,
@@ -146,6 +153,17 @@ impl HookRunResult {
     pub fn updated_input_json(&self) -> Option<&str> {
         self.updated_input()
     }
+
+    /// Merge plugin hook result flags and messages into this runtime result.
+    pub(crate) fn merge_plugin_result(&mut self, denied: bool, failed: bool, messages: &[String]) {
+        if denied {
+            self.denied = true;
+        }
+        if failed {
+            self.failed = true;
+        }
+        self.messages.extend(messages.iter().cloned());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -162,6 +180,54 @@ impl HookRunner {
     #[must_use]
     pub fn from_feature_config(feature_config: &RuntimeFeatureConfig) -> Self {
         Self::new(feature_config.hooks().clone())
+    }
+
+    #[must_use]
+    pub fn run_chat_params_hook(
+        &self,
+        model: &str,
+        session_id: &str,
+        current_temperature: f64,
+        current_top_p: f64,
+        current_max_tokens: u32,
+    ) -> ChatParamsOverride {
+        let commands = self.config.chat_params();
+        if commands.is_empty() {
+            return ChatParamsOverride::default();
+        }
+
+        let payload = json!({
+            "hook_event_name": "ChatParams",
+            "model": model,
+            "session_id": session_id,
+            "current_temperature": current_temperature,
+            "current_top_p": current_top_p,
+            "current_max_tokens": current_max_tokens,
+        })
+        .to_string();
+
+        for command in commands {
+            let mut child = shell_command(command);
+            child.stdin(Stdio::piped());
+            child.stdout(Stdio::piped());
+            child.stderr(Stdio::piped());
+            child.env("HOOK_EVENT", "ChatParams");
+            child.env("HOOK_MODEL", model);
+            child.env("HOOK_SESSION_ID", session_id);
+
+            if let Ok(CommandExecution::Finished(output)) =
+                child.output_with_stdin(payload.as_bytes(), None)
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !stdout.is_empty() {
+                    if let Some(override_params) = parse_chat_params_output(&stdout) {
+                        return override_params;
+                    }
+                }
+            }
+        }
+
+        ChatParamsOverride::default()
     }
 
     #[must_use]
@@ -532,6 +598,29 @@ fn merge_parsed_hook_output(target: &mut HookRunResult, parsed: ParsedHookOutput
     }
 }
 
+fn parse_chat_params_output(stdout: &str) -> Option<ChatParamsOverride> {
+    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(stdout) else {
+        return None;
+    };
+
+    let temperature = root.get("temperature").and_then(Value::as_f64);
+    let top_p = root.get("top_p").and_then(Value::as_f64);
+    let max_tokens = root
+        .get("max_tokens")
+        .and_then(Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok());
+
+    if temperature.is_none() && top_p.is_none() && max_tokens.is_none() {
+        return None;
+    }
+
+    Some(ChatParamsOverride {
+        temperature,
+        top_p,
+        max_tokens,
+    })
+}
+
 fn parse_hook_output(stdout: &str) -> ParsedHookOutput {
     if stdout.is_empty() {
         return ParsedHookOutput::default();
@@ -740,6 +829,8 @@ mod tests {
             vec![shell_snippet("printf 'pre ok'")],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
         ));
 
         let result = runner.run_pre_tool_use("Read", r#"{"path":"README.md"}"#);
@@ -751,6 +842,8 @@ mod tests {
     fn denies_exit_code_two() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("printf 'blocked by hook'; exit 2")],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ));
@@ -766,6 +859,8 @@ mod tests {
         let runner = HookRunner::from_feature_config(&RuntimeFeatureConfig::default().with_hooks(
             RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'warning hook'; exit 1")],
+                Vec::new(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             ),
@@ -791,6 +886,8 @@ mod tests {
             )],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
         ));
 
         let result = runner.run_pre_tool_use("bash", r#"{"command":"pwd"}"#);
@@ -811,6 +908,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![shell_snippet("printf 'failure hook ran'")],
+            Vec::new(),
+            Vec::new(),
         ));
 
         // when
@@ -832,6 +931,8 @@ mod tests {
                 shell_snippet("printf 'broken failure hook'; exit 1"),
                 shell_snippet("printf 'later failure hook'"),
             ],
+            Vec::new(),
+            Vec::new(),
         ));
 
         // when
@@ -858,6 +959,8 @@ mod tests {
                 shell_snippet("printf 'first'"),
                 shell_snippet("printf 'second'"),
             ],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ));
@@ -921,6 +1024,8 @@ mod tests {
             ],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
         ));
 
         // when
@@ -939,6 +1044,8 @@ mod tests {
     fn abort_signal_cancels_long_running_hook_and_reports_progress() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("sleep 5")],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ));

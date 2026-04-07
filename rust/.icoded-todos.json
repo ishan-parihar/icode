@@ -1,0 +1,47 @@
+[
+  {
+    "content": "Test basic file tools (read, write, edit, glob, grep)",
+    "activeForm": "Testing basic file tools",
+    "status": "in_progress"
+  },
+  {
+    "content": "Test shell/bash tool",
+    "activeForm": "Testing shell tool",
+    "status": "pending"
+  },
+  {
+    "content": "Test web tools (search, fetch)",
+    "activeForm": "Testing web tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test search/code intelligence tools (LSP)",
+    "activeForm": "Testing code intelligence tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test utility tools (sleep, config, todo)",
+    "activeForm": "Testing utility tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test MCP/resource tools",
+    "activeForm": "Testing MCP tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test task/worker/agent/team tools",
+    "activeForm": "Testing orchestration tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test REPL/PowerShell tools",
+    "activeForm": "Testing REPL tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test advanced tools (cron, remote, notebook, skill)",
+    "activeForm": "Testing advanced tools",
+    "status": "pending"
+  }
+]

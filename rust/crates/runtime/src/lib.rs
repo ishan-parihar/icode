@@ -26,6 +26,8 @@ pub mod recovery_recipes;
 mod remote;
 pub mod sandbox;
 mod session;
+mod skill_discovery;
+mod skill_registry;
 pub mod snapshot;
 pub mod session_control;
 mod sse;
@@ -63,7 +65,7 @@ pub use file_ops::{
     WriteFileOutput,
 };
 pub use hooks::{
-    HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
+    ChatParamsOverride, HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
 };
 pub use lane_events::{
     LaneEvent, LaneEventBlocker, LaneEventName, LaneEventStatus, LaneFailureClass,
@@ -131,6 +133,8 @@ pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
 };
+pub use skill_discovery::{RemoteSkillDiscovery, RemoteSkillEntry, RemoteSkillIndex};
+pub use skill_registry::{default_skill_roots, SkillEntry, SkillRegistry};
 pub use snapshot::{FileDiff, FileStatus, SnapshotError, SnapshotManager, SnapshotRecord};
 pub use sse::{IncrementalSseParser, SseEvent};
 pub use stale_branch::{

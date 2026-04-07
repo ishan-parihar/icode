@@ -8,7 +8,7 @@ use api::{
     MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
-use plugins::PluginTool;
+use plugins::{HookRunner, PluginTool};
 use reqwest::blocking::Client;
 use runtime::{
     edit_file, execute_bash, glob_search, grep_search, load_system_prompt,
@@ -105,6 +105,7 @@ pub struct GlobalToolRegistry {
     plugin_tools: Vec<PluginTool>,
     runtime_tools: Vec<RuntimeToolDefinition>,
     enforcer: Option<PermissionEnforcer>,
+    hook_runner: Option<HookRunner>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +123,7 @@ impl GlobalToolRegistry {
             plugin_tools: Vec::new(),
             runtime_tools: Vec::new(),
             enforcer: None,
+            hook_runner: None,
         }
     }
 
@@ -148,6 +150,7 @@ impl GlobalToolRegistry {
             plugin_tools,
             runtime_tools: Vec::new(),
             enforcer: None,
+            hook_runner: None,
         })
     }
 
@@ -181,6 +184,12 @@ impl GlobalToolRegistry {
     #[must_use]
     pub fn with_enforcer(mut self, enforcer: PermissionEnforcer) -> Self {
         self.set_enforcer(enforcer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_hook_runner(mut self, hook_runner: HookRunner) -> Self {
+        self.hook_runner = Some(hook_runner);
         self
     }
 
@@ -269,7 +278,11 @@ impl GlobalToolRegistry {
                 description: tool.definition().description.clone(),
                 input_schema: tool.definition().input_schema.clone(),
             });
-        builtin.chain(runtime).chain(plugin).collect()
+        builtin
+            .chain(runtime)
+            .chain(plugin)
+            .map(|def| self.apply_tool_definitions_hook(def))
+            .collect()
     }
 
     pub fn permission_specs(
@@ -327,6 +340,21 @@ impl GlobalToolRegistry {
 
     pub fn set_enforcer(&mut self, enforcer: PermissionEnforcer) {
         self.enforcer = Some(enforcer);
+    }
+
+    fn apply_tool_definitions_hook(&self, mut def: ToolDefinition) -> ToolDefinition {
+        if let Some(ref runner) = self.hook_runner {
+            let desc = def.description.as_deref().unwrap_or("");
+            let (mod_desc, mod_schema) =
+                runner.run_tool_definitions(&def.name, desc, &def.input_schema);
+            if let Some(desc) = mod_desc {
+                def.description = Some(desc);
+            }
+            if let Some(schema) = mod_schema {
+                def.input_schema = schema;
+            }
+        }
+        def
     }
 
     pub fn execute(&self, name: &str, input: &Value) -> Result<String, String> {
@@ -2132,6 +2160,7 @@ struct SkillOutput {
     args: Option<String>,
     description: Option<String>,
     prompt: String,
+    files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2773,8 +2802,49 @@ fn execute_todo_write(input: TodoWriteInput) -> Result<TodoWriteOutput, String> 
 
 fn execute_skill(input: SkillInput) -> Result<SkillOutput, String> {
     let skill_path = resolve_skill_path(&input.skill)?;
-    let prompt = std::fs::read_to_string(&skill_path).map_err(|error| error.to_string())?;
-    let description = parse_skill_description(&prompt);
+    let content = std::fs::read_to_string(&skill_path).map_err(|error| error.to_string())?;
+    let description = parse_skill_description(&content);
+
+    // Scan skill directory for auxiliary files
+    let files = if let Some(parent) = skill_path.parent() {
+        let mut collected: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path.file_name().unwrap().to_string_lossy();
+                if name == "SKILL.md" || name.starts_with('.') {
+                    continue;
+                }
+                collected.push(name.into_owned());
+                if collected.len() >= 10 {
+                    break;
+                }
+            }
+        }
+        collected.sort();
+        collected
+    } else {
+        Vec::new()
+    };
+
+    // Format as XML-wrapped content matching opencode
+    let skill_name = input.skill.clone();
+    let dir_path = skill_path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let files_block = if files.is_empty() {
+        String::new()
+    } else {
+        format!("\n<skill_files>\n{}\n</skill_files>", files.join("\n"))
+    };
+    let prompt = format!(
+        "<skill_content name=\"{}\">\n{}\n</skill_content>\n\nBase directory: {}{}",
+        skill_name, content, dir_path, files_block
+    );
 
     Ok(SkillOutput {
         skill: input.skill,
@@ -2782,6 +2852,7 @@ fn execute_skill(input: SkillInput) -> Result<SkillOutput, String> {
         args: input.args,
         description,
         prompt,
+        files,
     })
 }
 

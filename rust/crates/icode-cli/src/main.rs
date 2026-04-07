@@ -125,6 +125,8 @@ Run `icode --help` for usage."
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    crate::tui::debug::init_logging();
+    crate::tui::debug::cleanup_old_logs(7);
     apply_env_from_config();
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_args(&args)? {
@@ -1554,7 +1556,13 @@ fn run_resume_command(
         | SlashCommand::OutputStyle { .. }
         | SlashCommand::AddDir { .. }
         | SlashCommand::Undo
-        | SlashCommand::Redo => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Redo
+        | SlashCommand::StartWork { .. }
+        | SlashCommand::Handoff { .. }
+        | SlashCommand::InitDeep { .. }
+        | SlashCommand::RalphLoop { .. }
+        | SlashCommand::StopContinuation
+        | SlashCommand::UlwLoop => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1921,7 +1929,7 @@ fn run_repl(
                             tui.state_mut().prompt.value = prompt_text;
                             tui.state_mut().prompt.cursor =
                                 tui.state().prompt.value.chars().count();
-                            tui.state_mut().clear_tool_calls();
+                            tui.state_mut().clear_tool_calls(usize::MAX);
                         }
                         continue;
                     }
@@ -1937,7 +1945,7 @@ fn run_repl(
                             tui.state_mut().prompt.cursor =
                                 tui.state().prompt.value.chars().count();
                         }
-                        tui.state_mut().clear_tool_calls();
+                        tui.state_mut().clear_tool_calls(usize::MAX);
                         continue;
                     }
                     "status.view" => {
@@ -2940,7 +2948,13 @@ impl LiveCli {
             | SlashCommand::OutputStyle { .. }
             | SlashCommand::AddDir { .. }
             | SlashCommand::Undo
-            | SlashCommand::Redo => {
+            | SlashCommand::Redo
+            | SlashCommand::StartWork { .. }
+            | SlashCommand::Handoff { .. }
+            | SlashCommand::InitDeep { .. }
+            | SlashCommand::RalphLoop { .. }
+            | SlashCommand::StopContinuation
+            | SlashCommand::UlwLoop => {
                 eprintln!("Use the TUI command palette (Ctrl+P) or /undo / /redo in the TUI.");
                 false
             }
@@ -4497,6 +4511,8 @@ fn runtime_hook_config_from_plugin_hooks(hooks: PluginHooks) -> runtime::Runtime
         hooks.pre_tool_use,
         hooks.post_tool_use,
         hooks.post_tool_use_failure,
+        hooks.tool_definitions,
+        hooks.chat_params,
     )
 }
 

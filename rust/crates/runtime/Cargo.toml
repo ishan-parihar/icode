@@ -16,6 +16,9 @@ telemetry = { path = "../telemetry" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }
 walkdir = "2"
+dirs-next.workspace = true
+chrono.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [lints]
 workspace = true

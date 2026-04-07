@@ -54,6 +54,8 @@ pub struct RuntimeFeatureConfig {
     permission_mode: Option<ResolvedPermissionMode>,
     permission_rules: RuntimePermissionRuleConfig,
     sandbox: SandboxConfig,
+    hook_runner: Option<plugins::HookRunner>,
+    skill_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -61,6 +63,8 @@ pub struct RuntimeHookConfig {
     pre_tool_use: Vec<String>,
     post_tool_use: Vec<String>,
     post_tool_use_failure: Vec<String>,
+    tool_definitions: Vec<String>,
+    chat_params: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -260,6 +264,8 @@ impl ConfigLoader {
             permission_mode: parse_optional_permission_mode(&merged_value)?,
             permission_rules: parse_optional_permission_rules(&merged_value)?,
             sandbox: parse_optional_sandbox_config(&merged_value)?,
+            hook_runner: None,
+            skill_urls: parse_optional_skill_urls(&merged_value)?,
         };
 
         Ok(RuntimeConfig {
@@ -357,6 +363,16 @@ impl RuntimeConfig {
     pub fn sandbox(&self) -> &SandboxConfig {
         &self.feature_config.sandbox
     }
+
+    #[must_use]
+    pub fn hook_runner(&self) -> Option<&plugins::HookRunner> {
+        self.feature_config.hook_runner.as_ref()
+    }
+
+    #[must_use]
+    pub fn skill_urls(&self) -> &[String] {
+        self.feature_config.skill_urls()
+    }
 }
 
 impl RuntimeFeatureConfig {
@@ -369,6 +385,18 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn with_plugins(mut self, plugins: RuntimePluginConfig) -> Self {
         self.plugins = plugins;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hook_runner(mut self, hook_runner: plugins::HookRunner) -> Self {
+        self.hook_runner = Some(hook_runner);
+        self
+    }
+
+    #[must_use]
+    pub fn with_skill_urls(mut self, urls: Vec<String>) -> Self {
+        self.skill_urls = urls;
         self
     }
 
@@ -410,6 +438,16 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn sandbox(&self) -> &SandboxConfig {
         &self.sandbox
+    }
+
+    #[must_use]
+    pub fn hook_runner(&self) -> Option<&plugins::HookRunner> {
+        self.hook_runner.as_ref()
+    }
+
+    #[must_use]
+    pub fn skill_urls(&self) -> &[String] {
+        &self.skill_urls
     }
 }
 
@@ -466,11 +504,15 @@ impl RuntimeHookConfig {
         pre_tool_use: Vec<String>,
         post_tool_use: Vec<String>,
         post_tool_use_failure: Vec<String>,
+        tool_definitions: Vec<String>,
+        chat_params: Vec<String>,
     ) -> Self {
         Self {
             pre_tool_use,
             post_tool_use,
             post_tool_use_failure,
+            tool_definitions,
+            chat_params,
         }
     }
 
@@ -498,11 +540,23 @@ impl RuntimeHookConfig {
             &mut self.post_tool_use_failure,
             other.post_tool_use_failure(),
         );
+        extend_unique(&mut self.tool_definitions, other.tool_definitions());
+        extend_unique(&mut self.chat_params, other.chat_params());
     }
 
     #[must_use]
     pub fn post_tool_use_failure(&self) -> &[String] {
         &self.post_tool_use_failure
+    }
+
+    #[must_use]
+    pub fn tool_definitions(&self) -> &[String] {
+        &self.tool_definitions
+    }
+
+    #[must_use]
+    pub fn chat_params(&self) -> &[String] {
+        &self.chat_params
     }
 }
 
@@ -645,6 +699,10 @@ fn parse_optional_hooks_config(root: &JsonValue) -> Result<RuntimeHookConfig, Co
             "merged settings.hooks",
         )?
         .unwrap_or_default(),
+        tool_definitions: optional_string_array(hooks, "ToolDefinitions", "merged settings.hooks")?
+            .unwrap_or_default(),
+        chat_params: optional_string_array(hooks, "ChatParams", "merged settings.hooks")?
+            .unwrap_or_default(),
     })
 }
 
@@ -696,6 +754,24 @@ fn parse_optional_plugin_config(root: &JsonValue) -> Result<RuntimePluginConfig,
     config.bundled_root =
         optional_string(plugins, "bundledRoot", "merged settings.plugins")?.map(str::to_string);
     Ok(config)
+}
+
+fn parse_optional_skill_urls(root: &JsonValue) -> Result<Vec<String>, ConfigError> {
+    let Some(object) = root.as_object() else {
+        return Ok(Vec::new());
+    };
+    let Some(skills_value) = object.get("skills") else {
+        return Ok(Vec::new());
+    };
+    let Some(skills) = skills_value.as_object() else {
+        return Ok(Vec::new());
+    };
+    Ok(
+        optional_string_array(skills, "urls", "merged settings.skills")?
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn parse_optional_permission_mode(
@@ -1506,11 +1582,15 @@ mod tests {
             vec!["pre-a".to_string()],
             vec!["post-a".to_string()],
             vec!["failure-a".to_string()],
+            vec!["definitions-a".to_string()],
+            vec!["chat-a".to_string()],
         );
         let overlay = RuntimeHookConfig::new(
             vec!["pre-a".to_string(), "pre-b".to_string()],
             vec!["post-a".to_string(), "post-b".to_string()],
             vec!["failure-b".to_string()],
+            vec!["definitions-a".to_string(), "definitions-b".to_string()],
+            vec!["chat-a".to_string(), "chat-b".to_string()],
         );
 
         // when
@@ -1528,6 +1608,14 @@ mod tests {
         assert_eq!(
             merged.post_tool_use_failure(),
             &["failure-a".to_string(), "failure-b".to_string()]
+        );
+        assert_eq!(
+            merged.tool_definitions(),
+            &["definitions-a".to_string(), "definitions-b".to_string()]
+        );
+        assert_eq!(
+            merged.chat_params(),
+            &["chat-a".to_string(), "chat-b".to_string()]
         );
     }
 

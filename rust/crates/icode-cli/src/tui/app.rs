@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
+use tracing;
 
 use crate::tui::command_palette::CommandPaletteState;
 use crate::tui::dialog_help::HelpDialogState;
@@ -328,12 +329,13 @@ impl AppState {
         }
     }
 
-    pub fn finish_stream(&mut self) {
+    pub fn finish_stream(&mut self, max_scroll: usize) {
         if let Some(msg) = self.messages.last_mut() {
             msg.is_streaming = false;
         }
         self.is_streaming = false;
         self.is_thinking = false;
+        self.recalculate_scroll(max_scroll);
     }
 
     pub fn start_thinking(&mut self) {
@@ -416,14 +418,22 @@ impl AppState {
     }
 
     pub fn scroll_to_bottom(&mut self) {
+        let old = self.scroll_offset;
         self.scroll_offset = usize::MAX;
+        if old != usize::MAX {
+            tracing::debug!(event = "scroll_to_bottom", old_offset = %old);
+        }
     }
 
-    pub fn recalculate_scroll(&mut self) {
+    pub fn recalculate_scroll(&mut self, max_scroll: usize) {
         if self.scroll_offset == usize::MAX {
             return;
         }
-        self.scroll_offset = 0;
+        let old = self.scroll_offset;
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
+        if old != self.scroll_offset {
+            tracing::debug!(event = "recalculate_scroll", old_offset = %old, new_offset = %self.scroll_offset, max_scroll = %max_scroll, clamped = true);
+        }
     }
 
     pub fn set_completions(&mut self, completions: Vec<String>) {
@@ -502,10 +512,11 @@ impl AppState {
         true
     }
 
-    pub fn cleanup_reverted(&mut self) {
+    pub fn cleanup_reverted(&mut self, max_scroll: usize) {
         if let Some(ref revert) = self.revert {
             self.messages.truncate(revert.message_boundary);
         }
+        self.recalculate_scroll(max_scroll);
         self.revert = None;
     }
 
@@ -588,11 +599,14 @@ impl AppState {
         }
     }
 
-    pub fn clear_tool_calls(&mut self) {
+    pub fn clear_tool_calls(&mut self, max_scroll: usize) {
+        let msg_count = self.messages.len();
         for msg in &mut self.messages {
             msg.parts
                 .retain(|p| matches!(p, MessagePart::Text { .. } | MessagePart::Thinking { .. }));
         }
+        self.recalculate_scroll(max_scroll);
+        tracing::info!(event = "clear_tool_calls", message_count = msg_count);
     }
 
     pub fn toggle_tool_expand(&mut self, msg_idx: usize, tc_idx: usize) {

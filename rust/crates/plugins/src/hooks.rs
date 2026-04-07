@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{PluginError, PluginHooks, PluginRegistry};
 
@@ -11,6 +11,7 @@ pub enum HookEvent {
     PreToolUse,
     PostToolUse,
     PostToolUseFailure,
+    ToolDefinitions,
 }
 
 impl HookEvent {
@@ -19,6 +20,7 @@ impl HookEvent {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::PostToolUseFailure => "PostToolUseFailure",
+            Self::ToolDefinitions => "ToolDefinitions",
         }
     }
 }
@@ -118,6 +120,24 @@ impl HookRunner {
         )
     }
 
+    /// Run tool_definitions hooks for a given tool definition.
+    /// Returns optionally modified (description, input_schema) tuple.
+    /// Hooks can return JSON on stdout: {"modified_description": "...", "modified_input_schema": {...}}
+    #[must_use]
+    pub fn run_tool_definitions(
+        &self,
+        tool_name: &str,
+        description: &str,
+        input_schema: &serde_json::Value,
+    ) -> (Option<String>, Option<serde_json::Value>) {
+        Self::run_tool_definitions_commands(
+            &self.hooks.tool_definitions,
+            tool_name,
+            description,
+            input_schema,
+        )
+    }
+
     fn run_commands(
         event: HookEvent,
         commands: &[String],
@@ -171,6 +191,52 @@ impl HookRunner {
         }
 
         HookRunResult::allow(messages)
+    }
+
+    fn run_tool_definitions_commands(
+        commands: &[String],
+        tool_name: &str,
+        description: &str,
+        input_schema: &serde_json::Value,
+    ) -> (Option<String>, Option<serde_json::Value>) {
+        let schema_json = serde_json::to_string(input_schema).unwrap_or_default();
+        let mut modified_description = None;
+        let mut modified_input_schema = None;
+
+        for command in commands {
+            let mut child = shell_command(command);
+            child.stdin(std::process::Stdio::piped());
+            child.stdout(std::process::Stdio::piped());
+            child.stderr(std::process::Stdio::piped());
+            child.env("HOOK_EVENT", HookEvent::ToolDefinitions.as_str());
+            child.env("HOOK_TOOL_NAME", tool_name);
+            child.env("HOOK_TOOL_DESCRIPTION", description);
+            child.env("HOOK_TOOL_INPUT_SCHEMA", &schema_json);
+
+            let payload = json!({
+                "hook_event_name": "ToolDefinitions",
+                "tool_name": tool_name,
+                "tool_description": description,
+                "tool_input_schema": input_schema,
+            })
+            .to_string();
+
+            if let Ok(output) = child.output_with_stdin(payload.as_bytes()) {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !stdout.is_empty() {
+                    if let Ok(Value::Object(root)) = serde_json::from_str::<Value>(&stdout) {
+                        if let Some(Value::String(desc)) = root.get("modified_description") {
+                            modified_description = Some(desc.clone());
+                        }
+                        if let Some(Value::Object(schema)) = root.get("modified_input_schema") {
+                            modified_input_schema = Some(Value::Object(schema.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        (modified_description, modified_input_schema)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -460,6 +526,8 @@ mod tests {
             pre_tool_use: vec!["printf 'blocked by plugin'; exit 2".to_string()],
             post_tool_use: Vec::new(),
             post_tool_use_failure: Vec::new(),
+            tool_definitions: Vec::new(),
+            chat_params: Vec::new(),
         });
 
         // when
@@ -480,6 +548,8 @@ mod tests {
             ],
             post_tool_use: Vec::new(),
             post_tool_use_failure: Vec::new(),
+            tool_definitions: Vec::new(),
+            chat_params: Vec::new(),
         });
 
         // when
