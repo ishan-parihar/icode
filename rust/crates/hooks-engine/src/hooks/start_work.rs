@@ -37,11 +37,11 @@ impl Hook for StartWork {
                 ctx.set_metadata("last_checkpoint".into(), state.to_string());
             }
 
-            let progress = ctx
-                .get_metadata("work_progress")
-                .unwrap_or("0");
-            ctx.set_metadata("remaining_work".into(),
-                format!("Progress so far: {progress}. Continue from here."));
+            let progress = ctx.get_metadata("work_progress").unwrap_or("0");
+            ctx.set_metadata(
+                "remaining_work".into(),
+                format!("Progress so far: {progress}. Continue from here."),
+            );
         }
         Ok(())
     }
@@ -88,7 +88,10 @@ mod tests {
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(hook.on_message(&mut ctx, &mut msg)).unwrap();
-        assert_eq!(ctx.get_metadata("last_checkpoint"), Some("phase-3-complete"));
+        assert_eq!(
+            ctx.get_metadata("last_checkpoint"),
+            Some("phase-3-complete")
+        );
     }
 
     #[test]

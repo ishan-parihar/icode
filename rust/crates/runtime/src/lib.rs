@@ -26,10 +26,10 @@ pub mod recovery_recipes;
 mod remote;
 pub mod sandbox;
 mod session;
+pub mod session_control;
 mod skill_discovery;
 mod skill_registry;
 pub mod snapshot;
-pub mod session_control;
 mod sse;
 pub mod stale_branch;
 pub mod summary_compression;
@@ -65,7 +65,8 @@ pub use file_ops::{
     WriteFileOutput,
 };
 pub use hooks::{
-    ChatParamsOverride, HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
+    ChatParamsOverride, HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter,
+    HookRunResult, HookRunner,
 };
 pub use lane_events::{
     LaneEvent, LaneEventBlocker, LaneEventName, LaneEventStatus, LaneFailureClass,

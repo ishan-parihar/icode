@@ -70,7 +70,11 @@ impl Hook for KeywordDetector {
         Ok(())
     }
 
-    async fn on_params(&self, _ctx: &mut HookContext, _params: &mut crate::hook_trait::ApiParams) -> HookResult {
+    async fn on_params(
+        &self,
+        _ctx: &mut HookContext,
+        _params: &mut crate::hook_trait::ApiParams,
+    ) -> HookResult {
         Ok(())
     }
 }

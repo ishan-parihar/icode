@@ -33,9 +33,7 @@ impl Hook for ContextWindowMonitor {
 
         if let Some(pct) = usage_pct {
             if pct >= THRESHOLD_PCT {
-                ctx.inject_message(format!(
-                    "{CONTEXT_WARNING} Current usage: {pct:.1}%"
-                ));
+                ctx.inject_message(format!("{CONTEXT_WARNING} Current usage: {pct:.1}%"));
             }
         }
 

@@ -11,7 +11,10 @@ const COMMENT_WARNING: &str =
 pub struct CommentChecker;
 
 fn has_excessive_comments(content: &str) -> bool {
-    let patterns = ["// TODO", "// HACK", "// FIXME", "/// ", "/**", "# TODO", "/*", "BDD", "given", "when", "then"];
+    let patterns = [
+        "// TODO", "// HACK", "// FIXME", "/// ", "/**", "# TODO", "/*", "BDD", "given", "when",
+        "then",
+    ];
     let count = patterns.iter().filter(|&&p| content.contains(p)).count();
     count >= 3
 }
@@ -48,10 +51,12 @@ mod tests {
         let mut ctx = HookContext::new();
         let mut output = ToolOutput {
             tool_name: "write_file".into(),
-            result: "// TODO: fix this\n// HACK: workaround\n/// docstring here\n// FIXME: broken".into(),
+            result: "// TODO: fix this\n// HACK: workaround\n/// docstring here\n// FIXME: broken"
+                .into(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output)).unwrap();
+        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output))
+            .unwrap();
         assert_eq!(ctx.warnings.len(), 1);
     }
 
@@ -64,7 +69,8 @@ mod tests {
             result: "fn main() { println!(\"hello\"); }".into(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output)).unwrap();
+        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output))
+            .unwrap();
         assert_eq!(ctx.warnings.len(), 0);
     }
 }

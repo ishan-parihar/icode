@@ -7,7 +7,13 @@ use crate::hook_trait::{Hook, HookResult, ToolOutput};
 const TRUNCATION_SUFFIX: &str = "... (truncated)";
 const DEFAULT_THRESHOLD: usize = 10_000;
 
-const TRUNCATABLE_TOOLS: &[&str] = &["grep_search", "glob_search", "symbols", "references", "diagnostics"];
+const TRUNCATABLE_TOOLS: &[&str] = &[
+    "grep_search",
+    "glob_search",
+    "symbols",
+    "references",
+    "diagnostics",
+];
 
 #[derive(Debug)]
 pub struct ToolOutputTruncator {
@@ -52,7 +58,11 @@ impl Hook for ToolOutputTruncator {
         if TRUNCATABLE_TOOLS.contains(&output.tool_name.as_str())
             && output.result.len() > self.threshold
         {
-            let truncated = output.result.chars().take(self.threshold).collect::<String>();
+            let truncated = output
+                .result
+                .chars()
+                .take(self.threshold)
+                .collect::<String>();
             output.result = format!("{truncated}{TRUNCATION_SUFFIX}");
             ctx.add_warning(format!(
                 "Output from '{}' truncated to {} characters",
@@ -76,7 +86,8 @@ mod tests {
             result: "x".repeat(200),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output)).unwrap();
+        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output))
+            .unwrap();
         assert!(output.result.contains(TRUNCATION_SUFFIX));
         assert_eq!(ctx.warnings.len(), 1);
     }
@@ -90,7 +101,8 @@ mod tests {
             result: "small result".into(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output)).unwrap();
+        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output))
+            .unwrap();
         assert!(!output.result.contains(TRUNCATION_SUFFIX));
     }
 
@@ -103,7 +115,8 @@ mod tests {
             result: "x".repeat(200),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output)).unwrap();
+        rt.block_on(hook.on_post_tool_use(&mut ctx, &mut output))
+            .unwrap();
         assert!(!output.result.contains(TRUNCATION_SUFFIX));
     }
 }

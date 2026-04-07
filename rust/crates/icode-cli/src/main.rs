@@ -58,9 +58,21 @@ use tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput};
 pub enum TurnEvent {
     ThinkingStarted,
     TokenDelta(String),
-    ToolCallStarted { name: String, input: String },
-    ToolCallCompleted { name: String, output: String, success: bool },
-    TurnCompleted { text: String, tool_calls: Vec<TurnToolCallInfo>, input_tokens: u32, output_tokens: u32 },
+    ToolCallStarted {
+        name: String,
+        input: String,
+    },
+    ToolCallCompleted {
+        name: String,
+        output: String,
+        success: bool,
+    },
+    TurnCompleted {
+        text: String,
+        tool_calls: Vec<TurnToolCallInfo>,
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     TurnError(String),
 }
 
@@ -1788,9 +1800,10 @@ fn run_repl(
                                 let session_ts = new_session.updated_at_ms / 1000;
                                 let saved_msgs = new_session.messages.clone();
                                 let msg_count = saved_msgs.len();
-                                let turns = saved_msgs.iter().filter(|m| {
-                                    matches!(m.role, runtime::MessageRole::Assistant)
-                                }).count() as u32;
+                                let turns = saved_msgs
+                                    .iter()
+                                    .filter(|m| matches!(m.role, runtime::MessageRole::Assistant))
+                                    .count() as u32;
                                 cli.persist_session()?;
                                 let session_id = new_session.session_id.clone();
                                 cli.runtime.set_session(new_session);
@@ -1825,8 +1838,8 @@ fn run_repl(
                                     st.session.input_tokens = 0;
                                     st.session.output_tokens = 0;
                                 }
-                    }
-                    Err(e) => {
+                            }
+                            Err(e) => {
                                 tui.state_mut()
                                     .show_error(format!("Failed to load session: {e}"));
                             }
@@ -1858,7 +1871,11 @@ fn run_repl(
                     }
                     "thinking.toggle" => {
                         let is_visible = tui.state_mut().toggle_thinking();
-                        let msg = if is_visible { "Showing thinking" } else { "Hiding thinking" };
+                        let msg = if is_visible {
+                            "Showing thinking"
+                        } else {
+                            "Hiding thinking"
+                        };
                         tui.state_mut().add_toast(msg, tui::ToastKind::Info);
                         continue;
                     }
@@ -2017,7 +2034,9 @@ fn run_repl(
                     }
                     "session.fork" => {
                         let last_msg_idx = tui.state().messages.len().saturating_sub(1);
-                        tui.state_mut().message_action_dialog.open(last_msg_idx, String::new());
+                        tui.state_mut()
+                            .message_action_dialog
+                            .open(last_msg_idx, String::new());
                         continue;
                     }
                     _ => {}
@@ -2709,7 +2728,11 @@ impl LiveCli {
             };
 
             let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
-            let result = runtime.run_turn(&input, Some(&mut permission_prompter), Some(&progress_callback));
+            let result = runtime.run_turn(
+                &input,
+                Some(&mut permission_prompter),
+                Some(&progress_callback),
+            );
             hook_abort_monitor.stop();
 
             if let Ok(ref summary) = result {
@@ -2723,12 +2746,17 @@ impl LiveCli {
                     .flat_map(|msg| msg.blocks.iter())
                     .filter_map(|block| match block {
                         ContentBlock::ToolUse { id, name, input } => {
-                            let output = summary.tool_results.iter()
+                            let output = summary
+                                .tool_results
+                                .iter()
                                 .flat_map(|rmsg| rmsg.blocks.iter())
                                 .find_map(|block| match block {
-                                    ContentBlock::ToolResult { tool_use_id, output, is_error, .. } if tool_use_id == id => {
-                                        Some((output.clone(), *is_error))
-                                    }
+                                    ContentBlock::ToolResult {
+                                        tool_use_id,
+                                        output,
+                                        is_error,
+                                        ..
+                                    } if tool_use_id == id => Some((output.clone(), *is_error)),
                                     _ => None,
                                 });
                             let (output, success) = output.unwrap_or_default();
@@ -2742,7 +2770,12 @@ impl LiveCli {
                         _ => None,
                     })
                     .collect();
-                let _ = tx.send(TurnEvent::TurnCompleted { text, tool_calls, input_tokens: summary.usage.input_tokens, output_tokens: summary.usage.output_tokens });
+                let _ = tx.send(TurnEvent::TurnCompleted {
+                    text,
+                    tool_calls,
+                    input_tokens: summary.usage.input_tokens,
+                    output_tokens: summary.usage.output_tokens,
+                });
             } else if let Err(ref e) = result {
                 if let Some(path) = runtime.session().persistence_path() {
                     let _ = runtime.session().save_to_path(path);
@@ -5005,6 +5038,7 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
 }
 
 struct AnthropicRuntimeClient {
+    runtime: Option<tokio::runtime::Runtime>,
     handle: tokio::runtime::Handle,
     client: ProviderClient,
     model: String,
@@ -5027,16 +5061,34 @@ impl AnthropicRuntimeClient {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let client = ProviderClient::from_model(&model).map_err(|e| e.to_string())?;
         let client = client.with_prompt_cache(PromptCache::new(session_id));
-        Ok(Self {
-            handle: tokio::runtime::Handle::current(),
-            client,
-            model,
-            enable_tools,
-            emit_output,
-            allowed_tools,
-            tool_registry,
-            progress_reporter,
-        })
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => Ok(Self {
+                runtime: None,
+                handle,
+                client,
+                model,
+                enable_tools,
+                emit_output,
+                allowed_tools,
+                tool_registry,
+                progress_reporter,
+            }),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()?;
+                let handle = rt.handle().clone();
+                Ok(Self {
+                    runtime: Some(rt),
+                    handle,
+                    client,
+                    model,
+                    enable_tools,
+                    emit_output,
+                    allowed_tools,
+                    tool_registry,
+                    progress_reporter,
+                })
+            }
+        }
     }
 }
 
@@ -5052,7 +5104,11 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
 
 impl ApiClient for AnthropicRuntimeClient {
     #[allow(clippy::too_many_lines)]
-    fn stream(&mut self, request: ApiRequest, progress: Option<&dyn Fn(runtime::AssistantEvent)>) -> Result<Vec<runtime::AssistantEvent>, RuntimeError> {
+    fn stream(
+        &mut self,
+        request: ApiRequest,
+        progress: Option<&dyn Fn(runtime::AssistantEvent)>,
+    ) -> Result<Vec<runtime::AssistantEvent>, RuntimeError> {
         if let Some(progress_reporter) = &self.progress_reporter {
             progress_reporter.mark_model_phase();
         }
@@ -5143,7 +5199,11 @@ impl ApiClient for AnthropicRuntimeClient {
                                 progress_reporter.mark_tool_phase(&name, &input);
                             }
                             if let Some(cb) = &progress {
-                                cb(runtime::AssistantEvent::ToolUse { id: id.clone(), name: name.clone(), input: input.clone() });
+                                cb(runtime::AssistantEvent::ToolUse {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                });
                             }
                             // Display tool call now that input is fully accumulated
                             writeln!(out, "\n{}", format_tool_call_start(&name, &input))
@@ -6052,7 +6112,9 @@ fn convert_runtime_messages_to_tui(
     messages: &[ConversationMessage],
     timestamp_secs: u64,
 ) -> Vec<tui::app::Message> {
-    use crate::tui::app::{Message as TuiMessage, MessagePart, MessageRole as TuiMessageRole, ToolStatus};
+    use crate::tui::app::{
+        Message as TuiMessage, MessagePart, MessageRole as TuiMessageRole, ToolStatus,
+    };
 
     let mut result: Vec<TuiMessage> = Vec::new();
 

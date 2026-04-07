@@ -97,7 +97,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "ANTHROPIC_API_KEY",
         base_url_env: "ANTHROPIC_BASE_URL",
         default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(200_000, 32_000, true, true, true, 15.0, 75.0, 18.75, 1.50),
+        capabilities: ModelCapabilities::new(
+            200_000, 32_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
+        ),
     },
     RegistryEntry {
         alias: "sonnet",
@@ -106,7 +108,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "ANTHROPIC_API_KEY",
         base_url_env: "ANTHROPIC_BASE_URL",
         default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50),
+        capabilities: ModelCapabilities::new(
+            200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
+        ),
     },
     RegistryEntry {
         alias: "haiku",
@@ -115,7 +119,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "ANTHROPIC_API_KEY",
         base_url_env: "ANTHROPIC_BASE_URL",
         default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(200_000, 8_192, false, true, true, 1.0, 5.0, 1.25, 0.10),
+        capabilities: ModelCapabilities::new(
+            200_000, 8_192, false, true, true, 1.0, 5.0, 1.25, 0.10,
+        ),
     },
     RegistryEntry {
         alias: "grok",
@@ -142,7 +148,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "XAI_API_KEY",
         base_url_env: "XAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "grok-3-mini",
@@ -151,7 +159,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "XAI_API_KEY",
         base_url_env: "XAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "grok-2",
@@ -160,7 +170,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "XAI_API_KEY",
         base_url_env: "XAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 4_096, false, true, false, 2.0, 10.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            131_072, 4_096, false, true, false, 2.0, 10.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "gpt-4o",
@@ -169,7 +181,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "OPENAI_API_KEY",
         base_url_env: "OPENAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
-        capabilities: ModelCapabilities::new(128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "coder-model",
@@ -178,7 +192,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "QWEN_PROXY_API_KEY",
         base_url_env: "QWEN_PROXY_BASE_URL",
         default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(128_000, 8_192, true, true, true, 0.20, 0.60, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            128_000, 8_192, true, true, true, 0.20, 0.60, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "qwen3-coder-plus",
@@ -187,7 +203,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "QWEN_PROXY_API_KEY",
         base_url_env: "QWEN_PROXY_BASE_URL",
         default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(256_000, 12_288, true, true, true, 0.40, 1.20, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            256_000, 12_288, true, true, true, 0.40, 1.20, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "qwen3-coder-flash",
@@ -196,7 +214,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "QWEN_PROXY_API_KEY",
         base_url_env: "QWEN_PROXY_BASE_URL",
         default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(128_000, 4_096, false, true, true, 0.10, 0.30, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            128_000, 4_096, false, true, true, 0.10, 0.30, 0.0, 0.0,
+        ),
     },
 ];
 
@@ -238,7 +258,9 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     if openai_compat::has_api_key("XAI_API_KEY") {
         return ProviderKind::Xai;
     }
-    if openai_compat::has_api_key("QWEN_PROXY_API_KEY") || std::env::var("QWEN_PROXY_BASE_URL").is_ok() {
+    if openai_compat::has_api_key("QWEN_PROXY_API_KEY")
+        || std::env::var("QWEN_PROXY_BASE_URL").is_ok()
+    {
         return ProviderKind::QwenProxy;
     }
     ProviderKind::Anthropic
@@ -274,7 +296,10 @@ pub fn list_all_models() -> impl Iterator<Item = &'static RegistryEntry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capabilities_for_model, detect_provider_kind, max_tokens_for_model, resolve_model_alias, ProviderKind};
+    use super::{
+        capabilities_for_model, detect_provider_kind, max_tokens_for_model, resolve_model_alias,
+        ProviderKind,
+    };
 
     #[test]
     fn resolves_grok_aliases() {

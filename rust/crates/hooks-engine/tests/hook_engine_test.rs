@@ -290,12 +290,12 @@ fn session_event_serialize() {
 
 // -- Integration tests for new hooks --
 
+use hooks_engine::hook_trait::{ApiParams, Message};
 use hooks_engine::hooks::{
     CommentChecker, ContextWindowMonitor, KeywordDetector, RalphLoop, RulesInjector,
     SessionRecovery, StartWork, ThinkMode, TodoContinuationEnforcer, ToolOutputTruncator,
     Ultrawork,
 };
-use hooks_engine::hook_trait::{ApiParams, Message};
 
 // KeywordDetector tests
 

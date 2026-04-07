@@ -12,9 +12,7 @@ pub struct TodoContinuationEnforcer;
 
 fn has_completion_phrase(content: &str) -> bool {
     let lower = content.to_lowercase();
-    lower.contains("done")
-        || lower.contains("complete")
-        || lower.contains("finished")
+    lower.contains("done") || lower.contains("complete") || lower.contains("finished")
 }
 
 fn has_pending_todos(ctx: &HookContext) -> bool {

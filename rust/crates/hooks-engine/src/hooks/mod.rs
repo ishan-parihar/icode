@@ -1,14 +1,14 @@
-pub mod keyword_detector;
-pub mod ultrawork;
-pub mod todo_continuation_enforcer;
 pub mod comment_checker;
-pub mod session_recovery;
 pub mod context_window_monitor;
-pub mod rules_injector;
-pub mod tool_output_truncator;
+pub mod keyword_detector;
 pub mod ralph_loop;
-pub mod think_mode;
+pub mod rules_injector;
+pub mod session_recovery;
 pub mod start_work;
+pub mod think_mode;
+pub mod todo_continuation_enforcer;
+pub mod tool_output_truncator;
+pub mod ultrawork;
 
 pub use comment_checker::CommentChecker;
 pub use context_window_monitor::ContextWindowMonitor;
