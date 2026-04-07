@@ -10,7 +10,6 @@ mod hooks;
 mod json;
 mod lane_events;
 pub mod lsp_client;
-pub mod lsp_discovery;
 mod mcp;
 mod mcp_client;
 pub mod mcp_lifecycle_hardened;
@@ -27,9 +26,6 @@ mod remote;
 pub mod sandbox;
 mod session;
 pub mod session_control;
-mod skill_discovery;
-mod skill_registry;
-pub mod snapshot;
 mod sse;
 pub mod stale_branch;
 pub mod summary_compression;
@@ -65,8 +61,7 @@ pub use file_ops::{
     WriteFileOutput,
 };
 pub use hooks::{
-    ChatParamsOverride, HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter,
-    HookRunResult, HookRunner,
+    HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
 };
 pub use lane_events::{
     LaneEvent, LaneEventBlocker, LaneEventName, LaneEventStatus, LaneFailureClass,
@@ -134,9 +129,6 @@ pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
 };
-pub use skill_discovery::{RemoteSkillDiscovery, RemoteSkillEntry, RemoteSkillIndex};
-pub use skill_registry::{default_skill_roots, SkillEntry, SkillRegistry};
-pub use snapshot::{FileDiff, FileStatus, SnapshotError, SnapshotManager, SnapshotRecord};
 pub use sse::{IncrementalSseParser, SseEvent};
 pub use stale_branch::{
     apply_policy, check_freshness, BranchFreshness, StaleBranchAction, StaleBranchEvent,

@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/icode-server"]
+exclude = ["crates/icode-server", "crates/acp"]
 resolver = "2"
 
 [workspace.package]

@@ -69,10 +69,6 @@ pub struct PluginHooks {
     pub post_tool_use: Vec<String>,
     #[serde(rename = "PostToolUseFailure", default)]
     pub post_tool_use_failure: Vec<String>,
-    #[serde(rename = "ToolDefinitions", default)]
-    pub tool_definitions: Vec<String>,
-    #[serde(rename = "ChatParams", default)]
-    pub chat_params: Vec<String>,
 }
 
 impl PluginHooks {
@@ -81,8 +77,6 @@ impl PluginHooks {
         self.pre_tool_use.is_empty()
             && self.post_tool_use.is_empty()
             && self.post_tool_use_failure.is_empty()
-            && self.tool_definitions.is_empty()
-            && self.chat_params.is_empty()
     }
 
     #[must_use]
@@ -97,10 +91,6 @@ impl PluginHooks {
         merged
             .post_tool_use_failure
             .extend(other.post_tool_use_failure.iter().cloned());
-        merged
-            .tool_definitions
-            .extend(other.tool_definitions.iter().cloned());
-        merged.chat_params.extend(other.chat_params.iter().cloned());
         merged
     }
 }
@@ -1894,16 +1884,6 @@ fn resolve_hooks(root: &Path, hooks: &PluginHooks) -> PluginHooks {
             .iter()
             .map(|entry| resolve_hook_entry(root, entry))
             .collect(),
-        tool_definitions: hooks
-            .tool_definitions
-            .iter()
-            .map(|entry| resolve_hook_entry(root, entry))
-            .collect(),
-        chat_params: hooks
-            .chat_params
-            .iter()
-            .map(|entry| resolve_hook_entry(root, entry))
-            .collect(),
     }
 }
 
@@ -1957,7 +1937,6 @@ fn validate_hook_paths(root: Option<&Path>, hooks: &PluginHooks) -> Result<(), P
         .iter()
         .chain(hooks.post_tool_use.iter())
         .chain(hooks.post_tool_use_failure.iter())
-        .chain(hooks.chat_params.iter())
     {
         validate_command_path(root, entry, "hook")?;
     }

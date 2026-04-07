@@ -1,4 +1,4 @@
-use crate::tui::app::{AppState, Message, MessagePart, MessageRole, TextSelection, ToolStatus};
+use crate::tui::app::{AppState, MessagePart, MessageRole, TextSelection, ToolStatus};
 use crate::tui::markdown::render_markdown_to_lines;
 use crate::tui::theme::Theme;
 use ratatui::layout::Rect;
@@ -9,7 +9,6 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::Frame;
-use tracing;
 use unicode_width::UnicodeWidthChar;
 
 const MAX_EXPANDED_LINES: usize = 10;
@@ -35,23 +34,23 @@ enum RenderItem {
 }
 
 #[derive(Clone)]
-pub(crate) struct ToolCallData {
-    pub(crate) name: String,
-    pub(crate) status: ToolStatus,
-    pub(crate) input_summary: String,
-    pub(crate) output: Option<String>,
-    pub(crate) expanded: bool,
-    pub(crate) timestamp: u64,
+struct ToolCallData {
+    name: String,
+    status: ToolStatus,
+    input_summary: String,
+    output: Option<String>,
+    expanded: bool,
+    timestamp: u64,
 }
 
 #[derive(Clone)]
-pub(crate) struct TodoItemData {
-    pub(crate) content: String,
-    pub(crate) status: TodoStatus,
+struct TodoItemData {
+    content: String,
+    status: TodoStatus,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) enum TodoStatus {
+enum TodoStatus {
     Pending,
     InProgress,
     Completed,
@@ -298,7 +297,7 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
-pub(crate) fn parse_todos_from_input(input_json: &str) -> Vec<TodoItemData> {
+fn parse_todos_from_input(input_json: &str) -> Vec<TodoItemData> {
     if input_json.is_empty() {
         return Vec::new();
     }
@@ -323,150 +322,6 @@ pub(crate) fn parse_todos_from_input(input_json: &str) -> Vec<TodoItemData> {
             Some(TodoItemData { content, status })
         })
         .collect()
-}
-
-/// Count the total number of rendered lines for all messages, matching exactly
-/// what `MessageList::render()` produces. Used by both rendering and scroll computation.
-pub fn count_rendered_lines(messages: &[Message], state: &AppState, content_width: usize) -> usize {
-    let revert_boundary = state.revert.as_ref().map(|r| r.message_boundary);
-    let mut total = 0usize;
-    let mut first_visible = true;
-
-    for (idx, msg) in messages.iter().enumerate() {
-        if let Some(b) = revert_boundary {
-            if idx >= b {
-                break;
-            }
-            if idx == b.saturating_sub(1) {
-                total += 3;
-            }
-        }
-
-        match &msg.role {
-            MessageRole::User => {
-                if !first_visible {
-                    total += 3;
-                }
-                let text = msg.full_text();
-                let wrapped = wrap_text(&text, content_width.saturating_sub(3));
-                total += wrapped.len();
-            }
-            MessageRole::Assistant => {
-                if !first_visible {
-                    total += 1;
-                }
-                let full_text = msg.full_text();
-                let has_text = !full_text.is_empty();
-
-                for part in &msg.parts {
-                    match part {
-                        MessagePart::Text { content } => {
-                            let md_lines = render_markdown_to_lines(
-                                content,
-                                content_width.saturating_sub(4),
-                                &state.theme,
-                            );
-                            total += md_lines.len();
-                        }
-                        MessagePart::Thinking { content } if state.show_thinking => {
-                            let tl = build_thinking_lines(
-                                content,
-                                content_width.saturating_sub(4),
-                                &state.theme,
-                            );
-                            total += tl.len();
-                        }
-                        MessagePart::Thinking { .. } => {}
-                        MessagePart::ToolCall {
-                            name,
-                            status,
-                            input_summary,
-                            output,
-                            expanded,
-                            ..
-                        } => {
-                            let data = ToolCallData {
-                                name: name.clone(),
-                                status: *status,
-                                input_summary: input_summary.clone(),
-                                output: output.clone(),
-                                expanded: *expanded,
-                                timestamp: msg.timestamp,
-                            };
-                            let has_output = data.output.is_some()
-                                && !data.output.as_ref().map_or(true, |s| s.is_empty());
-                            match data.status {
-                                ToolStatus::Pending | ToolStatus::Running => {
-                                    total += 1;
-                                }
-                                ToolStatus::Completed | ToolStatus::Failed => {
-                                    if data.name == "todo_write" || data.name == "todo" {
-                                        let todos = parse_todos_from_input(&data.input_summary);
-                                        if !todos.is_empty() {
-                                            total += todos.len() + 2;
-                                        } else {
-                                            total += 1;
-                                        }
-                                    } else if has_output {
-                                        total += compute_tool_call_block_height(
-                                            &data,
-                                            content_width,
-                                            &state.theme,
-                                        );
-                                    } else {
-                                        total += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if msg.is_streaming {
-                    if has_text {
-                        total += 1;
-                    }
-                } else if has_text {
-                    total += 1;
-                }
-            }
-            MessageRole::Tool { name } => {
-                if !first_visible {
-                    total += 3;
-                }
-                let tool = state.tools.iter().rev().find(|t| t.name == *name);
-                let status = tool.map(|t| t.status).unwrap_or(ToolStatus::Completed);
-                let (icon, color) = match status {
-                    ToolStatus::Pending | ToolStatus::Running => ("○", state.theme.warning),
-                    ToolStatus::Completed => ("✓", state.theme.success),
-                    ToolStatus::Failed => ("✗", state.theme.error),
-                };
-                let mut tool_lines = vec![Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(icon, Style::default().fg(color)),
-                    Span::raw(" "),
-                    Span::styled(name.clone(), Style::default().fg(state.theme.text_muted)),
-                ])];
-                if let Some(t) = tool {
-                    if !t.input_summary.is_empty() {
-                        let summary_lines =
-                            wrap_text(&t.input_summary, content_width.saturating_sub(6));
-                        for s in summary_lines {
-                            tool_lines.push(Line::from(vec![
-                                Span::raw("     "),
-                                Span::styled(s, Style::default().fg(state.theme.text_muted)),
-                            ]));
-                        }
-                    }
-                }
-                total += tool_lines.len();
-            }
-        }
-
-        first_visible = false;
-    }
-
-    total
 }
 
 impl MessageList {
@@ -737,7 +592,7 @@ impl MessageList {
             }
         }
 
-        let total_lines = count_rendered_lines(messages, state, content_width);
+        let total_lines: usize = line_counts.iter().sum();
         let visible_lines = area.height as usize;
 
         if visible_lines == 0 || total_lines == 0 {
@@ -793,8 +648,7 @@ impl MessageList {
                 continue;
             }
 
-            let offset = item_start.saturating_sub(start) as u16;
-            let item_y = area.y.saturating_add(offset);
+            let item_y = area.y + (item_start.saturating_sub(start)) as u16;
             let item_area = Rect {
                 x: area.x,
                 y: item_y,
@@ -810,17 +664,11 @@ impl MessageList {
                     frame.render_widget(Paragraph::new(Line::from(spans.clone())), item_area);
                 }
                 RenderItem::TextLines(ls) => {
-                    let len = ls.len();
-                    let vs = visible_start.min(len);
-                    let ve = visible_end.min(len);
-                    let visible: Vec<Line<'_>> = if vs < ve {
-                        ls[vs..ve].iter().cloned().collect()
-                    } else {
-                        Vec::new()
-                    };
-                    if !visible.is_empty() {
-                        frame.render_widget(Paragraph::new(visible), item_area);
-                    }
+                    let visible: Vec<Line<'_>> = ls[visible_start..visible_end.min(ls.len())]
+                        .iter()
+                        .cloned()
+                        .collect();
+                    frame.render_widget(Paragraph::new(visible), item_area);
                 }
                 RenderItem::ToolCallInline(data) => {
                     render_tool_call_inline(
@@ -854,14 +702,10 @@ impl MessageList {
                     );
                 }
                 RenderItem::Thinking(lines) => {
-                    let len = lines.len();
-                    let vs = visible_start.min(len);
-                    let ve = visible_end.min(len);
-                    let visible: Vec<Line<'_>> = if vs < ve {
-                        lines[vs..ve].iter().cloned().collect()
-                    } else {
-                        Vec::new()
-                    };
+                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())]
+                        .iter()
+                        .cloned()
+                        .collect();
                     let block = Block::new()
                         .borders(Borders::LEFT)
                         .border_type(BorderType::Double)
@@ -940,19 +784,11 @@ impl MessageList {
                 );
         }
 
-        tracing::trace!(
-            event = "render_complete",
-            total_lines = total_lines,
-            visible_lines = visible_lines,
-            scroll = %scroll,
-            has_scrollbar = total_lines > visible_lines,
-        );
-
         total_lines
     }
 }
 
-pub(crate) fn compute_tool_call_block_height(
+fn compute_tool_call_block_height(
     data: &ToolCallData,
     content_width: usize,
     _theme: &Theme,
@@ -984,7 +820,6 @@ fn render_tool_call_inline(
     skip: usize,
     take: usize,
 ) {
-    // Inline tool calls are always 1 line. Skip if scrolled out of view.
     if skip > 0 || take == 0 {
         return;
     }
@@ -1199,11 +1034,7 @@ fn render_todo_list(
     frame.render_widget(paragraph, area);
 }
 
-pub(crate) fn build_thinking_lines(
-    content: &str,
-    content_width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+fn build_thinking_lines(content: &str, content_width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let thinking_style = Style::default()
         .fg(Color::Rgb(157, 124, 216))
         .add_modifier(Modifier::ITALIC);
@@ -1240,7 +1071,9 @@ pub(crate) fn build_thinking_lines(
 }
 
 pub fn wrap_text(text: &str, max_display_width: usize) -> Vec<String> {
-    let width = max_display_width.max(1);
+    if max_display_width == 0 {
+        return vec![text.into()];
+    }
     let mut result = Vec::new();
     for line in text.lines() {
         if line.is_empty() {
@@ -1277,12 +1110,11 @@ pub fn render_selection_highlight(
 ) {
     let min_row = selection.start_row.min(selection.end_row);
     let max_row = selection.start_row.max(selection.end_row);
-    let start = min_row.max(area.y);
-    let end = max_row.min(area.bottom().saturating_sub(1));
-    if start > end {
-        return;
-    }
-    for row in start..=end {
+
+    for row in min_row..=max_row {
+        if row < area.y || row >= area.bottom() {
+            continue;
+        }
         for col in area.x..area.right() {
             if let Some(cell) = buf.cell((col, row)) {
                 let is_empty = cell.symbol().is_empty() || cell.symbol() == " ";

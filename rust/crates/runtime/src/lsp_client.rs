@@ -176,24 +176,6 @@ impl LspRegistry {
         inner.servers.values().cloned().collect()
     }
 
-    pub fn auto_discover_for_path(&self, path: &std::path::Path) -> Vec<String> {
-        let d = crate::lsp_discovery::auto_discover(path);
-        let mut r = Vec::new();
-        for e in d.servers {
-            if self.get(e.server.language).is_none() {
-                let st = if e.installed {
-                    LspServerStatus::Connected
-                } else {
-                    LspServerStatus::Disconnected
-                };
-                let c: Vec<String> = e.server.args.iter().map(|s| (*s).to_owned()).collect();
-                self.register(e.server.language, st, None, c);
-                r.push(e.server.language.to_string());
-            }
-        }
-        r
-    }
-
     /// Add diagnostics to a server.
     pub fn add_diagnostics(
         &self,

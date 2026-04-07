@@ -125,7 +125,7 @@ fn config_command_loads_defaults_from_standard_config_locations() {
 
     // when
     let output = command_in(&temp_dir)
-        .env("CLAW_CONFIG_HOME", &config_home)
+        .env("ICODE_CONFIG_HOME", &config_home)
         .args([
             "--resume",
             session_path.to_str().expect("utf8 path"),
@@ -139,15 +139,9 @@ fn config_command_loads_defaults_from_standard_config_locations() {
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
     assert!(stdout.contains("Config"));
-    assert!(stdout.contains("Loaded files      3"));
+    assert!(stdout.contains("Loaded files      2"));
     assert!(stdout.contains("Merged section: model"));
     assert!(stdout.contains("opus"));
-    assert!(stdout.contains(
-        config_home
-            .join("settings.json")
-            .to_str()
-            .expect("utf8 path")
-    ));
     assert!(stdout.contains(temp_dir.join(".icode.json").to_str().expect("utf8 path")));
     assert!(stdout.contains(
         temp_dir

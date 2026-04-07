@@ -1,7 +1,5 @@
 pub mod app;
 pub mod command_palette;
-pub mod config;
-pub mod debug;
 pub mod dialog_help;
 pub mod dialog_mcp;
 pub mod dialog_message_actions;

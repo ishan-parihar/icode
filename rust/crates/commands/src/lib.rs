@@ -4,13 +4,6 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-mod handoff;
-mod init_deep;
-mod ralph_loop;
-mod start_work;
-mod stop_continuation;
-mod ulw_loop;
-
 use plugins::{PluginError, PluginManager, PluginSummary};
 use runtime::{
     compact_session, CompactionConfig, ConfigLoader, ConfigSource, McpOAuthConfig, McpServerConfig,
@@ -1060,48 +1053,6 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: None,
         resume_supported: true,
     },
-    SlashCommandSpec {
-        name: "start-work",
-        aliases: &[],
-        summary: "Start or resume plan-driven work session",
-        argument_hint: None,
-        resume_supported: false,
-    },
-    SlashCommandSpec {
-        name: "handoff",
-        aliases: &[],
-        summary: "Create context summary for session handoff",
-        argument_hint: None,
-        resume_supported: false,
-    },
-    SlashCommandSpec {
-        name: "init-deep",
-        aliases: &[],
-        summary: "Initialize hierarchical AGENTS.md knowledge base",
-        argument_hint: None,
-        resume_supported: false,
-    },
-    SlashCommandSpec {
-        name: "ralph-loop",
-        aliases: &[],
-        summary: "Start self-referential development loop until completion",
-        argument_hint: None,
-        resume_supported: false,
-    },
-    SlashCommandSpec {
-        name: "stop-continuation",
-        aliases: &[],
-        summary: "Stop all continuation mechanisms for this session",
-        argument_hint: None,
-        resume_supported: false,
-    },
-    SlashCommandSpec {
-        name: "ulw-loop",
-        aliases: &[],
-        summary: "Start ultrawork loop with ultrawork mode",
-        argument_hint: None,
-        resume_supported: false,
-    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1246,21 +1197,6 @@ pub enum SlashCommand {
     AddDir {
         path: Option<String>,
     },
-    StartWork {
-        directory: String,
-        session_id: String,
-    },
-    Handoff {
-        directory: String,
-    },
-    InitDeep {
-        directory: String,
-    },
-    RalphLoop {
-        max_iterations: Option<String>,
-    },
-    StopContinuation,
-    UlwLoop,
     Unknown(String),
 }
 
@@ -1502,21 +1438,6 @@ pub fn validate_slash_command_input(
         "tag" => SlashCommand::Tag { label: remainder },
         "output-style" => SlashCommand::OutputStyle { style: remainder },
         "add-dir" => SlashCommand::AddDir { path: remainder },
-        "start-work" => SlashCommand::StartWork {
-            directory: String::new(),
-            session_id: String::new(),
-        },
-        "handoff" => SlashCommand::Handoff {
-            directory: String::new(),
-        },
-        "init-deep" => SlashCommand::InitDeep {
-            directory: String::new(),
-        },
-        "ralph-loop" => SlashCommand::RalphLoop {
-            max_iterations: remainder,
-        },
-        "stop-continuation" => SlashCommand::StopContinuation,
-        "ulw-loop" => SlashCommand::UlwLoop,
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -3360,59 +3281,6 @@ pub fn handle_slash_command(
         | SlashCommand::Unknown(_)
         | SlashCommand::Undo
         | SlashCommand::Redo => None,
-        SlashCommand::StartWork { .. } => {
-            let dir = env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let message = start_work::handle_start_work(&dir, &session.session_id)
-                .unwrap_or_else(|e| format!("Start Work error: {e}"));
-            Some(SlashCommandResult {
-                message,
-                session: session.clone(),
-            })
-        }
-        SlashCommand::Handoff { .. } => {
-            let dir = env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let message =
-                handoff::handle_handoff(&dir).unwrap_or_else(|e| format!("Handoff error: {e}"));
-            Some(SlashCommandResult {
-                message,
-                session: session.clone(),
-            })
-        }
-        SlashCommand::InitDeep { .. } => {
-            let dir = env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let message = init_deep::handle_init_deep(&dir)
-                .unwrap_or_else(|e| format!("Init-deep error: {e}"));
-            Some(SlashCommandResult {
-                message,
-                session: session.clone(),
-            })
-        }
-        SlashCommand::RalphLoop { max_iterations } => {
-            let iterations = max_iterations
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(10);
-            Some(SlashCommandResult {
-                message: ralph_loop::handle_ralph_loop(iterations),
-                session: session.clone(),
-            })
-        }
-        SlashCommand::StopContinuation => Some(SlashCommandResult {
-            message: stop_continuation::handle_stop_continuation(),
-            session: session.clone(),
-        }),
-        SlashCommand::UlwLoop => Some(SlashCommandResult {
-            message: ulw_loop::handle_ulw_loop(),
-            session: session.clone(),
-        }),
     }
 }
 
@@ -3843,7 +3711,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|install <path>|help]"));
-        assert_eq!(slash_command_specs().len(), 149);
+        assert_eq!(slash_command_specs().len(), 143);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

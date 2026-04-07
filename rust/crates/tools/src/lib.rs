@@ -8,7 +8,7 @@ use api::{
     MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
-use plugins::{HookRunner, PluginTool};
+use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
     edit_file, execute_bash, glob_search, grep_search, load_system_prompt,
@@ -19,8 +19,10 @@ use runtime::{
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
-    write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock,
-    ConversationMessage, ConversationRuntime, GrepSearchInput, MessageRole, PermissionMode,
+    write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput,
+    ContentBlock, ConversationMessage, ConversationRuntime, GrepSearchInput,
+    LaneEvent, LaneEventBlocker, LaneFailureClass,
+    MessageRole, PermissionMode,
     PermissionPolicy, PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
@@ -105,7 +107,6 @@ pub struct GlobalToolRegistry {
     plugin_tools: Vec<PluginTool>,
     runtime_tools: Vec<RuntimeToolDefinition>,
     enforcer: Option<PermissionEnforcer>,
-    hook_runner: Option<HookRunner>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,7 +124,6 @@ impl GlobalToolRegistry {
             plugin_tools: Vec::new(),
             runtime_tools: Vec::new(),
             enforcer: None,
-            hook_runner: None,
         }
     }
 
@@ -150,7 +150,6 @@ impl GlobalToolRegistry {
             plugin_tools,
             runtime_tools: Vec::new(),
             enforcer: None,
-            hook_runner: None,
         })
     }
 
@@ -184,12 +183,6 @@ impl GlobalToolRegistry {
     #[must_use]
     pub fn with_enforcer(mut self, enforcer: PermissionEnforcer) -> Self {
         self.set_enforcer(enforcer);
-        self
-    }
-
-    #[must_use]
-    pub fn with_hook_runner(mut self, hook_runner: HookRunner) -> Self {
-        self.hook_runner = Some(hook_runner);
         self
     }
 
@@ -278,11 +271,7 @@ impl GlobalToolRegistry {
                 description: tool.definition().description.clone(),
                 input_schema: tool.definition().input_schema.clone(),
             });
-        builtin
-            .chain(runtime)
-            .chain(plugin)
-            .map(|def| self.apply_tool_definitions_hook(def))
-            .collect()
+        builtin.chain(runtime).chain(plugin).collect()
     }
 
     pub fn permission_specs(
@@ -340,21 +329,6 @@ impl GlobalToolRegistry {
 
     pub fn set_enforcer(&mut self, enforcer: PermissionEnforcer) {
         self.enforcer = Some(enforcer);
-    }
-
-    fn apply_tool_definitions_hook(&self, mut def: ToolDefinition) -> ToolDefinition {
-        if let Some(ref runner) = self.hook_runner {
-            let desc = def.description.as_deref().unwrap_or("");
-            let (mod_desc, mod_schema) =
-                runner.run_tool_definitions(&def.name, desc, &def.input_schema);
-            if let Some(desc) = mod_desc {
-                def.description = Some(desc);
-            }
-            if let Some(schema) = mod_schema {
-                def.input_schema = schema;
-            }
-        }
-        def
     }
 
     pub fn execute(&self, name: &str, input: &Value) -> Result<String, String> {
@@ -774,6 +748,45 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                     "description": { "type": "string" }
                 },
                 "required": ["prompt"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::DangerFullAccess,
+        },
+        ToolSpec {
+            name: "RunTaskPacket",
+            description: "Create a background task from a structured task packet.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "objective": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["single_file", "module", "workspace", "custom"] },
+                    "repo_root": { "type": "string" },
+                    "worktree_root": { "type": "string" },
+                    "branch_policy": { "type": "string", "enum": ["create_new", "use_existing", "worktree_isolated"] },
+                    "branch_prefix": { "type": "string" },
+                    "branch_name": { "type": "string" },
+                    "acceptance_tests": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "commit_policy": { "type": "string", "enum": ["commit_per_task", "squash_on_merge", "no_auto_commit"] },
+                    "reporting": { "type": "string", "enum": ["event_stream", "summary", "silent"] },
+                    "escalation": { "type": "string", "enum": ["retry_then_escalate", "auto_escalate", "never_escalate"] },
+                    "max_retries": { "type": "integer" },
+                    "metadata": { "type": "object" }
+                },
+                "required": [
+                    "id",
+                    "objective",
+                    "scope",
+                    "repo_root",
+                    "branch_policy",
+                    "acceptance_tests",
+                    "commit_policy",
+                    "reporting",
+                    "escalation"
+                ],
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
@@ -1200,6 +1213,7 @@ fn execute_tool_with_enforcer(
             from_value::<AskUserQuestionInput>(input).and_then(run_ask_user_question)
         }
         "TaskCreate" => from_value::<TaskCreateInput>(input).and_then(run_task_create),
+        "RunTaskPacket" => run_task_packet(input.clone()),
         "TaskGet" => from_value::<TaskIdInput>(input).and_then(run_task_get),
         "TaskList" => run_task_list(input.clone()),
         "TaskStop" => from_value::<TaskIdInput>(input).and_then(run_task_stop),
@@ -1308,6 +1322,124 @@ fn run_task_create(input: TaskCreateInput) -> Result<String, String> {
         "status": task.status,
         "prompt": task.prompt,
         "description": task.description,
+        "task_packet": task.task_packet,
+        "created_at": task.created_at
+    }))
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_task_packet(input: Value) -> Result<String, String> {
+    use runtime::task_packet::{
+        AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy,
+        RepoConfig, ReportingContract, TaskScope,
+    };
+    use std::path::PathBuf;
+
+    let id: String = input["id"].as_str().unwrap_or("").to_string();
+    let objective: String = input["objective"].as_str().ok_or("missing objective")?.to_string();
+    let scope_str = input["scope"].as_str().ok_or("missing scope")?;
+    let repo_root: PathBuf = input["repo_root"].as_str().ok_or("missing repo_root")?.into();
+    let worktree_root: Option<PathBuf> = input["worktree_root"].as_str().map(Into::into);
+    let branch_str = input["branch_policy"].as_str().ok_or("missing branch_policy")?;
+    let commit_str = input["commit_policy"].as_str().ok_or("missing commit_policy")?;
+    let reporting_str = input["reporting"].as_str().ok_or("missing reporting")?;
+    let escalation_str = input["escalation"].as_str().ok_or("missing escalation")?;
+
+    let scope = match scope_str {
+        "single_file" => {
+            let path = input.get("path").and_then(|v| v.as_str())
+                .ok_or("single_file scope requires 'path'")?;
+            TaskScope::SingleFile { path: path.into() }
+        }
+        "module" => {
+            let crate_name = input.get("crate_name").and_then(|v| v.as_str())
+                .ok_or("module scope requires 'crate_name'")?;
+            TaskScope::Module { crate_name: crate_name.to_string() }
+        }
+        "workspace" => TaskScope::Workspace,
+        "custom" => {
+            let paths: Vec<PathBuf> = input.get("paths")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(Into::into)).collect())
+                .unwrap_or_default();
+            TaskScope::Custom { paths }
+        }
+        other => return Err(format!("unknown scope: {other}")),
+    };
+
+    let branch_policy = match branch_str {
+        "create_new" => BranchPolicy::CreateNew {
+            prefix: input.get("branch_prefix").and_then(|v| v.as_str()).unwrap_or("task/").to_string(),
+        },
+        "use_existing" => BranchPolicy::UseExisting {
+            name: input.get("branch_name").and_then(|v| v.as_str())
+                .ok_or("use_existing branch_policy requires 'branch_name'")?.to_string(),
+        },
+        "worktree_isolated" => BranchPolicy::WorktreeIsolated,
+        other => return Err(format!("unknown branch_policy: {other}")),
+    };
+
+    let commit_policy = match commit_str {
+        "commit_per_task" => CommitPolicy::CommitPerTask,
+        "squash_on_merge" => CommitPolicy::SquashOnMerge,
+        "no_auto_commit" => CommitPolicy::NoAutoCommit,
+        other => return Err(format!("unknown commit_policy: {other}")),
+    };
+
+    let reporting = match reporting_str {
+        "event_stream" => ReportingContract::EventStream,
+        "summary" => ReportingContract::Summary,
+        "silent" => ReportingContract::Silent,
+        other => return Err(format!("unknown reporting: {other}")),
+    };
+
+    let escalation = match escalation_str {
+        "retry_then_escalate" => EscalationPolicy::RetryThenEscalate {
+            max_retries: input.get("max_retries").and_then(|v| v.as_u64()).unwrap_or(3) as u32,
+        },
+        "auto_escalate" => EscalationPolicy::AutoEscalate,
+        "never_escalate" => EscalationPolicy::NeverEscalate,
+        other => return Err(format!("unknown escalation: {other}")),
+    };
+
+    let acceptance_tests: Vec<AcceptanceTest> = input["acceptance_tests"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| AcceptanceTest::CargoTest { filter: Some(s.to_string()) })).collect())
+        .unwrap_or_default();
+
+    let metadata = input.get("metadata")
+        .and_then(|v| v.as_object())
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+
+    let packet = runtime::TaskPacket {
+        id,
+        objective,
+        scope,
+        repo_config: RepoConfig { repo_root, worktree_root },
+        branch_policy,
+        acceptance_tests,
+        commit_policy,
+        reporting,
+        escalation,
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        metadata,
+    };
+
+    let registry = global_task_registry();
+    let task = registry
+        .create_from_packet(packet)
+        .map_err(|error| error.to_string())?;
+
+    to_pretty_json(json!({
+        "task_id": task.task_id,
+        "status": task.status,
+        "prompt": task.prompt,
+        "description": task.description,
+        "task_packet": task.task_packet,
         "created_at": task.created_at
     }))
 }
@@ -1321,6 +1453,7 @@ fn run_task_get(input: TaskIdInput) -> Result<String, String> {
             "status": task.status,
             "prompt": task.prompt,
             "description": task.description,
+            "task_packet": task.task_packet,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "messages": task.messages,
@@ -2160,54 +2293,6 @@ struct SkillOutput {
     args: Option<String>,
     description: Option<String>,
     prompt: String,
-    files: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-enum LaneEventName {
-    #[serde(rename = "lane.started")]
-    Started,
-    #[serde(rename = "lane.blocked")]
-    Blocked,
-    #[serde(rename = "lane.finished")]
-    Finished,
-    #[serde(rename = "lane.failed")]
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum LaneFailureClass {
-    PromptDelivery,
-    TrustGate,
-    BranchDivergence,
-    Compile,
-    Test,
-    PluginStartup,
-    McpStartup,
-    McpHandshake,
-    GatewayRouting,
-    ToolRuntime,
-    Infra,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct LaneBlocker {
-    #[serde(rename = "failureClass")]
-    failure_class: LaneFailureClass,
-    detail: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct LaneEvent {
-    event: LaneEventName,
-    status: String,
-    #[serde(rename = "emittedAt")]
-    emitted_at: String,
-    #[serde(rename = "failureClass", skip_serializing_if = "Option::is_none")]
-    failure_class: Option<LaneFailureClass>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2233,7 +2318,7 @@ struct AgentOutput {
     #[serde(rename = "laneEvents", default, skip_serializing_if = "Vec::is_empty")]
     lane_events: Vec<LaneEvent>,
     #[serde(rename = "currentBlocker", skip_serializing_if = "Option::is_none")]
-    current_blocker: Option<LaneBlocker>,
+    current_blocker: Option<LaneEventBlocker>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -2802,49 +2887,8 @@ fn execute_todo_write(input: TodoWriteInput) -> Result<TodoWriteOutput, String> 
 
 fn execute_skill(input: SkillInput) -> Result<SkillOutput, String> {
     let skill_path = resolve_skill_path(&input.skill)?;
-    let content = std::fs::read_to_string(&skill_path).map_err(|error| error.to_string())?;
-    let description = parse_skill_description(&content);
-
-    // Scan skill directory for auxiliary files
-    let files = if let Some(parent) = skill_path.parent() {
-        let mut collected: Vec<String> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(parent) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                let name = path.file_name().unwrap().to_string_lossy();
-                if name == "SKILL.md" || name.starts_with('.') {
-                    continue;
-                }
-                collected.push(name.into_owned());
-                if collected.len() >= 10 {
-                    break;
-                }
-            }
-        }
-        collected.sort();
-        collected
-    } else {
-        Vec::new()
-    };
-
-    // Format as XML-wrapped content matching opencode
-    let skill_name = input.skill.clone();
-    let dir_path = skill_path
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let files_block = if files.is_empty() {
-        String::new()
-    } else {
-        format!("\n<skill_files>\n{}\n</skill_files>", files.join("\n"))
-    };
-    let prompt = format!(
-        "<skill_content name=\"{}\">\n{}\n</skill_content>\n\nBase directory: {}{}",
-        skill_name, content, dir_path, files_block
-    );
+    let prompt = std::fs::read_to_string(&skill_path).map_err(|error| error.to_string())?;
+    let description = parse_skill_description(&prompt);
 
     Ok(SkillOutput {
         skill: input.skill,
@@ -2852,7 +2896,6 @@ fn execute_skill(input: SkillInput) -> Result<SkillOutput, String> {
         args: input.args,
         description,
         prompt,
-        files,
     })
 }
 
@@ -2987,13 +3030,7 @@ where
         created_at: created_at.clone(),
         started_at: Some(created_at),
         completed_at: None,
-        lane_events: vec![LaneEvent {
-            event: LaneEventName::Started,
-            status: String::from("running"),
-            emitted_at: iso8601_now(),
-            failure_class: None,
-            detail: None,
-        }],
+        lane_events: vec![LaneEvent::started(iso8601_now())],
         current_blocker: None,
         error: None,
     };
@@ -3208,30 +3245,19 @@ fn persist_agent_terminal_state(
     next_manifest.completed_at = Some(iso8601_now());
     next_manifest.current_blocker = blocker.clone();
     next_manifest.error = error;
-    if let Some(blocker) = blocker {
-        next_manifest.lane_events.push(LaneEvent {
-            event: LaneEventName::Blocked,
-            status: status.to_string(),
-            emitted_at: iso8601_now(),
-            failure_class: Some(blocker.failure_class.clone()),
-            detail: Some(blocker.detail.clone()),
-        });
-        next_manifest.lane_events.push(LaneEvent {
-            event: LaneEventName::Failed,
-            status: status.to_string(),
-            emitted_at: iso8601_now(),
-            failure_class: Some(blocker.failure_class),
-            detail: Some(blocker.detail),
-        });
+    if let Some(blocker) = &blocker {
+        next_manifest.lane_events.push(
+            LaneEvent::blocked(iso8601_now(), blocker),
+        );
+        next_manifest.lane_events.push(
+            LaneEvent::failed(iso8601_now(), blocker),
+        );
     } else {
         next_manifest.current_blocker = None;
-        next_manifest.lane_events.push(LaneEvent {
-            event: LaneEventName::Finished,
-            status: status.to_string(),
-            emitted_at: iso8601_now(),
-            failure_class: None,
-            detail: None,
-        });
+        let compressed_detail = result.map(|r| r.to_string());
+        next_manifest.lane_events.push(
+            LaneEvent::finished(iso8601_now(), compressed_detail),
+        );
     }
     write_agent_manifest(&next_manifest)
 }
@@ -3250,7 +3276,7 @@ fn append_agent_output(path: &str, suffix: &str) -> Result<(), String> {
 fn format_agent_terminal_output(
     status: &str,
     result: Option<&str>,
-    blocker: Option<&LaneBlocker>,
+    blocker: Option<&LaneEventBlocker>,
     error: Option<&str>,
 ) -> String {
     let mut sections = vec![format!("\n## Result\n\n- status: {status}\n")];
@@ -3272,9 +3298,9 @@ fn format_agent_terminal_output(
     sections.join("")
 }
 
-fn classify_lane_blocker(error: &str) -> LaneBlocker {
+fn classify_lane_blocker(error: &str) -> LaneEventBlocker {
     let detail = error.trim().to_string();
-    LaneBlocker {
+    LaneEventBlocker {
         failure_class: classify_lane_failure(error),
         detail,
     }
@@ -3340,11 +3366,7 @@ impl ProviderRuntimeClient {
 
 impl ApiClient for ProviderRuntimeClient {
     #[allow(clippy::too_many_lines)]
-    fn stream(
-        &mut self,
-        request: ApiRequest,
-        _progress: Option<&dyn Fn(AssistantEvent)>,
-    ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+    fn stream(&mut self, request: ApiRequest, _progress: Option<&dyn Fn(AssistantEvent)>) -> Result<Vec<AssistantEvent>, RuntimeError> {
         let tools = tool_specs_for_allowed_tools(Some(&self.allowed_tools))
             .into_iter()
             .map(|spec| ToolDefinition {
@@ -4856,6 +4878,8 @@ fn parse_skill_description(contents: &str) -> Option<String> {
     None
 }
 
+pub mod lane_completion;
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -5867,11 +5891,7 @@ mod tests {
     }
 
     impl runtime::ApiClient for MockSubagentApiClient {
-        fn stream(
-            &mut self,
-            request: ApiRequest,
-            _progress: Option<&dyn Fn(AssistantEvent)>,
-        ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        fn stream(&mut self, request: ApiRequest, _progress: Option<&dyn Fn(AssistantEvent)>) -> Result<Vec<AssistantEvent>, RuntimeError> {
             self.calls += 1;
             match self.calls {
                 1 => {
@@ -6465,9 +6485,8 @@ mod tests {
         assert_eq!(enter_output["previousLocalMode"], "acceptEdits");
         assert_eq!(enter_output["currentLocalMode"], "plan");
 
-        let local_settings =
-            std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
-                .expect("local settings after enter");
+        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
+            .expect("local settings after enter");
         assert!(local_settings.contains(r#""defaultMode": "plan""#));
         let state =
             std::fs::read_to_string(cwd.join(".icode").join("tool-state").join("plan-mode.json"))
@@ -6482,9 +6501,8 @@ mod tests {
         assert_eq!(exit_output["previousLocalMode"], "acceptEdits");
         assert_eq!(exit_output["currentLocalMode"], "acceptEdits");
 
-        let local_settings =
-            std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
-                .expect("local settings after exit");
+        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
+            .expect("local settings after exit");
         assert!(local_settings.contains(r#""defaultMode": "acceptEdits""#));
         assert!(!cwd
             .join(".icode")
@@ -6538,9 +6556,8 @@ mod tests {
         assert_eq!(exit_output["changed"], true);
         assert_eq!(exit_output["currentLocalMode"], serde_json::Value::Null);
 
-        let local_settings =
-            std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
-                .expect("local settings after exit");
+        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
+            .expect("local settings after exit");
         let local_settings_json: serde_json::Value =
             serde_json::from_str(&local_settings).expect("valid settings json");
         assert_eq!(

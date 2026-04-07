@@ -9,7 +9,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-planning = { path = "../planning" }
 plugins = { path = "../plugins" }
 runtime = { path = "../runtime" }
 serde_json.workspace = true

@@ -17,14 +17,8 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
-use tracing;
 
 pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
-    tracing::trace!(
-        event = "render_start",
-        terminal_width = frame.area().width,
-        terminal_height = frame.area().height
-    );
     let area = frame.area();
     let bg = Paragraph::new("").style(Style::default().bg(state.theme.background));
     frame.render_widget(bg, area);

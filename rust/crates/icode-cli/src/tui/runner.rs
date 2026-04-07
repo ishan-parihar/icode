@@ -1,9 +1,7 @@
 use crate::tui::app::{AppMode, AppState, MessagePart, MessageRole, ToastKind};
-use crate::tui::config::{ScrollConfig, ScrollState};
 use crate::tui::event::{Event, EventLoop};
 use crate::tui::input::InputState;
 use crate::tui::layout::render_ui;
-use crate::tui::widgets::message_list::count_rendered_lines;
 use crate::tui::Theme;
 use crate::TurnEvent;
 use color_eyre::eyre::Result;
@@ -18,7 +16,6 @@ use ratatui::Terminal;
 use std::io;
 use std::io::Write;
 use std::sync::mpsc::Receiver;
-use tracing;
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
@@ -26,8 +23,6 @@ pub struct Tui {
     state: AppState,
     theme: Theme,
     turn_rx: Option<Receiver<TurnEvent>>,
-    scroll_config: ScrollConfig,
-    scroll_state: ScrollState,
 }
 
 impl Tui {
@@ -40,12 +35,6 @@ impl Tui {
         let event_loop = EventLoop::new(250);
         let state = AppState::new(model, permission_mode, cwd);
         let theme = Theme::default();
-        let tui_config = crate::tui::config::TuiConfig::load();
-        let scroll_config = ScrollConfig {
-            speed: tui_config.scroll_speed,
-            acceleration: tui_config.scroll_acceleration,
-        };
-        let scroll_state = ScrollState::default();
 
         Ok(Self {
             terminal,
@@ -53,8 +42,6 @@ impl Tui {
             state,
             theme,
             turn_rx: None,
-            scroll_config,
-            scroll_state,
         })
     }
 
@@ -75,7 +62,6 @@ impl Tui {
 
             match self.event_loop.next() {
                 Ok(Event::Key(key)) => {
-                    tracing::trace!(event = "key_event", key_code = ?key.code, modifiers = ?key.modifiers);
                     if let Some(input) = self.handle_key(key) {
                         self.terminal.draw(|frame| {
                             render_ui(frame, &mut self.state, self.theme);
@@ -83,17 +69,15 @@ impl Tui {
                         return Ok(input);
                     }
                 }
-                Ok(Event::Resize(w, h)) => {
-                    tracing::info!(event = "resize", width = w, height = h);
-                    self.state.recalculate_scroll(self.max_scroll());
+                Ok(Event::Resize(_, _)) => {
+                    self.state.recalculate_scroll();
                 }
                 Ok(Event::Tick) => {
                     self.state.prune_expired_toasts();
                     self.poll_turn_events();
                 }
                 Ok(Event::Mouse(mouse)) => {
-                    tracing::trace!(event = "mouse_event", kind = ?mouse.kind, row = mouse.row, col = mouse.column);
-                    if self.is_any_dialog_open() {
+                    if self.state.message_action_dialog.open {
                         continue;
                     }
                     match mouse.kind {
@@ -155,52 +139,19 @@ impl Tui {
                             }
                         }
                         crossterm::event::MouseEventKind::ScrollUp => {
-                            let base = self.scroll_config.speed;
-                            let amount =
-                                self.scroll_state
-                                    .compute_amount(false, base, &self.scroll_config);
-                            let scroll_amt = amount.round().max(1.0) as usize;
-                            let old_offset = self.state.scroll_offset;
-                            let transitioned = old_offset == usize::MAX;
                             if self.state.scroll_offset == usize::MAX {
                                 self.state.scroll_offset = 0;
                             } else {
                                 self.state.scroll_offset =
-                                    self.state.scroll_offset.saturating_sub(scroll_amt);
+                                    self.state.scroll_offset.saturating_sub(3);
                             }
-                            tracing::debug!(
-                                event = "mouse_scroll_up",
-                                scroll_amt = %scroll_amt,
-                                old_offset = %old_offset,
-                                new_offset = %self.state.scroll_offset,
-                                follow_bottom_transition = %transitioned,
-                            );
                         }
                         crossterm::event::MouseEventKind::ScrollDown => {
-                            let base = self.scroll_config.speed;
-                            let amount =
-                                self.scroll_state
-                                    .compute_amount(true, base, &self.scroll_config);
-                            let scroll_amt = amount.round().max(1.0) as usize;
-                            let max = self.max_scroll();
-                            let old_offset = self.state.scroll_offset;
-                            if max == usize::MAX {
-                                // All content fits — stay in follow-bottom mode
-                            } else if self.state.scroll_offset == usize::MAX {
-                                self.state.scroll_offset = scroll_amt.min(max);
+                            if self.state.scroll_offset == usize::MAX {
+                                self.state.scroll_offset = 3;
                             } else {
                                 self.state.scroll_offset =
-                                    self.state.scroll_offset.saturating_add(scroll_amt).min(max);
-                            }
-                            if max != usize::MAX || old_offset != self.state.scroll_offset {
-                                tracing::debug!(
-                                    event = "mouse_scroll_down",
-                                    scroll_amt = %scroll_amt,
-                                    old_offset = %old_offset,
-                                    new_offset = %self.state.scroll_offset,
-                                    max_scroll = %max,
-                                    content_fits = (max == usize::MAX),
-                                );
+                                    self.state.scroll_offset.saturating_add(3);
                             }
                         }
                         _ => {}
@@ -268,7 +219,7 @@ impl Tui {
             if self.state.is_streaming {
                 if self.state.interrupt_count >= 1 {
                     self.state.is_streaming = false;
-                    self.state.finish_stream(self.max_scroll());
+                    self.state.finish_stream();
                     self.state.mode = AppMode::Normal;
                     self.turn_rx = None;
                     if let Some(msg) = self.state.messages.last_mut() {
@@ -299,7 +250,7 @@ impl Tui {
                 if self.state.is_streaming {
                     self.state.mode = AppMode::Normal;
                     self.state.is_streaming = false;
-                    self.state.finish_stream(self.max_scroll());
+                    self.state.finish_stream();
                     None
                 } else {
                     Some(String::new())
@@ -340,7 +291,7 @@ impl Tui {
                     Some(format!("__theme_change__{}", result))
                 } else {
                     self.state.prompt.push_history();
-                    self.state.cleanup_reverted(self.max_scroll());
+                    self.state.cleanup_reverted();
                     let user_input = input.clone();
                     self.state.add_user_message(input);
                     self.state.start_assistant_stream("build");
@@ -385,13 +336,9 @@ impl Tui {
                     } else if !is_at_top {
                         self.state.prompt.move_up(input_width);
                     } else if self.state.scroll_offset == usize::MAX {
-                        let old_offset = self.state.scroll_offset;
                         self.state.scroll_offset = 0;
-                        tracing::debug!(event = "key_up_scroll", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
                     } else {
-                        let old_offset = self.state.scroll_offset;
                         self.state.scroll_offset = self.state.scroll_offset.saturating_sub(1);
-                        tracing::debug!(event = "key_up_scroll", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
                     }
                 }
                 None
@@ -410,45 +357,8 @@ impl Tui {
                     } else if !is_at_bottom {
                         self.state.prompt.move_down(input_width);
                     } else if self.state.scroll_offset != usize::MAX {
-                        let old_offset = self.state.scroll_offset;
                         self.state.scroll_offset = self.state.scroll_offset.saturating_add(1);
-                        let max = self.max_scroll();
-                        if max != usize::MAX {
-                            self.state.scroll_offset = self.state.scroll_offset.min(max);
-                        }
-                        tracing::debug!(event = "key_down_scroll", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
                     }
-                }
-                None
-            }
-            (_, KeyCode::PageUp) => {
-                let old_offset = self.state.scroll_offset;
-                let max = self.max_scroll();
-                if max == usize::MAX {
-                    if self.state.scroll_offset != usize::MAX {
-                        self.state.scroll_offset = usize::MAX;
-                        tracing::debug!(event = "page_up", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
-                    }
-                } else if self.state.scroll_offset == usize::MAX {
-                    self.state.scroll_offset = 0;
-                    tracing::debug!(event = "page_up", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
-                } else {
-                    self.state.scroll_offset = self.state.scroll_offset.saturating_sub(10).min(max);
-                    tracing::debug!(event = "page_up", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
-                }
-                None
-            }
-            (_, KeyCode::PageDown) => {
-                let old_offset = self.state.scroll_offset;
-                let max = self.max_scroll();
-                if max == usize::MAX {
-                    // All content fits, stay in follow-bottom mode
-                } else if self.state.scroll_offset == usize::MAX {
-                    self.state.scroll_offset = 10.min(max);
-                    tracing::debug!(event = "page_down", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
-                } else {
-                    self.state.scroll_offset = self.state.scroll_offset.saturating_add(10).min(max);
-                    tracing::debug!(event = "page_down", old_offset = %old_offset, new_offset = %self.state.scroll_offset);
                 }
                 None
             }
@@ -495,6 +405,22 @@ impl Tui {
             }
             (_, KeyCode::Char('?')) => {
                 self.state.help_dialog.open();
+                None
+            }
+            (_, KeyCode::PageUp) => {
+                if self.state.scroll_offset == usize::MAX {
+                    self.state.scroll_offset = 0;
+                } else {
+                    self.state.scroll_offset = self.state.scroll_offset.saturating_sub(10);
+                }
+                None
+            }
+            (_, KeyCode::PageDown) => {
+                if self.state.scroll_offset == usize::MAX {
+                    self.state.scroll_offset = 10;
+                } else {
+                    self.state.scroll_offset = self.state.scroll_offset.saturating_add(10);
+                }
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
@@ -868,13 +794,7 @@ impl Tui {
     }
 
     pub fn finish_stream(&mut self) {
-        let msg_count = self.state.messages.len();
-        self.state.finish_stream(self.max_scroll());
-        tracing::info!(
-            event = "finish_stream",
-            message_count = msg_count,
-            scroll_recalculated = true,
-        );
+        self.state.finish_stream();
     }
 
     pub fn add_tool_event(&mut self, name: &str, input_summary: &str) {
@@ -984,7 +904,7 @@ impl Tui {
                         msg.parts.push(MessagePart::Text { content: text });
                     }
                 }
-                self.state.finish_stream(self.max_scroll());
+                self.state.finish_stream();
                 self.state.is_streaming = false;
                 self.state.mode = AppMode::Normal;
                 self.state.session.turns += 1;
@@ -995,7 +915,7 @@ impl Tui {
             }
             TurnEvent::TurnError(msg) => {
                 self.state.add_toast(msg.clone(), ToastKind::Error);
-                self.state.finish_stream(self.max_scroll());
+                self.state.finish_stream();
                 self.state.is_streaming = false;
                 self.state.mode = AppMode::Normal;
                 self.turn_rx = None;
@@ -1102,21 +1022,19 @@ impl Tui {
     ) -> usize {
         use crate::tui::app::ToolStatus;
         let mut count = 0;
-        let has_revert_notice = revert_boundary.map_or(false, |b| idx == b.saturating_sub(1));
-        if has_revert_notice {
-            count += 3;
+        if let Some(boundary) = revert_boundary {
+            if idx == boundary.saturating_sub(1) {
+                count += 3;
+            }
         }
-        // Base separator before non-first messages (matches render's `if !items.is_empty()`)
-        if idx > 0 || has_revert_notice {
+        if count > 0 {
+            count += 1;
+        } else if idx > 0 {
             count += 1;
         }
 
         match &msg.role {
             MessageRole::User => {
-                // User messages render 2 extra separator lines (divider + separator) when non-first
-                if idx > 0 || has_revert_notice {
-                    count += 2;
-                }
                 let wrapped = crate::tui::widgets::message_list::wrap_text(
                     &msg.full_text(),
                     content_width.saturating_sub(3),
@@ -1175,10 +1093,6 @@ impl Tui {
                 }
             }
             MessageRole::Tool { name } => {
-                // Tool messages render 2 extra separator lines (divider + separator) when non-first
-                if idx > 0 || has_revert_notice {
-                    count += 2;
-                }
                 count += 1;
                 if let Some(t) = state.tools.iter().rev().find(|t| &t.name == name) {
                     if !t.input_summary.is_empty() {
@@ -1205,21 +1119,19 @@ impl Tui {
         let mut count = 0;
         let mut tc_ranges = Vec::new();
 
-        let has_revert_notice = revert_boundary.map_or(false, |b| idx == b.saturating_sub(1));
-        if has_revert_notice {
-            count += 3;
+        if let Some(boundary) = revert_boundary {
+            if idx == boundary.saturating_sub(1) {
+                count += 3;
+            }
         }
-        // Base separator before non-first messages (matches render's `if !items.is_empty()`)
-        if idx > 0 || has_revert_notice {
+        if count > 0 {
+            count += 1;
+        } else if idx > 0 {
             count += 1;
         }
 
         match &msg.role {
             MessageRole::User => {
-                // User messages render 2 extra separator lines (divider + separator) when non-first
-                if idx > 0 || has_revert_notice {
-                    count += 2;
-                }
                 let wrapped = crate::tui::widgets::message_list::wrap_text(
                     &msg.full_text(),
                     content_width.saturating_sub(3),
@@ -1282,10 +1194,6 @@ impl Tui {
                 }
             }
             MessageRole::Tool { name } => {
-                // Tool messages render 2 extra separator lines (divider + separator) when non-first
-                if idx > 0 || has_revert_notice {
-                    count += 2;
-                }
                 count += 1;
                 if let Some(t) = state.tools.iter().rev().find(|t| &t.name == name) {
                     if !t.input_summary.is_empty() {
@@ -1337,19 +1245,19 @@ impl Tui {
             idx: usize,
         ) -> usize {
             let mut count = 0;
-            let has_revert_notice = revert_boundary.map_or(false, |b| idx == b.saturating_sub(1));
-            if has_revert_notice {
-                count += 3;
+            if let Some(boundary) = revert_boundary {
+                if idx == boundary.saturating_sub(1) {
+                    count += 3;
+                }
             }
-            if idx > 0 || has_revert_notice {
+            if count > 0 {
+                count += 1;
+            } else if idx > 0 {
                 count += 1;
             }
 
             match &msg.role {
                 MessageRole::User => {
-                    if idx > 0 || has_revert_notice {
-                        count += 2;
-                    }
                     let wrapped = crate::tui::widgets::message_list::wrap_text(
                         &msg.full_text(),
                         content_width.saturating_sub(3),
@@ -1408,9 +1316,6 @@ impl Tui {
                     }
                 }
                 MessageRole::Tool { name } => {
-                    if idx > 0 || has_revert_notice {
-                        count += 2;
-                    }
                     count += 1;
                     if let Some(t) = state.tools.iter().rev().find(|t| &t.name == name) {
                         if !t.input_summary.is_empty() {
@@ -1490,7 +1395,6 @@ impl Tui {
         if min_row < panel_top || min_row >= panel_bottom {
             return String::new();
         }
-        let max_row = max_row.min(panel_bottom.saturating_sub(1));
 
         let has_sidebar = self.state.sidebar_visible && area.width > 120;
         let panel_width = if has_sidebar {
@@ -1688,53 +1592,6 @@ impl Tui {
         }
 
         result
-    }
-
-    fn is_any_dialog_open(&self) -> bool {
-        self.state.mcp_dialog.open
-            || self.state.skills_dialog.open
-            || self.state.plugins_dialog.open
-            || self.state.sessions_dialog.open
-            || self.state.help_dialog.open
-            || self.state.message_action_dialog.open
-            || self.state.model_picker.open
-            || self.state.command_palette.open
-            || self.state.prompt.show_slash_autocomplete
-    }
-
-    /// Maximum valid scroll offset (usize::MAX means follow-bottom mode).
-    fn max_scroll(&self) -> usize {
-        let Ok(area) = self.terminal.size() else {
-            return usize::MAX;
-        };
-        let prompt_lines = self
-            .state
-            .prompt
-            .line_count(area.width as usize)
-            .clamp(1, 6);
-        let prompt_height = (prompt_lines as u16) + 3;
-        let panel_top = 1u16;
-        let panel_bottom = area.height.saturating_sub(prompt_height + 1);
-        let visible_lines = panel_bottom.saturating_sub(panel_top) as usize;
-        if visible_lines == 0 {
-            return usize::MAX;
-        }
-
-        let has_sidebar = self.state.sidebar_visible && area.width > 120;
-        let panel_width = if has_sidebar {
-            area.width - 2 - 42
-        } else {
-            area.width - 2
-        };
-        let content_width = panel_width.saturating_sub(2) as usize;
-
-        let total_lines = count_rendered_lines(&self.state.messages, &self.state, content_width);
-
-        if total_lines <= visible_lines {
-            return usize::MAX;
-        }
-
-        total_lines.saturating_sub(visible_lines)
     }
 }
 
