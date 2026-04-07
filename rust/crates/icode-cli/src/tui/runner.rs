@@ -16,6 +16,7 @@ use ratatui::Terminal;
 use std::io;
 use std::io::Write;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
@@ -33,8 +34,25 @@ impl Tui {
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         let event_loop = EventLoop::new(250);
-        let state = AppState::new(model, permission_mode, cwd);
+        let mut state = AppState::new(model, permission_mode, cwd);
         let theme = Theme::default();
+
+        let models: Vec<String> = state
+            .model_picker
+            .entries
+            .iter()
+            .flat_map(|e| vec![e.alias.clone(), e.canonical.clone()])
+            .collect();
+        state.prompt.set_models(models);
+        state.prompt.set_cwd(cwd.to_string());
+        state.sessions_dialog.load_sessions();
+        let sessions: Vec<String> = state
+            .sessions_dialog
+            .sessions
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        state.prompt.set_sessions(sessions);
 
         Ok(Self {
             terminal,
@@ -209,6 +227,22 @@ impl Tui {
             return self.handle_help_key(key);
         }
 
+        if self.state.context_viz_dialog.open {
+            return self.handle_context_viz_key(key);
+        }
+
+        if self.state.branching_dialog.open {
+            return self.handle_branching_key(key);
+        }
+
+        if self.state.pager.open {
+            return self.handle_pager_key(key);
+        }
+
+        if self.state.diff_view.is_some() {
+            return self.handle_diff_view_key(key);
+        }
+
         // Error mode: any key resets to Normal
         if matches!(self.state.mode, AppMode::Error(_)) {
             self.state.mode = AppMode::Normal;
@@ -276,6 +310,21 @@ impl Tui {
                 let input = self.state.prompt.submit();
                 if input.trim().is_empty() {
                     None
+                } else if input.trim() == "/diff" {
+                    self.show_diff_view();
+                    None
+                } else if input.trim() == "/status" {
+                    self.show_status_pager();
+                    None
+                } else if input.trim() == "/config" {
+                    self.show_config_pager();
+                    None
+                } else if input.trim() == "/memory" {
+                    self.show_memory_pager();
+                    None
+                } else if input.trim() == "/version" {
+                    self.show_version_pager();
+                    None
                 } else if input.trim().starts_with("/theme") {
                     let args = input.trim().strip_prefix("/theme").unwrap_or("").trim();
                     let result = if args.is_empty() {
@@ -302,12 +351,16 @@ impl Tui {
                 if self.state.prompt.show_slash_autocomplete {
                     self.state.prompt.slash_autocomplete_select();
                 } else {
-                    let input = &self.state.prompt.value;
+                    let input = self.state.prompt.value.clone();
                     if input.starts_with('/') {
-                        let completions = self.get_command_completions(input);
-                        if !completions.is_empty() {
-                            self.state.prompt.set_completions(completions);
+                        if self.state.prompt.complete_contextual() {
                             self.state.prompt.cycle_completion_forward();
+                        } else {
+                            let completions = self.get_command_completions(&input);
+                            if !completions.is_empty() {
+                                self.state.prompt.set_completions(completions);
+                                self.state.prompt.cycle_completion_forward();
+                            }
                         }
                     }
                 }
@@ -373,6 +426,10 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('x')) => {
                 self.state.activate_leader();
+                None
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
+                self.state.branching_dialog.open(&self.state.session.id);
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
@@ -765,6 +822,173 @@ impl Tui {
         }
     }
 
+    fn handle_context_viz_key(&mut self, key: KeyEvent) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+                self.state.context_viz_dialog.close();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_branching_key(&mut self, key: KeyEvent) -> Option<String> {
+        use crate::tui::dialog_session_branching::BranchingAction;
+        match self.state.branching_dialog.handle_key(key) {
+            BranchingAction::None => None,
+            BranchingAction::Close => None,
+            BranchingAction::Switch(path) => Some(format!("__session_switch__{}", path.display())),
+            BranchingAction::NewBranch => Some("__fork_session__".to_string()),
+        }
+    }
+
+    fn handle_diff_view_key(&mut self, key: KeyEvent) -> Option<String> {
+        let height = self
+            .terminal
+            .size()
+            .map(|s| s.height as usize)
+            .unwrap_or(24);
+        if self.state.diff_view.is_none() {
+            return None;
+        }
+        let diff_view = self.state.diff_view.as_mut().unwrap();
+
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+                self.state.diff_view = None;
+                None
+            }
+            (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                diff_view.scroll_down();
+                None
+            }
+            (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                diff_view.scroll_up();
+                None
+            }
+            (_, KeyCode::Char('g')) if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                diff_view.go_to_top();
+                None
+            }
+            (_, KeyCode::Char('G')) | (KeyModifiers::SHIFT, KeyCode::Char('g')) => {
+                diff_view.go_to_bottom(height.saturating_sub(6));
+                None
+            }
+            (_, KeyCode::PageDown) => {
+                diff_view.scroll_page_down(height.saturating_sub(6));
+                None
+            }
+            (_, KeyCode::PageUp) => {
+                diff_view.scroll_page_up(height.saturating_sub(6));
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_pager_key(&mut self, key: KeyEvent) -> Option<String> {
+        let height = self
+            .terminal
+            .size()
+            .map(|s| s.height as usize)
+            .unwrap_or(24);
+        let visible_lines = height.saturating_sub(8);
+
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+                self.state.pager.close();
+                None
+            }
+            (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                self.state.pager.scroll_down();
+                None
+            }
+            (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                self.state.pager.scroll_up();
+                None
+            }
+            (_, KeyCode::Char('g')) if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.state.pager.go_to_top();
+                None
+            }
+            (_, KeyCode::Char('G')) | (KeyModifiers::SHIFT, KeyCode::Char('g')) => {
+                self.state.pager.go_to_bottom(visible_lines);
+                None
+            }
+            (_, KeyCode::PageDown) => {
+                self.state.pager.scroll_page_down(visible_lines);
+                None
+            }
+            (_, KeyCode::PageUp) => {
+                self.state.pager.scroll_page_up(visible_lines);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn show_diff_view(&mut self) {
+        use crate::git::render_diff_report_for;
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        match render_diff_report_for(&cwd) {
+            Ok(diff_text) => {
+                let view = crate::tui::widgets::DiffView::from_diff(&diff_text, "Diff");
+                self.state.diff_view = Some(view);
+            }
+            Err(e) => {
+                self.state
+                    .add_toast(format!("Diff error: {}", e), ToastKind::Error);
+            }
+        }
+    }
+
+    fn show_status_pager(&mut self) {
+        let total_tokens = self.state.session.input_tokens + self.state.session.output_tokens;
+        let content = format!(
+            "Model: {}\nPermission Mode: {}\nTurns: {}\nMessages: {}\nInput Tokens: {}\nOutput Tokens: {}\nTotal Tokens: {}\nSession ID: {}\nSession Title: {}\nCWD: {}\nGit Branch: {}\nGit Dirty: {}\nLSP Servers: {}\nMCP Servers: {}\nSkills: {}\nPlugins: {}",
+            self.state.session.model,
+            self.state.session.permission_mode,
+            self.state.session.turns,
+            self.state.session.message_count,
+            self.state.session.input_tokens,
+            self.state.session.output_tokens,
+            total_tokens,
+            self.state.session.id,
+            self.state.session.title,
+            self.state.cwd,
+            self.state.git_branch.as_deref().unwrap_or("none"),
+            if self.state.git_dirty { "yes" } else { "no" },
+            self.state.lsp_count,
+            self.state.mcp_count,
+            self.state.skill_count,
+            self.state.plugin_count,
+        );
+        self.state.pager.open("Status".to_string(), content);
+    }
+
+    fn show_config_pager(&mut self) {
+        let content = format!(
+            "CWD: {}\nModel: {}\nPermission Mode: {}",
+            self.state.cwd, self.state.session.model, self.state.session.permission_mode,
+        );
+        self.state.pager.open("Config".to_string(), content);
+    }
+
+    fn show_memory_pager(&mut self) {
+        let content = format!("CWD: {}\nConfig path: (project root)", self.state.cwd,);
+        self.state.pager.open("Memory".to_string(), content);
+    }
+
+    fn show_version_pager(&mut self) {
+        let version = env!("CARGO_PKG_VERSION");
+        let content = format!(
+            "icode {}\nRust Edition: 2021\nPlatform: {}",
+            version,
+            std::env::consts::OS,
+        );
+        self.state.pager.open("Version".to_string(), content);
+    }
+
     fn get_command_completions(&self, input: &str) -> Vec<String> {
         let commands = [
             "/help",
@@ -781,6 +1005,8 @@ impl Tui {
             "/version",
             "/cost",
             "/theme",
+            "/context",
+            "/revert",
         ];
         commands
             .iter()
@@ -874,8 +1100,14 @@ impl Tui {
         match event {
             TurnEvent::ThinkingStarted => {
                 self.state.start_thinking();
+                if self.state.turn_started_at.is_none() {
+                    self.state.turn_started_at = Some(Instant::now());
+                }
             }
             TurnEvent::TokenDelta(text) => {
+                if self.state.turn_started_at.is_none() {
+                    self.state.turn_started_at = Some(Instant::now());
+                }
                 if self.state.is_thinking {
                     self.state.append_thinking(&text);
                 } else {
@@ -899,10 +1131,18 @@ impl Tui {
                 output_tokens,
             } => {
                 self.state.end_thinking();
+                let turn_dur = self.state.turn_started_at.take().map(|s| s.elapsed());
+                let dur_ms = turn_dur.map(|d| d.as_millis() as u64).unwrap_or(0);
+                let timeline: Vec<(String, bool, u64)> = tool_calls
+                    .iter()
+                    .map(|tc| (tc.name.clone(), tc.success, 0u64))
+                    .collect();
                 if let Some(msg) = self.state.messages.last_mut() {
                     if msg.is_streaming && msg.full_text().is_empty() && !text.is_empty() {
                         msg.parts.push(MessagePart::Text { content: text });
                     }
+                    msg.tool_timeline = timeline;
+                    msg.turn_duration_ms = dur_ms;
                 }
                 self.state.finish_stream();
                 self.state.is_streaming = false;
@@ -911,6 +1151,7 @@ impl Tui {
                 self.state.session.message_count = self.state.messages.len();
                 self.state.session.input_tokens += input_tokens;
                 self.state.session.output_tokens += output_tokens;
+                self.state.last_turn_duration = turn_dur;
                 self.turn_rx = None;
             }
             TurnEvent::TurnError(msg) => {
@@ -918,6 +1159,9 @@ impl Tui {
                 self.state.finish_stream();
                 self.state.is_streaming = false;
                 self.state.mode = AppMode::Normal;
+                if let Some(started) = self.state.turn_started_at.take() {
+                    self.state.last_turn_duration = Some(started.elapsed());
+                }
                 self.turn_rx = None;
                 self.state.show_error(msg);
             }

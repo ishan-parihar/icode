@@ -125,7 +125,7 @@ async fn stream_message_normalizes_text_and_multiple_tool_calls() {
         .await
         .expect("stream should start");
 
-    assert_eq!(stream.request_id(), Some("req_grok_stream"));
+    assert_eq!(stream.request_id(), Some("req_grok_stream".to_string()));
 
     let mut events = Vec::new();
     while let Some(event) = stream.next_event().await.expect("event should parse") {
@@ -224,7 +224,7 @@ async fn openai_streaming_requests_opt_into_usage_chunks() {
         .await
         .expect("stream should start");
 
-    assert_eq!(stream.request_id(), Some("req_openai_stream"));
+    assert_eq!(stream.request_id(), Some("req_openai_stream".to_string()));
 
     let mut events = Vec::new();
     while let Some(event) = stream.next_event().await.expect("event should parse") {

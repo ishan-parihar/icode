@@ -8,12 +8,24 @@ use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
 use crate::config::RuntimeFeatureConfig;
-use crate::hooks::{HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner};
+use crate::hooks::{
+    ChatParamsTransformInput, HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner,
+    RequestHeadersInput, ShellEnvInjectInput, SystemPromptTransformInput,
+    ToolDefinitionTransformInput,
+};
 use crate::permissions::{
     PermissionContext, PermissionOutcome, PermissionPolicy, PermissionPrompter,
 };
 use crate::session::{ContentBlock, ConversationMessage, Session};
 use crate::usage::{TokenUsage, UsageTracker};
+
+/// Placeholder agent definition (full type lives in agents.rs).
+pub struct AgentDefinition {
+    pub model: Option<String>,
+    pub temperature: Option<f64>,
+    pub prompt: Option<String>,
+    pub max_turns: Option<u32>,
+}
 
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
@@ -130,6 +142,8 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
+    fallback_model: Option<String>,
+    agent: Option<AgentDefinition>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -179,6 +193,8 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
+            fallback_model: None,
+            agent: None,
         }
     }
 
@@ -212,6 +228,18 @@ where
     #[must_use]
     pub fn with_session_tracer(mut self, session_tracer: SessionTracer) -> Self {
         self.session_tracer = Some(session_tracer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_fallback_model(mut self, model: String) -> Self {
+        self.fallback_model = Some(model);
+        self
+    }
+
+    #[must_use]
+    pub fn with_agent(mut self, agent: AgentDefinition) -> Self {
+        self.agent = Some(agent);
         self
     }
 
@@ -286,6 +314,98 @@ where
         }
     }
 
+    fn run_system_prompt_transform_hook(&mut self) {
+        let system_prompt = self.system_prompt.join("\n");
+        let input = SystemPromptTransformInput { system_prompt };
+        let result = if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+            self.hook_runner.run_system_prompt_transform_with_context(
+                &input,
+                Some(&self.hook_abort_signal),
+                Some(reporter.as_mut()),
+            )
+        } else {
+            self.hook_runner.run_system_prompt_transform_with_context(
+                &input,
+                Some(&self.hook_abort_signal),
+                None,
+            )
+        };
+
+        if let Some(updated) = result.updated_input() {
+            self.system_prompt = vec![updated.to_string()];
+        }
+    }
+
+    pub fn run_chat_params_transform_hook(
+        &mut self,
+        input: &ChatParamsTransformInput,
+    ) -> HookRunResult {
+        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+            self.hook_runner.run_chat_params_transform_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                Some(reporter.as_mut()),
+            )
+        } else {
+            self.hook_runner.run_chat_params_transform_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                None,
+            )
+        }
+    }
+
+    pub fn run_request_headers_hook(&mut self, input: &RequestHeadersInput) -> HookRunResult {
+        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+            self.hook_runner.run_request_headers_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                Some(reporter.as_mut()),
+            )
+        } else {
+            self.hook_runner.run_request_headers_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                None,
+            )
+        }
+    }
+
+    pub fn run_tool_definition_transform_hook(
+        &mut self,
+        input: &ToolDefinitionTransformInput,
+    ) -> HookRunResult {
+        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+            self.hook_runner.run_tool_definition_transform_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                Some(reporter.as_mut()),
+            )
+        } else {
+            self.hook_runner.run_tool_definition_transform_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                None,
+            )
+        }
+    }
+
+    pub fn run_shell_env_inject_hook(&mut self, input: &ShellEnvInjectInput) -> HookRunResult {
+        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+            self.hook_runner.run_shell_env_inject_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                Some(reporter.as_mut()),
+            )
+        } else {
+            self.hook_runner.run_shell_env_inject_with_context(
+                input,
+                Some(&self.hook_abort_signal),
+                None,
+            )
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn run_turn(
         &mut self,
@@ -314,13 +434,42 @@ where
                 return Err(error);
             }
 
+            if iterations == 1 {
+                self.run_system_prompt_transform_hook();
+            }
+
+            let system_prompt = match &self.agent {
+                Some(agent) => {
+                    let mut combined = Vec::new();
+                    if let Some(ref prompt) = agent.prompt {
+                        combined.push(prompt.clone());
+                    }
+                    combined.extend(self.system_prompt.clone());
+                    combined
+                }
+                None => self.system_prompt.clone(),
+            };
+
             let request = ApiRequest {
-                system_prompt: self.system_prompt.clone(),
+                system_prompt,
                 messages: self.session.messages.clone(),
             };
             let events = match self.api_client.stream(request, progress) {
                 Ok(events) => events,
                 Err(error) => {
+                    let error_str = error.to_string().to_lowercase();
+                    if error_str.contains("overloaded")
+                        || error_str.contains("429")
+                        || error_str.contains("rate limit")
+                    {
+                        if let Some(ref fallback) = self.fallback_model {
+                            tracing::warn!(
+                                error = %error,
+                                fallback = %fallback,
+                                "API error detected; fallback model available but not auto-switching in ConversationRuntime"
+                            );
+                        }
+                    }
                     self.record_turn_failed(iterations, &error);
                     return Err(error);
                 }

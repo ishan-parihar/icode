@@ -11,6 +11,11 @@ pub enum HookEvent {
     PreToolUse,
     PostToolUse,
     PostToolUseFailure,
+    SystemPromptTransform,
+    ChatParamsTransform,
+    RequestHeaders,
+    ToolDefinitionTransform,
+    ShellEnvInject,
 }
 
 impl HookEvent {
@@ -19,6 +24,11 @@ impl HookEvent {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::PostToolUseFailure => "PostToolUseFailure",
+            Self::SystemPromptTransform => "SystemPromptTransform",
+            Self::ChatParamsTransform => "ChatParamsTransform",
+            Self::RequestHeaders => "RequestHeaders",
+            Self::ToolDefinitionTransform => "ToolDefinitionTransform",
+            Self::ShellEnvInject => "ShellEnvInject",
         }
     }
 }
@@ -118,6 +128,51 @@ impl HookRunner {
         )
     }
 
+    #[must_use]
+    pub fn run_system_prompt_transform(&self, payload: &str) -> HookRunResult {
+        Self::run_transform_commands(
+            HookEvent::SystemPromptTransform,
+            &self.hooks.system_prompt_transform,
+            payload,
+        )
+    }
+
+    #[must_use]
+    pub fn run_chat_params_transform(&self, payload: &str) -> HookRunResult {
+        Self::run_transform_commands(
+            HookEvent::ChatParamsTransform,
+            &self.hooks.chat_params_transform,
+            payload,
+        )
+    }
+
+    #[must_use]
+    pub fn run_request_headers(&self, payload: &str) -> HookRunResult {
+        Self::run_transform_commands(
+            HookEvent::RequestHeaders,
+            &self.hooks.request_headers,
+            payload,
+        )
+    }
+
+    #[must_use]
+    pub fn run_tool_definition_transform(&self, payload: &str) -> HookRunResult {
+        Self::run_transform_commands(
+            HookEvent::ToolDefinitionTransform,
+            &self.hooks.tool_definition_transform,
+            payload,
+        )
+    }
+
+    #[must_use]
+    pub fn run_shell_env_inject(&self, payload: &str) -> HookRunResult {
+        Self::run_transform_commands(
+            HookEvent::ShellEnvInject,
+            &self.hooks.shell_env_inject,
+            payload,
+        )
+    }
+
     fn run_commands(
         event: HookEvent,
         commands: &[String],
@@ -171,6 +226,87 @@ impl HookRunner {
         }
 
         HookRunResult::allow(messages)
+    }
+
+    fn run_transform_commands(
+        event: HookEvent,
+        commands: &[String],
+        payload: &str,
+    ) -> HookRunResult {
+        if commands.is_empty() {
+            return HookRunResult::allow(Vec::new());
+        }
+
+        let mut messages = Vec::new();
+
+        for command in commands {
+            match Self::run_transform_command(command, event, payload) {
+                HookCommandOutcome::Allow { message } => {
+                    if let Some(message) = message {
+                        messages.push(message);
+                    }
+                }
+                HookCommandOutcome::Deny { message } => {
+                    messages
+                        .push(message.unwrap_or_else(|| format!("{} hook denied", event.as_str())));
+                    return HookRunResult {
+                        denied: true,
+                        failed: false,
+                        messages,
+                    };
+                }
+                HookCommandOutcome::Failed { message } => {
+                    messages.push(message);
+                    return HookRunResult {
+                        denied: false,
+                        failed: true,
+                        messages,
+                    };
+                }
+            }
+        }
+
+        HookRunResult::allow(messages)
+    }
+
+    fn run_transform_command(command: &str, event: HookEvent, payload: &str) -> HookCommandOutcome {
+        let mut child = shell_command(command);
+        child.stdin(std::process::Stdio::piped());
+        child.stdout(std::process::Stdio::piped());
+        child.stderr(std::process::Stdio::piped());
+        child.env("HOOK_EVENT", event.as_str());
+
+        match child.output_with_stdin(payload.as_bytes()) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let message = (!stdout.is_empty()).then_some(stdout);
+                match output.status.code() {
+                    Some(0) => HookCommandOutcome::Allow { message },
+                    Some(2) => HookCommandOutcome::Deny { message },
+                    Some(code) => HookCommandOutcome::Failed {
+                        message: format_hook_warning(
+                            command,
+                            code,
+                            message.as_deref(),
+                            stderr.as_str(),
+                        ),
+                    },
+                    None => HookCommandOutcome::Failed {
+                        message: format!(
+                            "{} hook `{command}` terminated by signal",
+                            event.as_str()
+                        ),
+                    },
+                }
+            }
+            Err(error) => HookCommandOutcome::Failed {
+                message: format!(
+                    "{} hook `{command}` failed to start: {error}",
+                    event.as_str()
+                ),
+            },
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -460,6 +596,11 @@ mod tests {
             pre_tool_use: vec!["printf 'blocked by plugin'; exit 2".to_string()],
             post_tool_use: Vec::new(),
             post_tool_use_failure: Vec::new(),
+            system_prompt_transform: Vec::new(),
+            chat_params_transform: Vec::new(),
+            request_headers: Vec::new(),
+            tool_definition_transform: Vec::new(),
+            shell_env_inject: Vec::new(),
         });
 
         // when
@@ -480,6 +621,11 @@ mod tests {
             ],
             post_tool_use: Vec::new(),
             post_tool_use_failure: Vec::new(),
+            system_prompt_transform: Vec::new(),
+            chat_params_transform: Vec::new(),
+            request_headers: Vec::new(),
+            tool_definition_transform: Vec::new(),
+            shell_env_inject: Vec::new(),
         });
 
         // when

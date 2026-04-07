@@ -259,8 +259,8 @@ pub struct MessageStream {
 
 impl MessageStream {
     #[must_use]
-    pub fn request_id(&self) -> Option<&str> {
-        self.request_id.as_deref()
+    pub fn request_id(&self) -> Option<String> {
+        self.request_id.clone()
     }
 
     pub async fn next_event(&mut self) -> Result<Option<StreamEvent>, ApiError> {
@@ -916,7 +916,9 @@ fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<Strin
         .map(ToOwned::to_owned)
 }
 
-async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response, ApiError> {
+pub(crate) async fn expect_success(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, ApiError> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -939,11 +941,11 @@ async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response
     })
 }
 
-const fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+pub(crate) const fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 409 | 429 | 500 | 502 | 503 | 504)
 }
 
-fn normalize_finish_reason(value: &str) -> String {
+pub(crate) fn normalize_finish_reason(value: &str) -> String {
     match value {
         "stop" => "end_turn",
         "tool_calls" => "tool_use",

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -85,6 +85,102 @@ pub trait PermissionPrompter: Send {
 pub enum PermissionOutcome {
     Allow,
     Deny { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionScope {
+    parent_mode: Option<PermissionMode>,
+    parent_available_tools: Option<BTreeSet<String>>,
+    max_mode: PermissionMode,
+    effective_tools: BTreeSet<String>,
+}
+
+impl PermissionScope {
+    /// Create a root scope with no parent constraints.
+    #[must_use]
+    pub fn root() -> Self {
+        Self {
+            parent_mode: None,
+            parent_available_tools: None,
+            max_mode: PermissionMode::DangerFullAccess,
+            effective_tools: BTreeSet::new(),
+        }
+    }
+
+    /// Create a child scope from a parent, applying requested tool and mode restrictions.
+    ///
+    /// Returns an error if:
+    /// - The requested tools (after filtering to parent's available set) would be empty
+    /// - The requested mode exceeds the parent's mode
+    pub fn child(
+        &self,
+        requested_tools: &[String],
+        requested_mode: Option<PermissionMode>,
+    ) -> Result<Self, String> {
+        // Filter tools to only those available in parent
+        let effective_tools: BTreeSet<String> =
+            if let Some(ref parent_tools) = self.parent_available_tools {
+                requested_tools
+                    .iter()
+                    .filter(|t| parent_tools.contains(*t))
+                    .cloned()
+                    .collect()
+            } else {
+                requested_tools.iter().cloned().collect()
+            };
+
+        if effective_tools.is_empty() {
+            return Err(String::from(
+                "no requested tools are available within parent's permission scope",
+            ));
+        }
+
+        // Determine max_mode: cap at parent's mode if set
+        let max_mode = match (self.parent_mode, requested_mode) {
+            (Some(parent_m), Some(requested_m)) => {
+                if requested_m > parent_m {
+                    return Err(format!(
+                        "requested permission mode '{}' exceeds parent's mode '{}'",
+                        requested_m.as_str(),
+                        parent_m.as_str()
+                    ));
+                }
+                requested_m
+            }
+            (Some(parent_m), None) => parent_m,
+            (None, Some(requested_m)) => requested_m,
+            (None, None) => PermissionMode::DangerFullAccess,
+        };
+
+        Ok(Self {
+            parent_mode: self.parent_mode,
+            parent_available_tools: self.parent_available_tools.clone(),
+            max_mode,
+            effective_tools,
+        })
+    }
+
+    /// Check if a tool is allowed within this scope.
+    #[must_use]
+    pub fn is_tool_allowed(&self, tool_name: &str) -> bool {
+        // Root scope with no effective_tools set means no tool-level filtering
+        if self.parent_available_tools.is_none() && self.effective_tools.is_empty() {
+            return true;
+        }
+        self.effective_tools.contains(tool_name)
+    }
+
+    /// The maximum permission mode for this scope.
+    #[must_use]
+    pub fn max_permission_mode(&self) -> PermissionMode {
+        self.max_mode
+    }
+
+    /// The set of effective tools available in this scope.
+    #[must_use]
+    pub fn effective_tools(&self) -> &BTreeSet<String> {
+        &self.effective_tools
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,9 +558,11 @@ fn extract_permission_subject(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
         PermissionContext, PermissionMode, PermissionOutcome, PermissionOverride, PermissionPolicy,
-        PermissionPromptDecision, PermissionPrompter, PermissionRequest,
+        PermissionPromptDecision, PermissionPrompter, PermissionRequest, PermissionScope,
     };
     use crate::config::RuntimePermissionRuleConfig;
 
@@ -671,5 +769,122 @@ mod tests {
             prompter.seen[0].reason.as_deref(),
             Some("hook requested confirmation")
         );
+    }
+
+    #[test]
+    fn test_permission_scope_root_has_no_constraints() {
+        let root = PermissionScope::root();
+        assert_eq!(root.max_permission_mode(), PermissionMode::DangerFullAccess);
+        assert!(root.is_tool_allowed("bash"));
+        assert!(root.is_tool_allowed("any_tool"));
+        assert!(root.effective_tools().is_empty());
+    }
+
+    #[test]
+    fn test_permission_scope_child_inherits_tools() {
+        let parent = PermissionScope::root();
+        let tools = vec![
+            "read_file".to_string(),
+            "bash".to_string(),
+            "write_file".to_string(),
+        ];
+        let child = parent
+            .child(&tools, Some(PermissionMode::WorkspaceWrite))
+            .unwrap();
+
+        assert_eq!(child.max_permission_mode(), PermissionMode::WorkspaceWrite);
+        assert!(child.is_tool_allowed("read_file"));
+        assert!(child.is_tool_allowed("bash"));
+        assert_eq!(child.effective_tools().len(), 3);
+    }
+
+    #[test]
+    fn test_permission_scope_child_exceeds_parent_tools_returns_error() {
+        let parent_tools = BTreeSet::from(["read_file".to_string(), "bash".to_string()]);
+        let parent = PermissionScope {
+            parent_mode: Some(PermissionMode::DangerFullAccess),
+            parent_available_tools: Some(parent_tools),
+            max_mode: PermissionMode::DangerFullAccess,
+            effective_tools: BTreeSet::from(["read_file".to_string(), "bash".to_string()]),
+        };
+
+        let result = parent.child(
+            &["read_file".to_string(), "write_file".to_string()],
+            Some(PermissionMode::DangerFullAccess),
+        );
+
+        assert!(result.is_ok());
+        let child = result.unwrap();
+        assert!(child.is_tool_allowed("read_file"));
+        assert!(!child.is_tool_allowed("write_file"));
+        assert_eq!(child.effective_tools().len(), 1);
+    }
+
+    #[test]
+    fn test_permission_scope_child_exceeds_parent_mode_returns_error() {
+        let parent = PermissionScope {
+            parent_mode: Some(PermissionMode::ReadOnly),
+            parent_available_tools: None,
+            max_mode: PermissionMode::ReadOnly,
+            effective_tools: BTreeSet::new(),
+        };
+
+        let result = parent.child(
+            &["read_file".to_string()],
+            Some(PermissionMode::DangerFullAccess),
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("exceeds parent's mode"));
+    }
+
+    #[test]
+    fn test_permission_scope_child_with_no_mode_uses_parent_mode() {
+        let parent = PermissionScope {
+            parent_mode: Some(PermissionMode::WorkspaceWrite),
+            parent_available_tools: None,
+            max_mode: PermissionMode::WorkspaceWrite,
+            effective_tools: BTreeSet::new(),
+        };
+
+        let child = parent
+            .child(&["read_file".to_string(), "bash".to_string()], None)
+            .unwrap();
+
+        assert_eq!(child.max_permission_mode(), PermissionMode::WorkspaceWrite);
+    }
+
+    #[test]
+    fn test_permission_scope_nested_children_monotonically_decrease() {
+        let root = PermissionScope::root();
+
+        let level1_tools = vec![
+            "read_file".to_string(),
+            "bash".to_string(),
+            "write_file".to_string(),
+            "edit_file".to_string(),
+        ];
+        let level1 = root
+            .child(&level1_tools, Some(PermissionMode::DangerFullAccess))
+            .unwrap();
+        assert_eq!(level1.effective_tools().len(), 4);
+
+        let level2 = level1
+            .child(
+                &["read_file".to_string(), "bash".to_string()],
+                Some(PermissionMode::WorkspaceWrite),
+            )
+            .unwrap();
+        assert_eq!(level2.effective_tools().len(), 2);
+        assert_eq!(level2.max_permission_mode(), PermissionMode::WorkspaceWrite);
+
+        let level3 = level2
+            .child(&["read_file".to_string()], Some(PermissionMode::ReadOnly))
+            .unwrap();
+        assert_eq!(level3.effective_tools().len(), 1);
+        assert_eq!(level3.max_permission_mode(), PermissionMode::ReadOnly);
+        assert!(level3.is_tool_allowed("read_file"));
+        assert!(!level3.is_tool_allowed("bash"));
     }
 }

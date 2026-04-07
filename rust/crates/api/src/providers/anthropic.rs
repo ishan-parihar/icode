@@ -744,8 +744,8 @@ pub struct MessageStream {
 
 impl MessageStream {
     #[must_use]
-    pub fn request_id(&self) -> Option<&str> {
-        self.request_id.as_deref()
+    pub fn request_id(&self) -> Option<String> {
+        self.request_id.clone()
     }
 
     pub async fn next_event(&mut self) -> Result<Option<StreamEvent>, ApiError> {

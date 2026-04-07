@@ -3,11 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
-#[command(
-    name = "icode-cli",
-    version,
-    about = "Rust Claude CLI prototype"
-)]
+#[command(name = "icode-cli", version, about = "Rust Claude CLI prototype")]
 pub struct Cli {
     #[arg(long, default_value = "claude-opus-4-6")]
     pub model: String,
@@ -37,6 +33,21 @@ pub enum Command {
     Logout,
     /// Run a non-interactive prompt and exit
     Prompt { prompt: Vec<String> },
+    /// Start the HTTP server daemon
+    Serve {
+        /// Bind address
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port number
+        #[arg(long, default_value = "3000")]
+        port: u16,
+        /// Working directory
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// SQLite database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]

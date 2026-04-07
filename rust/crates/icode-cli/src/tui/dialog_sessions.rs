@@ -31,6 +31,8 @@ pub struct SessionEntry {
     pub modified: u128,
     pub message_count: usize,
     pub parent_id: Option<String>,
+    pub branch_name: Option<String>,
+    pub usage_summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,38 +75,55 @@ impl SessionsDialogState {
     pub fn load_sessions(&mut self) {
         self.sessions.clear();
         if let Ok(dir) = sessions_dir() {
-            for entry in std::fs::read_dir(&dir).ok().into_iter().flatten() {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if !is_session_file(&path) {
-                        continue;
-                    }
-                    let metadata = entry.metadata().ok();
-                    let modified = metadata
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis())
-                        .unwrap_or_default();
-                    let id = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let (msg_count, parent_id) = match runtime::Session::load_from_path(&path) {
-                        Ok(session) => (
-                            session.messages.len(),
-                            session.fork.as_ref().map(|f| f.parent_session_id.clone()),
-                        ),
-                        Err(_) => (0, None),
-                    };
-                    self.sessions.push(SessionEntry {
-                        id,
-                        path,
-                        modified,
-                        message_count: msg_count,
-                        parent_id,
-                    });
+            let entries: Vec<_> = std::fs::read_dir(&dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .collect();
+            let usage_budget = 5usize;
+            for (idx, entry) in entries.iter().enumerate() {
+                let path = entry.path();
+                if !is_session_file(&path) {
+                    continue;
                 }
+                let metadata = entry.metadata().ok();
+                let modified = metadata
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis())
+                    .unwrap_or_default();
+                let id = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let (msg_count, parent_id, branch_name, usage_summary) =
+                    match runtime::Session::load_from_path(&path) {
+                        Ok(session) => {
+                            let parent_id =
+                                session.fork.as_ref().map(|f| f.parent_session_id.clone());
+                            let branch_name =
+                                session.fork.as_ref().and_then(|f| f.branch_name.clone());
+                            let mc = session.messages.len();
+                            let usage_summary = if idx < usage_budget {
+                                compute_usage_summary(&session)
+                            } else {
+                                Some(format!("{mc} msgs"))
+                            };
+                            (mc, parent_id, branch_name, usage_summary)
+                        }
+                        Err(_) => (0, None, None, None),
+                    };
+                self.sessions.push(SessionEntry {
+                    id,
+                    path,
+                    modified,
+                    message_count: msg_count,
+                    parent_id,
+                    branch_name,
+                    usage_summary,
+                });
             }
         }
         self.sessions
@@ -120,7 +139,13 @@ impl SessionsDialogState {
             self.filtered = self
                 .sessions
                 .iter()
-                .filter(|s| s.id.to_lowercase().contains(&q))
+                .filter(|s| {
+                    s.id.to_lowercase().contains(&q)
+                        || s.branch_name
+                            .as_ref()
+                            .map(|b| b.to_lowercase().contains(&q))
+                            .unwrap_or(false)
+                })
                 .cloned()
                 .collect();
         }
@@ -246,6 +271,43 @@ fn is_session_file(path: &PathBuf) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext == "jsonl" || ext == "json")
+}
+
+fn compute_usage_summary(session: &runtime::Session) -> Option<String> {
+    let mut total_input: u64 = 0;
+    let mut total_output: u64 = 0;
+    let mut total_cache_create: u64 = 0;
+    let mut total_cache_read: u64 = 0;
+    let mut has_usage = false;
+
+    for msg in &session.messages {
+        if let Some(usage) = msg.usage {
+            has_usage = true;
+            total_input += usage.input_tokens as u64;
+            total_output += usage.output_tokens as u64;
+            total_cache_create += usage.cache_creation_input_tokens as u64;
+            total_cache_read += usage.cache_read_input_tokens as u64;
+        }
+    }
+
+    if !has_usage {
+        return None;
+    }
+
+    let total_tokens = total_input + total_output + total_cache_create + total_cache_read;
+    let pricing = runtime::pricing_for_model("sonnet")
+        .unwrap_or_else(runtime::ModelPricing::default_sonnet_tier);
+    let cost = (total_input as f64 * pricing.input_cost_per_million
+        + total_output as f64 * pricing.output_cost_per_million
+        + total_cache_create as f64 * pricing.cache_creation_cost_per_million
+        + total_cache_read as f64 * pricing.cache_read_cost_per_million)
+        / 1_000_000.0;
+
+    if cost > 0.01 {
+        Some(format!("{:.0}k tok, ${:.2}", total_tokens / 1000, cost))
+    } else {
+        Some(format!("{:.0}k tok", total_tokens / 1000))
+    }
 }
 
 fn format_relative_time(epoch_millis: u128) -> String {
@@ -384,11 +446,64 @@ pub fn render_sessions_dialog(
             let is_selected = i == state.selected;
             let is_deleting = state.delete_confirm.as_ref() == Some(&session.id);
             let time_str = format_relative_time(session.modified);
-            let title = if is_deleting {
-                format!(" Press Ctrl+D again to delete {} ", session.id)
+
+            let mut title_spans = vec![Span::raw(" ")];
+
+            if is_deleting {
+                title_spans.push(Span::styled(
+                    format!("⚠ Delete {}? (Ctrl+D to confirm) ", session.id),
+                    Style::default()
+                        .fg(theme.error)
+                        .add_modifier(Modifier::BOLD),
+                ));
             } else {
-                format!(" {} ({} msgs) ", session.id, session.message_count)
-            };
+                title_spans.push(Span::styled(
+                    truncate(&session.id, 20),
+                    Style::default().fg(if is_selected {
+                        theme.background
+                    } else {
+                        theme.text
+                    }),
+                ));
+                title_spans.push(Span::styled(
+                    format!(" ({} msgs) ", session.message_count),
+                    Style::default().fg(if is_selected {
+                        theme.background
+                    } else {
+                        theme.text_muted
+                    }),
+                ));
+                if let Some(ref branch) = session.branch_name {
+                    title_spans.push(Span::styled(
+                        format!("on {} ", truncate(branch, 16)),
+                        Style::default().fg(if is_selected {
+                            theme.background
+                        } else {
+                            Color::Yellow
+                        }),
+                    ));
+                }
+                if let Some(ref parent) = session.parent_id {
+                    title_spans.push(Span::styled(
+                        format!("↪{} ", truncate(parent, 12)),
+                        Style::default().fg(if is_selected {
+                            theme.background
+                        } else {
+                            Color::DarkGray
+                        }),
+                    ));
+                }
+                if let Some(ref usage) = session.usage_summary {
+                    title_spans.push(Span::styled(
+                        format!("[{}] ", usage),
+                        Style::default().fg(if is_selected {
+                            theme.background
+                        } else {
+                            theme.text_muted
+                        }),
+                    ));
+                }
+            }
 
             let style = if is_deleting {
                 Style::default()
@@ -406,7 +521,8 @@ pub fn render_sessions_dialog(
             let line_y = list_area.y + line_idx as u16;
             if line_y < list_area.bottom() {
                 let line_area = Rect::new(list_area.x, line_y, list_area.width, 1);
-                frame.render_widget(Paragraph::new(title).style(style), line_area);
+                let line = Line::from(title_spans);
+                frame.render_widget(Paragraph::new(line).style(style), line_area);
                 let footer_style = if is_deleting {
                     Style::default().fg(theme.error)
                 } else if is_selected {
@@ -441,4 +557,14 @@ fn compute_scroll_offset(state: &SessionsDialogState, visible_lines: usize) -> u
         return pos.saturating_sub(visible_lines.saturating_sub(1));
     }
     state.scroll_offset
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else if max_len <= 3 {
+        "...".to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
 }

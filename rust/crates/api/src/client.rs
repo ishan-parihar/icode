@@ -1,17 +1,41 @@
 use crate::error::ApiError;
 use crate::prompt_cache::{PromptCache, PromptCacheRecord, PromptCacheStats};
 use crate::providers::anthropic::{self, AnthropicClient, AuthSource};
+use crate::providers::azure::AzureClient;
+use crate::providers::bedrock::BedrockClient;
+use crate::providers::gemini::GeminiClient;
+use crate::providers::groq::GroqClient;
+use crate::providers::mistral::MistralClient;
 use crate::providers::openai_compat::{self, OpenAiCompatClient, OpenAiCompatConfig};
+use crate::providers::openrouter::OpenRouterClient;
 use crate::providers::{self, ProviderKind};
 use crate::types::{MessageRequest, MessageResponse, StreamEvent};
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ProviderClient {
     Anthropic(AnthropicClient),
     Xai(OpenAiCompatClient),
     OpenAi(OpenAiCompatClient),
     QwenProxy(OpenAiCompatClient),
+    Azure(AzureClient),
+    Gemini(GeminiClient),
+    Bedrock(BedrockClient),
+    OpenRouter(OpenRouterClient),
+    Mistral(MistralClient),
+    Groq(GroqClient),
+}
+
+#[derive(Debug)]
+pub enum MessageStream {
+    Anthropic(anthropic::MessageStream),
+    OpenAiCompat(openai_compat::MessageStream),
+    Azure(crate::providers::azure::MessageStream),
+    Gemini(crate::providers::gemini::MessageStream),
+    Bedrock(crate::providers::bedrock::MessageStream),
+    OpenRouter(crate::providers::openrouter::MessageStream),
+    Mistral(crate::providers::mistral::MessageStream),
+    Groq(crate::providers::groq::MessageStream),
 }
 
 impl ProviderClient {
@@ -43,6 +67,12 @@ impl ProviderClient {
                         .with_base_url(read_qwen_proxy_base_url()),
                 ))
             }
+            ProviderKind::Azure => Ok(Self::Azure(AzureClient::from_env()?)),
+            ProviderKind::Gemini => Ok(Self::Gemini(GeminiClient::from_env()?)),
+            ProviderKind::Bedrock => Ok(Self::Bedrock(BedrockClient::from_env()?)),
+            ProviderKind::OpenRouter => Ok(Self::OpenRouter(OpenRouterClient::from_env()?)),
+            ProviderKind::Mistral => Ok(Self::Mistral(MistralClient::from_env()?)),
+            ProviderKind::Groq => Ok(Self::Groq(GroqClient::from_env()?)),
         }
     }
 
@@ -53,6 +83,12 @@ impl ProviderClient {
             Self::Xai(_) => ProviderKind::Xai,
             Self::OpenAi(_) => ProviderKind::OpenAi,
             Self::QwenProxy(_) => ProviderKind::QwenProxy,
+            Self::Azure(_) => ProviderKind::Azure,
+            Self::Gemini(_) => ProviderKind::Gemini,
+            Self::Bedrock(_) => ProviderKind::Bedrock,
+            Self::OpenRouter(_) => ProviderKind::OpenRouter,
+            Self::Mistral(_) => ProviderKind::Mistral,
+            Self::Groq(_) => ProviderKind::Groq,
         }
     }
 
@@ -68,7 +104,7 @@ impl ProviderClient {
     pub fn prompt_cache_stats(&self) -> Option<PromptCacheStats> {
         match self {
             Self::Anthropic(client) => client.prompt_cache_stats(),
-            Self::Xai(_) | Self::OpenAi(_) | Self::QwenProxy(_) => None,
+            _ => None,
         }
     }
 
@@ -76,7 +112,7 @@ impl ProviderClient {
     pub fn take_last_prompt_cache_record(&self) -> Option<PromptCacheRecord> {
         match self {
             Self::Anthropic(client) => client.take_last_prompt_cache_record(),
-            Self::Xai(_) | Self::OpenAi(_) | Self::QwenProxy(_) => None,
+            _ => None,
         }
     }
 
@@ -89,6 +125,12 @@ impl ProviderClient {
             Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) => {
                 client.send_message(request).await
             }
+            Self::Azure(client) => client.send_message(request).await,
+            Self::Gemini(client) => client.send_message(request).await,
+            Self::Bedrock(client) => client.send_message(request).await,
+            Self::OpenRouter(client) => client.send_message(request).await,
+            Self::Mistral(client) => client.send_message(request).await,
+            Self::Groq(client) => client.send_message(request).await,
         }
     }
 
@@ -105,22 +147,52 @@ impl ProviderClient {
                 .stream_message(request)
                 .await
                 .map(MessageStream::OpenAiCompat),
+            Self::Azure(client) => {
+                let s: crate::providers::azure::MessageStream =
+                    client.stream_message(request).await?;
+                Ok(MessageStream::Azure(s))
+            }
+            Self::Gemini(client) => {
+                let s: crate::providers::gemini::MessageStream =
+                    client.stream_message(request).await?;
+                Ok(MessageStream::Gemini(s))
+            }
+            Self::Bedrock(client) => {
+                let s: crate::providers::bedrock::MessageStream =
+                    client.stream_message(request).await?;
+                Ok(MessageStream::Bedrock(s))
+            }
+            Self::OpenRouter(client) => {
+                let s: crate::providers::openrouter::MessageStream =
+                    client.stream_message(request).await?;
+                Ok(MessageStream::OpenRouter(s))
+            }
+            Self::Mistral(client) => {
+                let s: crate::providers::mistral::MessageStream =
+                    client.stream_message(request).await?;
+                Ok(MessageStream::Mistral(s))
+            }
+            Self::Groq(client) => {
+                let s: crate::providers::groq::MessageStream =
+                    client.stream_message(request).await?;
+                Ok(MessageStream::Groq(s))
+            }
         }
     }
 }
 
-#[derive(Debug)]
-pub enum MessageStream {
-    Anthropic(anthropic::MessageStream),
-    OpenAiCompat(openai_compat::MessageStream),
-}
-
 impl MessageStream {
     #[must_use]
-    pub fn request_id(&self) -> Option<&str> {
+    pub fn request_id(&self) -> Option<String> {
         match self {
             Self::Anthropic(stream) => stream.request_id(),
             Self::OpenAiCompat(stream) => stream.request_id(),
+            Self::Azure(stream) => stream.request_id(),
+            Self::Gemini(stream) => stream.request_id(),
+            Self::Bedrock(stream) => stream.request_id(),
+            Self::OpenRouter(stream) => stream.request_id(),
+            Self::Mistral(stream) => stream.request_id(),
+            Self::Groq(stream) => stream.request_id(),
         }
     }
 
@@ -128,6 +200,12 @@ impl MessageStream {
         match self {
             Self::Anthropic(stream) => stream.next_event().await,
             Self::OpenAiCompat(stream) => stream.next_event().await,
+            Self::Azure(stream) => stream.next_event().await,
+            Self::Gemini(stream) => stream.next_event().await,
+            Self::Bedrock(stream) => stream.next_event().await,
+            Self::OpenRouter(stream) => stream.next_event().await,
+            Self::Mistral(stream) => stream.next_event().await,
+            Self::Groq(stream) => stream.next_event().await,
         }
     }
 }

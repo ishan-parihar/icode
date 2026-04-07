@@ -6,6 +6,7 @@
     clippy::unnecessary_wraps,
     clippy::unused_self
 )]
+mod git;
 mod init;
 mod input;
 mod render;
@@ -1554,7 +1555,9 @@ fn run_resume_command(
         | SlashCommand::OutputStyle { .. }
         | SlashCommand::AddDir { .. }
         | SlashCommand::Undo
-        | SlashCommand::Redo => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Redo
+        | SlashCommand::Db
+        | SlashCommand::Revert { .. } => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -2940,7 +2943,9 @@ impl LiveCli {
             | SlashCommand::OutputStyle { .. }
             | SlashCommand::AddDir { .. }
             | SlashCommand::Undo
-            | SlashCommand::Redo => {
+            | SlashCommand::Redo
+            | SlashCommand::Db
+            | SlashCommand::Revert { .. } => {
                 eprintln!("Use the TUI command palette (Ctrl+P) or /undo / /redo in the TUI.");
                 false
             }
@@ -6068,6 +6073,8 @@ fn convert_runtime_messages_to_tui(
                         agent: "build".into(),
                         timestamp: timestamp_secs,
                         is_streaming: false,
+                        tool_timeline: Vec::new(),
+                        turn_duration_ms: 0,
                     });
                 }
             }
@@ -6109,6 +6116,8 @@ fn convert_runtime_messages_to_tui(
                         agent: "build".into(),
                         timestamp: timestamp_secs,
                         is_streaming: false,
+                        tool_timeline: Vec::new(),
+                        turn_duration_ms: 0,
                     });
                 }
             }

@@ -69,6 +69,16 @@ pub struct PluginHooks {
     pub post_tool_use: Vec<String>,
     #[serde(rename = "PostToolUseFailure", default)]
     pub post_tool_use_failure: Vec<String>,
+    #[serde(rename = "SystemPromptTransform", default)]
+    pub system_prompt_transform: Vec<String>,
+    #[serde(rename = "ChatParamsTransform", default)]
+    pub chat_params_transform: Vec<String>,
+    #[serde(rename = "RequestHeaders", default)]
+    pub request_headers: Vec<String>,
+    #[serde(rename = "ToolDefinitionTransform", default)]
+    pub tool_definition_transform: Vec<String>,
+    #[serde(rename = "ShellEnvInject", default)]
+    pub shell_env_inject: Vec<String>,
 }
 
 impl PluginHooks {
@@ -77,6 +87,11 @@ impl PluginHooks {
         self.pre_tool_use.is_empty()
             && self.post_tool_use.is_empty()
             && self.post_tool_use_failure.is_empty()
+            && self.system_prompt_transform.is_empty()
+            && self.chat_params_transform.is_empty()
+            && self.request_headers.is_empty()
+            && self.tool_definition_transform.is_empty()
+            && self.shell_env_inject.is_empty()
     }
 
     #[must_use]
@@ -91,6 +106,21 @@ impl PluginHooks {
         merged
             .post_tool_use_failure
             .extend(other.post_tool_use_failure.iter().cloned());
+        merged
+            .system_prompt_transform
+            .extend(other.system_prompt_transform.iter().cloned());
+        merged
+            .chat_params_transform
+            .extend(other.chat_params_transform.iter().cloned());
+        merged
+            .request_headers
+            .extend(other.request_headers.iter().cloned());
+        merged
+            .tool_definition_transform
+            .extend(other.tool_definition_transform.iter().cloned());
+        merged
+            .shell_env_inject
+            .extend(other.shell_env_inject.iter().cloned());
         merged
     }
 }
@@ -1637,6 +1667,26 @@ fn build_plugin_manifest(
     );
     validate_command_entries(
         root,
+        raw.hooks.system_prompt_transform.iter(),
+        "hook",
+        &mut errors,
+    );
+    validate_command_entries(
+        root,
+        raw.hooks.chat_params_transform.iter(),
+        "hook",
+        &mut errors,
+    );
+    validate_command_entries(root, raw.hooks.request_headers.iter(), "hook", &mut errors);
+    validate_command_entries(
+        root,
+        raw.hooks.tool_definition_transform.iter(),
+        "hook",
+        &mut errors,
+    );
+    validate_command_entries(root, raw.hooks.shell_env_inject.iter(), "hook", &mut errors);
+    validate_command_entries(
+        root,
         raw.lifecycle.init.iter(),
         "lifecycle command",
         &mut errors,
@@ -1884,6 +1934,31 @@ fn resolve_hooks(root: &Path, hooks: &PluginHooks) -> PluginHooks {
             .iter()
             .map(|entry| resolve_hook_entry(root, entry))
             .collect(),
+        system_prompt_transform: hooks
+            .system_prompt_transform
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+        chat_params_transform: hooks
+            .chat_params_transform
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+        request_headers: hooks
+            .request_headers
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+        tool_definition_transform: hooks
+            .tool_definition_transform
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+        shell_env_inject: hooks
+            .shell_env_inject
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
     }
 }
 
@@ -1937,6 +2012,11 @@ fn validate_hook_paths(root: Option<&Path>, hooks: &PluginHooks) -> Result<(), P
         .iter()
         .chain(hooks.post_tool_use.iter())
         .chain(hooks.post_tool_use_failure.iter())
+        .chain(hooks.system_prompt_transform.iter())
+        .chain(hooks.chat_params_transform.iter())
+        .chain(hooks.request_headers.iter())
+        .chain(hooks.tool_definition_transform.iter())
+        .chain(hooks.shell_env_inject.iter())
     {
         validate_command_path(root, entry, "hook")?;
     }

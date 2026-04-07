@@ -1,6 +1,5 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/icode-server", "crates/acp"]
 resolver = "2"
 
 [workspace.package]
@@ -10,24 +9,37 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-# Serialization
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Async
-tokio = { version = "1" }
-
-# Logging / Error handling
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
-
-# Date/time
 chrono = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+dirs = "5"
+dashmap = "6"
+indexmap = { version = "2", features = ["serde"] }
+parking_lot = "0.12"
+glob = "0.3"
+regex = "1"
+walkdir = "2"
+schemars = { version = "0.8", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "multipart"], default-features = false }
+thiserror = "2"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+url = "2"
+toml = "0.8"
+notify = "7"
+cron = "0.13"
+ignore = "0.4"
 
-# File system
-dirs-next = "2"
-
-# Identifiers
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]

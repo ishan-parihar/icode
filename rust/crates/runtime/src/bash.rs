@@ -14,7 +14,7 @@ use crate::sandbox::{
 };
 use crate::ConfigLoader;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct BashCommandInput {
     pub command: String,
     pub timeout: Option<u64>,

@@ -44,6 +44,7 @@ pub enum CommandAction {
     ForkSession,
     ToggleThinking,
     CompactContext,
+    ShowContextViz,
 }
 
 /// A single command entry in the palette.
@@ -312,6 +313,14 @@ fn register_commands() -> Vec<CommandEntry> {
             shortcut: String::new(),
             suggested: false,
             action: CommandAction::CompactContext,
+        },
+        CommandEntry {
+            title: "Context window".to_string(),
+            value: "context.show".to_string(),
+            category: "Session".to_string(),
+            shortcut: String::new(),
+            suggested: false,
+            action: CommandAction::ShowContextViz,
         },
         CommandEntry {
             title: "Toggle sidebar".to_string(),

@@ -16,7 +16,13 @@ pub use prompt_cache::{
     PromptCacheStats,
 };
 pub use providers::anthropic::{AnthropicClient, AnthropicClient as ApiClient, AuthSource};
+// pub use providers::azure::AzureClient;
+// pub use providers::bedrock::BedrockClient;
+// pub use providers::gemini::GeminiClient;
+// pub use providers::groq::GroqClient;
+// pub use providers::mistral::MistralClient;
 pub use providers::openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
+// pub use providers::openrouter::OpenRouterClient;
 pub use providers::{
     capabilities_for_model, detect_provider_kind, list_all_models, max_tokens_for_model,
     resolve_model_alias, ModelCapabilities, ProviderKind, RegistryEntry,

@@ -9,7 +9,20 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::Frame;
+use std::sync::LazyLock;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthChar;
+
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static SYNTAX_THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
+    ThemeSet::load_defaults()
+        .themes
+        .get("base16-ocean.dark")
+        .cloned()
+        .unwrap_or_default()
+});
 
 const MAX_EXPANDED_LINES: usize = 10;
 const INLINE_LABEL_MAX: usize = 60;
@@ -31,6 +44,10 @@ enum RenderItem {
         model: String,
         color: Color,
     },
+    ToolTimelineSummary {
+        timeline: Vec<(String, bool, u64)>,
+        turn_duration_ms: u64,
+    },
 }
 
 #[derive(Clone)]
@@ -41,6 +58,7 @@ struct ToolCallData {
     output: Option<String>,
     expanded: bool,
     timestamp: u64,
+    duration_ms: u64,
 }
 
 #[derive(Clone)]
@@ -297,6 +315,193 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
+/// Detect the language for syntax highlighting based on tool name and input summary.
+fn detect_language(tool_name: &str, input_summary: &str) -> Option<&'static str> {
+    let ext = extract_file_extension(tool_name, input_summary);
+    let ext = ext.as_deref();
+
+    match ext {
+        Some("rs") => Some("rust"),
+        Some("py") => Some("python"),
+        Some("js") => Some("javascript"),
+        Some("ts") => Some("typescript"),
+        Some("tsx") => Some("tsx"),
+        Some("jsx") => Some("jsx"),
+        Some("go") => Some("go"),
+        Some("rb") => Some("ruby"),
+        Some("java") => Some("java"),
+        Some("c") => Some("c"),
+        Some("cpp") | Some("cc") | Some("cxx") => Some("c++"),
+        Some("h") | Some("hpp") => Some("c++"),
+        Some("hs") => Some("haskell"),
+        Some("scala") => Some("scala"),
+        Some("kt") => Some("kotlin"),
+        Some("swift") => Some("swift"),
+        Some("sh") | Some("bash") | Some("zsh") => Some("bash"),
+        Some("json") => Some("json"),
+        Some("yaml") | Some("yml") => Some("yaml"),
+        Some("toml") => Some("toml"),
+        Some("xml") => Some("xml"),
+        Some("html") => Some("html"),
+        Some("css") => Some("css"),
+        Some("sql") => Some("sql"),
+        Some("md") => Some("markdown"),
+        Some("diff") | Some("patch") => Some("diff"),
+        Some("lua") => Some("lua"),
+        Some("r") => Some("r"),
+        Some("php") => Some("php"),
+        _ => None,
+    }
+}
+
+/// Extract file extension from tool input.
+fn extract_file_extension(tool_name: &str, input_summary: &str) -> Option<String> {
+    if input_summary.is_empty() {
+        return None;
+    }
+
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(input_summary) {
+        let path = val
+            .get("filePath")
+            .or_else(|| val.get("path"))
+            .or_else(|| val.get("file"))
+            .and_then(|v| v.as_str());
+
+        if let Some(p) = path {
+            if let Some(ext) = std::path::Path::new(p).extension() {
+                return ext.to_str().map(|s| s.to_string());
+            }
+        }
+    }
+
+    match tool_name {
+        "bash" | "sh" => Some("sh".to_string()),
+        _ => None,
+    }
+}
+
+/// Syntax-highlight code and return ratatui Line objects.
+/// Returns highlighted lines (capped at max_lines) and whether the content was highlighted.
+fn highlight_code_output(
+    code: &str,
+    language: &str,
+    theme: &Theme,
+    content_width: usize,
+    max_lines: usize,
+) -> (Vec<Line<'static>>, bool) {
+    let syntax = SYNTAX_SET
+        .find_syntax_by_token(language)
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+
+    let mut highlighter = HighlightLines::new(syntax, &*SYNTAX_THEME);
+
+    let mut result = Vec::new();
+    let mut line_count = 0;
+
+    for raw_line in code.lines() {
+        if line_count >= max_lines {
+            break;
+        }
+
+        let ranges = highlighter
+            .highlight_line(raw_line, &*SYNTAX_SET)
+            .unwrap_or_default();
+
+        let mut spans = Vec::with_capacity(ranges.len() + 1);
+        spans.push(Span::raw("  "));
+
+        for (style, text) in &ranges {
+            if text.is_empty() || *text == "\n" {
+                continue;
+            }
+            let color = syntect_color_to_ratatui(style.foreground);
+            spans.push(Span::styled(text.to_string(), Style::default().fg(color)));
+        }
+
+        result.push(Line::from(spans));
+        line_count += 1;
+    }
+
+    if line_count >= max_lines {
+        result.push(Line::from(vec![Span::styled(
+            format!(
+                "  ... {} more lines",
+                code.lines().count().saturating_sub(max_lines)
+            ),
+            Style::default()
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        )]));
+    }
+
+    (result, true)
+}
+
+fn syntect_color_to_ratatui(c: syntect::highlighting::Color) -> Color {
+    Color::Rgb(c.r, c.g, c.b)
+}
+
+/// Detect if the output looks like a unified diff.
+fn looks_like_diff(output: &str) -> bool {
+    let mut diff_markers = 0;
+    for line in output.lines().take(20) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--- ")
+            || trimmed.starts_with("+++ ")
+            || trimmed.starts_with("@@")
+            || trimmed.starts_with("diff --git")
+        {
+            diff_markers += 1;
+        }
+    }
+    diff_markers >= 2
+}
+
+/// Render a diff preview from edit_file output.
+fn render_diff_preview(output: &str, theme: &Theme, max_lines: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut shown = 0;
+
+    for raw_line in output.lines() {
+        if shown >= max_lines {
+            break;
+        }
+
+        let trimmed = raw_line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let line_span = if raw_line.starts_with('+') && !raw_line.starts_with("+++") {
+            Span::styled(raw_line.to_string(), Style::default().fg(theme.diff_added))
+        } else if raw_line.starts_with('-') && !raw_line.starts_with("---") {
+            Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(theme.diff_removed),
+            )
+        } else if raw_line.starts_with("@@") {
+            Span::styled(raw_line.to_string(), Style::default().fg(theme.accent))
+        } else {
+            Span::styled(raw_line.to_string(), Style::default().fg(theme.text_muted))
+        };
+
+        lines.push(Line::from(vec![line_span]));
+        shown += 1;
+    }
+
+    if output.lines().count() > shown + 5 {
+        let remaining = output.lines().count().saturating_sub(shown);
+        lines.push(Line::from(vec![Span::styled(
+            format!("  ... {} more lines", remaining),
+            Style::default()
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        )]));
+    }
+
+    lines
+}
+
 fn parse_todos_from_input(input_json: &str) -> Vec<TodoItemData> {
     if input_json.is_empty() {
         return Vec::new();
@@ -493,6 +698,7 @@ impl MessageList {
                                     output: output.clone(),
                                     expanded: *expanded,
                                     timestamp: msg.timestamp,
+                                    duration_ms: 0,
                                 };
                                 let has_output = data.output.is_some()
                                     && !data.output.as_ref().map_or(true, |s| s.is_empty());
@@ -544,6 +750,14 @@ impl MessageList {
                             agent: msg.agent.clone(),
                             model: state.session.model.clone(),
                             color: agent_color,
+                        });
+                        line_counts.push(1);
+                    }
+
+                    if !msg.tool_timeline.is_empty() {
+                        items.push(RenderItem::ToolTimelineSummary {
+                            timeline: msg.tool_timeline.clone(),
+                            turn_duration_ms: msg.turn_duration_ms,
                         });
                         line_counts.push(1);
                     }
@@ -626,6 +840,7 @@ impl MessageList {
                 RenderItem::ThinkingPlaceholder => 1,
                 RenderItem::Cursor(_) => 1,
                 RenderItem::AgentSignature { .. } => 1,
+                RenderItem::ToolTimelineSummary { .. } => 1,
             };
 
             let item_start = current_line;
@@ -763,6 +978,13 @@ impl MessageList {
                         item_area,
                     );
                 }
+                RenderItem::ToolTimelineSummary {
+                    timeline,
+                    turn_duration_ms,
+                } => {
+                    let spans = build_timeline_spans(timeline, *turn_duration_ms, &state.theme);
+                    frame.render_widget(Paragraph::new(Line::from(spans)), item_area);
+                }
             }
 
             current_line = item_end;
@@ -877,6 +1099,53 @@ fn render_tool_call_inline(
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+fn build_timeline_spans(
+    timeline: &[(String, bool, u64)],
+    turn_duration_ms: u64,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        "  \u{1F527} ",
+        Style::default().fg(theme.text_muted),
+    )];
+
+    let total = timeline.len();
+    for (i, (name, success, _dur)) in timeline.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(theme.text_muted)));
+        }
+        let icon = tool_icon(name);
+        let status_span = if *success {
+            Span::styled("\u{2713}", Style::default().fg(theme.success))
+        } else {
+            Span::styled("\u{2717}", Style::default().fg(theme.error))
+        };
+        spans.push(Span::styled(
+            format!("{icon} {name} \u{2192} "),
+            Style::default().fg(theme.text_muted),
+        ));
+        spans.push(status_span);
+    }
+
+    let dur = if turn_duration_ms > 0 {
+        format!(
+            " ({total} tool{}, {:.1}s)",
+            if total == 1 { "" } else { "s" },
+            turn_duration_ms as f64 / 1000.0
+        )
+    } else {
+        format!(" ({total} tool{})", if total == 1 { "" } else { "s" })
+    };
+    spans.push(Span::styled(
+        dur,
+        Style::default()
+            .fg(theme.text_muted)
+            .add_modifier(Modifier::ITALIC),
+    ));
+
+    spans
+}
+
 fn render_tool_call_block(
     frame: &mut Frame,
     data: &ToolCallData,
@@ -908,39 +1177,100 @@ fn render_tool_call_block(
         }
 
         if let Some(ref out) = data.output {
-            let out_lines = wrap_text(out, content_width.saturating_sub(4));
-            let max_out = MAX_EXPANDED_LINES.min(out_lines.len());
-            for out_line in out_lines.iter().take(max_out) {
-                all_lines.push(Line::from(vec![Span::styled(
-                    out_line.clone(),
-                    Style::default().fg(theme.text_muted),
-                )]));
+            // For edit_file success, try diff-aware rendering
+            if data.name == "edit_file"
+                && matches!(data.status, ToolStatus::Completed)
+                && looks_like_diff(out)
+            {
+                let diff_lines = render_diff_preview(out, theme, MAX_EXPANDED_LINES);
+                all_lines.extend(diff_lines);
+            } else {
+                // Try syntax highlighting for code-like output
+                let lang = detect_language(&data.name, &data.input_summary);
+                let line_count = out.lines().count();
+
+                if let Some(language) = lang {
+                    if line_count < 200 {
+                        let (hl_lines, _) = highlight_code_output(
+                            out,
+                            language,
+                            theme,
+                            content_width,
+                            MAX_EXPANDED_LINES,
+                        );
+                        all_lines.extend(hl_lines);
+                    } else {
+                        let out_lines = wrap_text(out, content_width.saturating_sub(4));
+                        let max_out = MAX_EXPANDED_LINES.min(out_lines.len());
+                        for out_line in out_lines.iter().take(max_out) {
+                            all_lines.push(Line::from(vec![Span::styled(
+                                out_line.clone(),
+                                Style::default().fg(theme.text_muted),
+                            )]));
+                        }
+                        if out_lines.len() > max_out {
+                            all_lines.push(Line::from(vec![Span::styled(
+                                format!("... {} more lines", out_lines.len() - max_out),
+                                Style::default()
+                                    .fg(theme.text_muted)
+                                    .add_modifier(Modifier::ITALIC),
+                            )]));
+                        }
+                    }
+                } else {
+                    // Plain text fallback
+                    let out_lines = wrap_text(out, content_width.saturating_sub(4));
+                    let max_out = MAX_EXPANDED_LINES.min(out_lines.len());
+                    for out_line in out_lines.iter().take(max_out) {
+                        all_lines.push(Line::from(vec![Span::styled(
+                            out_line.clone(),
+                            Style::default().fg(theme.text_muted),
+                        )]));
+                    }
+                    if out_lines.len() > max_out {
+                        all_lines.push(Line::from(vec![Span::styled(
+                            format!("... {} more lines", out_lines.len() - max_out),
+                            Style::default()
+                                .fg(theme.text_muted)
+                                .add_modifier(Modifier::ITALIC),
+                        )]));
+                    }
+                }
             }
-            if out_lines.len() > max_out {
+        }
+    } else if let Some(ref out) = data.output {
+        // Collapsed preview — show first 2 lines
+        if data.name == "edit_file"
+            && matches!(data.status, ToolStatus::Completed)
+            && looks_like_diff(out)
+        {
+            let diff_preview = render_diff_preview(out, theme, 2);
+            all_lines.extend(diff_preview);
+            if out.lines().count() > 7 {
                 all_lines.push(Line::from(vec![Span::styled(
-                    format!("... {} more lines", out_lines.len() - max_out),
+                    "... expand for diff",
                     Style::default()
                         .fg(theme.text_muted)
                         .add_modifier(Modifier::ITALIC),
                 )]));
             }
-        }
-    } else if let Some(ref out) = data.output {
-        let out_lines = wrap_text(out, content_width.saturating_sub(4));
-        let preview_lines = 2.min(out_lines.len());
-        for out_line in out_lines.iter().take(preview_lines) {
-            all_lines.push(Line::from(vec![Span::styled(
-                out_line.clone(),
-                Style::default().fg(theme.text_muted),
-            )]));
-        }
-        if out_lines.len() > preview_lines {
-            all_lines.push(Line::from(vec![Span::styled(
-                "... expand for more",
-                Style::default()
-                    .fg(theme.text_muted)
-                    .add_modifier(Modifier::ITALIC),
-            )]));
+        } else {
+            let out_lines = wrap_text(out, content_width.saturating_sub(4));
+            let preview_lines = 2.min(out_lines.len());
+            for out_line in out_lines.iter().take(preview_lines) {
+                all_lines.push(Line::from(vec![Span::styled(
+                    out_line.clone(),
+                    Style::default().fg(theme.text_muted),
+                )]));
+            }
+            if out_lines.len() > preview_lines {
+                all_lines.push(Line::from(vec![Span::styled(
+                    "... expand for more",
+                    Style::default()
+                        .fg(theme.text_muted)
+                        .add_modifier(Modifier::ITALIC),
+                )]));
+            }
         }
     }
 

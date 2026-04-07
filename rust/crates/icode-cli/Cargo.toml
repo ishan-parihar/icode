@@ -29,6 +29,8 @@ syntect = "5"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
 tools = { path = "../tools" }
 arboard = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = { workspace = true }
 
 [lints]
 workspace = true

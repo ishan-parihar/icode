@@ -1,14 +1,23 @@
+pub mod agents;
+pub mod auth_store;
+pub mod device_code;
+pub mod permission_rules;
+pub mod skill_discovery;
+pub mod skill_index;
 mod bash;
 pub mod bash_validation;
 mod bootstrap;
 mod compact;
 mod config;
 mod conversation;
+mod event_bus;
+mod persistence;
 mod file_ops;
 pub mod green_contract;
 mod hooks;
 mod json;
 mod lane_events;
+mod list_directory;
 pub mod lsp_client;
 mod mcp;
 mod mcp_client;
@@ -21,11 +30,13 @@ mod permissions;
 pub mod plugin_lifecycle;
 mod policy_engine;
 mod prompt;
+mod query_loop;
 pub mod recovery_recipes;
 mod remote;
 pub mod sandbox;
 mod session;
 pub mod session_control;
+pub mod sqlite_store;
 mod sse;
 pub mod stale_branch;
 pub mod summary_compression;
@@ -33,9 +44,16 @@ pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
 pub mod trust_resolver;
+mod truncation;
 mod usage;
 pub mod worker_boot;
 
+pub use agents::{default_agents, AgentDefinition as AgentDefinitionType};
+pub use auth_store::{AuthStore, OAuthToken};
+pub use device_code::{DeviceCodeResponse, TokenResponse, initiate_device_flow, poll_for_token};
+pub use permission_rules::{PermissionAction, PermissionDuration, PermissionRule, PermissionRuleStore};
+pub use skill_discovery::{discover_skills, DiscoveredSkill, SkillSource};
+pub use skill_index::{SharedSkillIndex, SkillIndex};
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use compact::{
@@ -51,9 +69,9 @@ pub use config::{
     CLAW_SETTINGS_SCHEMA_NAME,
 };
 pub use conversation::{
-    auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
-    ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolError,
-    ToolExecutor, TurnSummary,
+    auto_compaction_threshold_from_env, AgentDefinition, ApiClient, ApiRequest, AssistantEvent,
+    AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor,
+    ToolError, ToolExecutor, TurnSummary,
 };
 pub use file_ops::{
     edit_file, glob_search, grep_search, read_file, write_file, EditFileOutput, GlobSearchOutput,
@@ -61,11 +79,14 @@ pub use file_ops::{
     WriteFileOutput,
 };
 pub use hooks::{
-    HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
+    ChatParamsTransformInput, HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter,
+    HookRunResult, HookRunner, RequestHeadersInput, ShellEnvInjectInput,
+    SystemPromptTransformInput, ToolDefinitionTransformInput,
 };
 pub use lane_events::{
     LaneEvent, LaneEventBlocker, LaneEventName, LaneEventStatus, LaneFailureClass,
 };
+pub use list_directory::{list_directory, ListDirectoryInput};
 pub use mcp::{
     mcp_server_signature, mcp_tool_name, mcp_tool_prefix, normalize_name_for_mcp,
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
@@ -96,7 +117,7 @@ pub use oauth::{
 };
 pub use permissions::{
     PermissionContext, PermissionMode, PermissionOutcome, PermissionOverride, PermissionPolicy,
-    PermissionPromptDecision, PermissionPrompter, PermissionRequest,
+    PermissionPromptDecision, PermissionPrompter, PermissionRequest, PermissionScope,
 };
 pub use plugin_lifecycle::{
     DegradedMode, DiscoveryResult, PluginHealthcheck, PluginLifecycle, PluginLifecycleEvent,
@@ -110,6 +131,7 @@ pub use prompt::{
     load_system_prompt, prepend_bullets, ContextFile, ProjectContext, PromptBuildError,
     SystemPromptBuilder, FRONTIER_MODEL_NAME, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 };
+pub use query_loop::{EnhancedQueryLoop, QueryLoopConfig, QueryOutcome};
 pub use recovery_recipes::{
     attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
     RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
@@ -139,9 +161,21 @@ pub use task_packet::{
     TaskPacket, TaskPacketValidationError, TaskScope, ValidatedPacket,
 };
 pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
+pub use truncation::TruncationPolicy;
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
+pub use event_bus::{Event, EventBus};
+pub use persistence::{
+    CronRow, EventRow, LspDiagnosticRow, LspServerRow, McpResourceRow, McpServerRow,
+    McpToolRow, MessageRow, PersistenceError, SessionRow, SqliteStore,
+    TaskMessageRow, TaskRow, TeamRow, WorkerEventRow, WorkerRow,
+};
+pub use sqlite_store::{SessionRecord, SqliteStore as SqliteSessionStore};
+
+pub mod ipc_socket;
+pub use ipc_socket::{UnixSocketClient, UnixSocketServer};
+
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerFailure, WorkerFailureKind, WorkerReadySnapshot,
     WorkerRegistry, WorkerStatus,

@@ -237,14 +237,21 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "skills",
         aliases: &[],
-        summary: "List or install available skills",
-        argument_hint: Some("[list|install <path>|help]"),
+        summary: "List, refresh, or clear skills",
+        argument_hint: Some("[list|refresh|clear|install <path>|help]"),
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "doctor",
         aliases: &[],
         summary: "Diagnose setup issues and environment health",
+        argument_hint: None,
+        resume_supported: true,
+    },
+    SlashCommandSpec {
+        name: "db",
+        aliases: &[],
+        summary: "Show database status (path, size, table counts)",
         argument_hint: None,
         resume_supported: true,
     },
@@ -427,6 +434,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "rewind",
         aliases: &[],
         summary: "Rewind the conversation to a previous state",
+        argument_hint: Some("[steps]"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
+        name: "revert",
+        aliases: &[],
+        summary: "Revert to a previous git snapshot and restore conversation",
         argument_hint: Some("[steps]"),
         resume_supported: false,
     },
@@ -1120,6 +1134,7 @@ pub enum SlashCommand {
         args: Option<String>,
     },
     Doctor,
+    Db,
     Login,
     Logout,
     Vim,
@@ -1184,6 +1199,9 @@ pub enum SlashCommand {
     },
     Rewind {
         steps: Option<String>,
+    },
+    Revert {
+        steps: Option<u32>,
     },
     Ide {
         target: Option<String>,
@@ -1328,6 +1346,10 @@ pub fn validate_slash_command_input(
             validate_no_args(command, &args)?;
             SlashCommand::Doctor
         }
+        "db" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::Db
+        }
         "login" => {
             validate_no_args(command, &args)?;
             SlashCommand::Login
@@ -1434,6 +1456,9 @@ pub fn validate_slash_command_input(
         "effort" => SlashCommand::Effort { level: remainder },
         "branch" => SlashCommand::Branch { name: remainder },
         "rewind" => SlashCommand::Rewind { steps: remainder },
+        "revert" => SlashCommand::Revert {
+            steps: parse_revert_steps(&args)?,
+        },
         "ide" => SlashCommand::Ide { target: remainder },
         "tag" => SlashCommand::Tag { label: remainder },
         "output-style" => SlashCommand::OutputStyle { style: remainder },
@@ -1691,7 +1716,10 @@ fn parse_skills_args(args: Option<&str>) -> Result<Option<String>, SlashCommandP
         return Ok(None);
     };
 
-    if matches!(args, "list" | "help" | "-h" | "--help") {
+    if matches!(
+        args,
+        "list" | "refresh" | "clear" | "help" | "-h" | "--help"
+    ) {
         return Ok(Some(args.to_string()));
     }
 
@@ -1711,10 +1739,10 @@ fn parse_skills_args(args: Option<&str>) -> Result<Option<String>, SlashCommandP
 
     Err(command_error(
         &format!(
-            "Unexpected arguments for /skills: {args}. Use /skills, /skills list, /skills install <path>, or /skills help."
+            "Unexpected arguments for /skills: {args}. Use /skills, /skills list, /skills refresh, /skills clear, /skills install <path>, or /skills help."
         ),
         "skills",
-        "/skills [list|install <path>|help]",
+        "/skills [list|refresh|clear|install <path>|help]",
     ))
 }
 
@@ -1726,6 +1754,17 @@ fn usage_error(command: &str, argument_hint: &str) -> SlashCommandParseError {
         command_root_name(command),
         &usage,
     )
+}
+
+fn parse_revert_steps(args: &[&str]) -> Result<Option<u32>, SlashCommandParseError> {
+    match args {
+        [] => Ok(None),
+        [value] => value
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| usage_error("revert", "[steps]")),
+        _ => Err(usage_error("revert", "[steps]")),
+    }
 }
 
 fn command_error(message: &str, command: &str, usage: &str) -> SlashCommandParseError {
@@ -1977,7 +2016,7 @@ pub struct PluginsCommandResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum DefinitionSource {
+pub enum DefinitionSource {
     ProjectCodex,
     ProjectClaude,
     UserCodexHome,
@@ -1986,7 +2025,7 @@ enum DefinitionSource {
 }
 
 impl DefinitionSource {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::ProjectCodex => "Project (.codex)",
             Self::ProjectClaude => "Project (.claude)",
@@ -1998,32 +2037,34 @@ impl DefinitionSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AgentSummary {
-    name: String,
-    description: Option<String>,
-    model: Option<String>,
-    reasoning_effort: Option<String>,
-    source: DefinitionSource,
-    shadowed_by: Option<DefinitionSource>,
+pub struct AgentSummary {
+    pub name: String,
+    pub description: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub source: DefinitionSource,
+    pub shadowed_by: Option<DefinitionSource>,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SkillSummary {
-    name: String,
-    description: Option<String>,
-    source: DefinitionSource,
-    shadowed_by: Option<DefinitionSource>,
-    origin: SkillOrigin,
+pub struct SkillSummary {
+    pub name: String,
+    pub description: Option<String>,
+    pub source: DefinitionSource,
+    pub shadowed_by: Option<DefinitionSource>,
+    pub origin: SkillOrigin,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkillOrigin {
+pub enum SkillOrigin {
     SkillsDir,
     LegacyCommandsDir,
 }
 
 impl SkillOrigin {
-    fn detail_label(self) -> Option<&'static str> {
+    pub fn detail_label(self) -> Option<&'static str> {
         match self {
             Self::SkillsDir => None,
             Self::LegacyCommandsDir => Some("legacy /commands"),
@@ -2032,7 +2073,7 @@ impl SkillOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SkillRoot {
+pub struct SkillRoot {
     source: DefinitionSource,
     path: PathBuf,
     origin: SkillOrigin,
@@ -2192,6 +2233,8 @@ pub fn handle_skills_slash_command(args: Option<&str>, cwd: &Path) -> std::io::R
             let skills = load_skills_from_roots(&roots)?;
             Ok(render_skills_report(&skills))
         }
+        Some("refresh") => handle_skills_refresh(),
+        Some("clear") => handle_skills_clear(),
         Some("install") => Ok(render_skills_usage(Some("install"))),
         Some(args) if args.starts_with("install ") => {
             let target = args["install ".len()..].trim();
@@ -2203,6 +2246,70 @@ pub fn handle_skills_slash_command(args: Option<&str>, cwd: &Path) -> std::io::R
         }
         Some("-h" | "--help" | "help") => Ok(render_skills_usage(None)),
         Some(args) => Ok(render_skills_usage(Some(args))),
+    }
+}
+
+fn handle_skills_refresh() -> std::io::Result<String> {
+    let urls: Vec<String> = std::env::var("SKILL_REMOTE_URLS")
+        .map(|val| {
+            val.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if urls.is_empty() {
+        return Ok("Skills\n  Result           no remote URLs configured. Set SKILL_REMOTE_URLS env var (comma-separated).".to_string());
+    }
+
+    let cache_dir = std::env::var("ICODE_SKILLS_CACHE")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".icode").join("skills-cache")
+        });
+
+    let discovery = tools::SkillDiscovery::with_default_ttl(cache_dir);
+    match discovery.refresh_from_urls(&urls) {
+        Ok(names) => {
+            if names.is_empty() {
+                Ok("Skills\n  Result           no skills found in remote indexes.".to_string())
+            } else {
+                Ok(format!(
+                    "Skills\n  Result           refreshed {} skill(s)\n  Updated          {}",
+                    names.len(),
+                    names.join(", ")
+                ))
+            }
+        }
+        Err(error) => Ok(format!(
+            "Skills\n  Result           refresh failed: {error}"
+        )),
+    }
+}
+
+fn handle_skills_clear() -> std::io::Result<String> {
+    let cache_dir = std::env::var("ICODE_SKILLS_CACHE")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".icode").join("skills-cache")
+        });
+
+    if cache_dir.exists() {
+        fs::remove_dir_all(&cache_dir).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to clear cache: {e}"),
+            )
+        })?;
+        Ok("Skills\n  Result           cache cleared.".to_string())
+    } else {
+        Ok("Skills\n  Result           no cache to clear.".to_string())
     }
 }
 
@@ -2293,7 +2400,7 @@ fn resolve_plugin_target(
     }
 }
 
-fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, PathBuf)> {
+pub fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, PathBuf)> {
     let mut roots = Vec::new();
 
     for ancestor in cwd.ancestors() {
@@ -2334,7 +2441,7 @@ fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, P
     roots
 }
 
-fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
+pub fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
     for ancestor in cwd.ancestors() {
@@ -2632,7 +2739,7 @@ fn push_unique_skill_root(
     }
 }
 
-fn load_agents_from_roots(
+pub fn load_agents_from_roots(
     roots: &[(DefinitionSource, PathBuf)],
 ) -> std::io::Result<Vec<AgentSummary>> {
     let mut agents = Vec::new();
@@ -2657,6 +2764,7 @@ fn load_agents_from_roots(
                 reasoning_effort: parse_toml_string(&contents, "model_reasoning_effort"),
                 source: *source,
                 shadowed_by: None,
+                path: entry.path(),
             });
         }
         root_agents.sort_by(|left, right| left.name.cmp(&right.name));
@@ -2666,7 +2774,8 @@ fn load_agents_from_roots(
             if let Some(existing) = active_sources.get(&key) {
                 agent.shadowed_by = Some(*existing);
             } else {
-                active_sources.insert(key, agent.source);
+                let source = agent.source;
+                active_sources.insert(key, source);
             }
             agents.push(agent);
         }
@@ -2675,7 +2784,7 @@ fn load_agents_from_roots(
     Ok(agents)
 }
 
-fn load_skills_from_roots(roots: &[SkillRoot]) -> std::io::Result<Vec<SkillSummary>> {
+pub fn load_skills_from_roots(roots: &[SkillRoot]) -> std::io::Result<Vec<SkillSummary>> {
     let mut skills = Vec::new();
     let mut active_sources = BTreeMap::<String, DefinitionSource>::new();
 
@@ -2692,7 +2801,7 @@ fn load_skills_from_roots(roots: &[SkillRoot]) -> std::io::Result<Vec<SkillSumma
                     if !skill_path.is_file() {
                         continue;
                     }
-                    let contents = fs::read_to_string(skill_path)?;
+                    let contents = fs::read_to_string(&skill_path)?;
                     let (name, description) = parse_skill_frontmatter(&contents);
                     root_skills.push(SkillSummary {
                         name: name
@@ -2701,6 +2810,7 @@ fn load_skills_from_roots(roots: &[SkillRoot]) -> std::io::Result<Vec<SkillSumma
                         source: root.source,
                         shadowed_by: None,
                         origin: root.origin,
+                        path: skill_path,
                     });
                 }
                 SkillOrigin::LegacyCommandsDir => {
@@ -2732,6 +2842,7 @@ fn load_skills_from_roots(roots: &[SkillRoot]) -> std::io::Result<Vec<SkillSumma
                         source: root.source,
                         shadowed_by: None,
                         origin: root.origin,
+                        path: markdown_path,
                     });
                 }
             }
@@ -2930,6 +3041,86 @@ fn render_skills_report(skills: &[SkillSummary]) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
+/// Render skills as a JSON array for CLI `--output-format json`.
+pub fn render_skills_json(skills: &[SkillSummary]) -> String {
+    let entries: Vec<serde_json::Value> = skills
+        .iter()
+        .map(|skill| {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "name".to_string(),
+                serde_json::Value::String(skill.name.clone()),
+            );
+            obj.insert(
+                "path".to_string(),
+                serde_json::Value::String(skill.path.to_string_lossy().to_string()),
+            );
+            obj.insert(
+                "description".to_string(),
+                skill
+                    .description
+                    .clone()
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            obj.insert(
+                "source".to_string(),
+                serde_json::Value::String(skill.source.label().to_string()),
+            );
+            if skill.shadowed_by.is_some() {
+                obj.insert("shadowed".to_string(), serde_json::Value::Bool(true));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Render agents as a JSON array for CLI `--output-format json`.
+pub fn render_agents_json(agents: &[AgentSummary]) -> String {
+    let entries: Vec<serde_json::Value> = agents
+        .iter()
+        .map(|agent| {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "name".to_string(),
+                serde_json::Value::String(agent.name.clone()),
+            );
+            obj.insert(
+                "description".to_string(),
+                agent
+                    .description
+                    .clone()
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            if let Some(model) = &agent.model {
+                obj.insert(
+                    "model".to_string(),
+                    serde_json::Value::String(model.clone()),
+                );
+            }
+            let mut capabilities = Vec::new();
+            if let Some(reasoning) = &agent.reasoning_effort {
+                capabilities.push(serde_json::Value::String(format!("reasoning:{reasoning}")));
+            }
+            obj.insert(
+                "capabilities".to_string(),
+                serde_json::Value::Array(capabilities),
+            );
+            obj.insert(
+                "source".to_string(),
+                serde_json::Value::String(agent.source.label().to_string()),
+            );
+            if agent.shadowed_by.is_some() {
+                obj.insert("shadowed".to_string(), serde_json::Value::Bool(true));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
 fn render_skill_install_report(skill: &InstalledSkill) -> String {
     let mut lines = vec![
         "Skills".to_string(),
@@ -3076,10 +3267,12 @@ fn render_agents_usage(unexpected: Option<&str>) -> String {
 fn render_skills_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "Skills".to_string(),
-        "  Usage            /skills [list|install <path>|help]".to_string(),
-        "  Direct CLI       icode skills [list|install <path>|help]".to_string(),
+        "  Usage            /skills [list|refresh|clear|install <path>|help]".to_string(),
+        "  Direct CLI       icode skills [list|refresh|clear|install <path>|help]".to_string(),
         "  Install root     $CODEX_HOME/skills or ~/.codex/skills".to_string(),
         "  Sources          .codex/skills, .claude/skills, legacy /commands".to_string(),
+        "  Remote refresh   Set SKILL_REMOTE_URLS env var (comma-separated index.json URLs)"
+            .to_string(),
     ];
     if let Some(args) = unexpected {
         lines.push(format!("  Unexpected       {args}"));
@@ -3239,6 +3432,7 @@ pub fn handle_slash_command(
         | SlashCommand::Agents { .. }
         | SlashCommand::Skills { .. }
         | SlashCommand::Doctor
+        | SlashCommand::Db
         | SlashCommand::Login
         | SlashCommand::Logout
         | SlashCommand::Vim
@@ -3274,6 +3468,7 @@ pub fn handle_slash_command(
         | SlashCommand::Effort { .. }
         | SlashCommand::Branch { .. }
         | SlashCommand::Rewind { .. }
+        | SlashCommand::Revert { .. }
         | SlashCommand::Ide { .. }
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
@@ -3654,9 +3849,10 @@ mod tests {
         ));
         assert!(agents_error.contains("  Usage            /agents [list|help]"));
         assert!(skills_error.contains(
-            "Unexpected arguments for /skills: show help. Use /skills, /skills list, /skills install <path>, or /skills help."
+            "Unexpected arguments for /skills: show help. Use /skills, /skills list, /skills refresh, /skills clear, /skills install <path>, or /skills help."
         ));
-        assert!(skills_error.contains("  Usage            /skills [list|install <path>|help]"));
+        assert!(skills_error
+            .contains("  Usage            /skills [list|refresh|clear|install <path>|help]"));
     }
 
     #[test]
@@ -3710,8 +3906,8 @@ mod tests {
         ));
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
-        assert!(help.contains("/skills [list|install <path>|help]"));
-        assert_eq!(slash_command_specs().len(), 143);
+        assert!(help.contains("/skills [list|refresh|clear|install <path>|help]"));
+        assert_eq!(slash_command_specs().len(), 145);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 
@@ -4025,7 +4221,8 @@ mod tests {
 
         let skills_help =
             super::handle_skills_slash_command(Some("--help"), &cwd).expect("skills help");
-        assert!(skills_help.contains("Usage            /skills [list|install <path>|help]"));
+        assert!(skills_help
+            .contains("Usage            /skills [list|refresh|clear|install <path>|help]"));
         assert!(skills_help.contains("Install root     $CODEX_HOME/skills or ~/.codex/skills"));
         assert!(skills_help.contains("legacy /commands"));
 

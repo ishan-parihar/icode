@@ -74,7 +74,11 @@ fn upstream_repo_candidates(primary_repo_root: &Path) -> Vec<PathBuf> {
         candidates.push(ancestor.join("icode"));
     }
 
-    candidates.push(primary_repo_root.join("reference-source").join("icode-code"));
+    candidates.push(
+        primary_repo_root
+            .join("reference-source")
+            .join("icode-code"),
+    );
     candidates.push(primary_repo_root.join("vendor").join("icode-code"));
 
     let mut deduped = Vec::new();

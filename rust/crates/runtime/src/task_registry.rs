@@ -117,17 +117,19 @@ impl TaskRegistry {
         task
     }
 
+    #[must_use]
     pub fn get(&self, task_id: &str) -> Option<Task> {
         let inner = self.inner.lock().expect("registry lock poisoned");
         inner.tasks.get(task_id).cloned()
     }
 
+    #[must_use]
     pub fn list(&self, status_filter: Option<TaskStatus>) -> Vec<Task> {
         let inner = self.inner.lock().expect("registry lock poisoned");
         inner
             .tasks
             .values()
-            .filter(|t| status_filter.map_or(true, |s| t.status == s))
+            .filter(|t| status_filter.is_none_or(|s| t.status == s))
             .cloned()
             .collect()
     }
@@ -212,6 +214,7 @@ impl TaskRegistry {
         Ok(())
     }
 
+    #[must_use]
     pub fn remove(&self, task_id: &str) -> Option<Task> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         inner.tasks.remove(task_id)
@@ -249,9 +252,10 @@ mod tests {
     #[test]
     fn creates_task_from_packet() {
         use crate::task_packet::{
-            AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy, GreenLevel, RepoConfig,
+            AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy, RepoConfig,
             ReportingContract, TaskScope,
         };
+        use std::collections::BTreeMap;
         use std::path::PathBuf;
 
         let registry = TaskRegistry::new();
@@ -275,7 +279,7 @@ mod tests {
             reporting: ReportingContract::Summary,
             escalation: EscalationPolicy::AutoEscalate,
             created_at: 0,
-            metadata: Default::default(),
+            metadata: BTreeMap::default(),
         };
 
         let task = registry

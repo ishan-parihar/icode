@@ -1,13 +1,15 @@
 use crate::tui::app::{AppMode, AppState, ToastKind};
 use crate::tui::command_palette::render_command_palette;
+use crate::tui::dialog_context_viz::render_context_viz_dialog;
 use crate::tui::dialog_help::render_help_dialog;
 use crate::tui::dialog_mcp::render_mcp_dialog;
 use crate::tui::dialog_message_actions::render_message_action_dialog;
 use crate::tui::dialog_plugins::render_plugins_dialog;
+use crate::tui::dialog_session_branching::render_session_branching;
 use crate::tui::dialog_sessions::render_sessions_dialog;
 use crate::tui::dialog_skills::render_skills_dialog;
 use crate::tui::model_picker::render_model_picker;
-use crate::tui::widgets::{MessageList, Sidebar};
+use crate::tui::widgets::{render_pager, DiffView, MessageList, Sidebar};
 use crate::tui::InputWidget;
 use crate::tui::Theme;
 use api::capabilities_for_model;
@@ -17,6 +19,8 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
+use runtime::{format_usd, pricing_for_model};
+use std::time::Instant;
 
 pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     let area = frame.area();
@@ -118,6 +122,49 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
 
     if state.help_dialog.open {
         render_help_dialog(frame, &state.help_dialog, area, state.theme);
+    }
+
+    if state.context_viz_dialog.open {
+        render_context_viz_dialog(
+            frame,
+            &state.context_viz_dialog,
+            area,
+            state.theme,
+            &state.session.model,
+            state.session.input_tokens,
+            state.session.output_tokens,
+            state.session.cache_create_tokens,
+            state.session.cache_read_tokens,
+            state.context_window,
+            state.session.turns,
+            state.session.message_count,
+            state.session.cumulative_cost,
+            state.session.budget_max,
+            state.session.budget_remaining,
+            state.session.compaction_count,
+            state.session.compaction_removed_messages,
+            &state.session.effort_level,
+        );
+    }
+
+    if state.branching_dialog.open {
+        render_session_branching(frame, &mut state.branching_dialog, area, state.theme);
+    }
+
+    if let Some(ref mut diff_view) = state.diff_view {
+        render_diff_view_overlay(frame, diff_view, area, &state.theme);
+    }
+
+    if state.pager.open {
+        let theme = state.theme;
+        render_pager(frame, &state.pager, area, || {
+            (
+                theme.background_panel,
+                theme.text,
+                theme.border_active,
+                theme.border,
+            )
+        });
     }
 }
 
@@ -622,6 +669,23 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
         right_spans.push(Span::raw("  "));
     }
 
+    // Turn duration timer
+    let turn_duration_str = if let Some(started) = state.turn_started_at {
+        let elapsed = started.elapsed();
+        format_duration(elapsed)
+    } else if let Some(duration) = state.last_turn_duration {
+        format_duration(duration)
+    } else {
+        String::new()
+    };
+
+    if !turn_duration_str.is_empty() {
+        right_spans.push(Span::styled(
+            format!("\u{23f1} {} ", turn_duration_str),
+            Style::default().fg(state.theme.info),
+        ));
+    }
+
     // Streaming indicator or context usage
     let total_tokens = state.session.input_tokens + state.session.output_tokens;
     if state.is_streaming {
@@ -655,6 +719,36 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
         ));
     }
 
+    // Cost calculation
+    if total_tokens > 0 {
+        if let Some(pricing) = pricing_for_model(&state.session.model) {
+            let input_cost =
+                (state.session.input_tokens as f64 / 1_000_000.0) * pricing.input_cost_per_million;
+            let output_cost = (state.session.output_tokens as f64 / 1_000_000.0)
+                * pricing.output_cost_per_million;
+            let total_cost = input_cost + output_cost;
+            right_spans.push(Span::styled(
+                format!("{} ", format_usd(total_cost)),
+                Style::default().fg(state.theme.text_muted),
+            ));
+        }
+    }
+
+    // Permission mode (abbreviated + color-coded)
+    let (perm_label, perm_color) = match state.session.permission_mode.as_str() {
+        "read-only" => ("r/o", state.theme.info),
+        "workspace-write" => ("w/w", state.theme.warning),
+        "danger-full-access" => ("full", state.theme.error),
+        _ => (
+            state.session.permission_mode.as_str(),
+            state.theme.text_muted,
+        ),
+    };
+    right_spans.push(Span::styled(
+        format!("{perm_label} "),
+        Style::default().fg(perm_color),
+    ));
+
     // Model name
     right_spans.push(Span::styled(
         &state.session.model,
@@ -687,6 +781,18 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
         Paragraph::new(Line::from(combined)).style(Style::default().bg(state.theme.background));
 
     frame.render_widget(footer, area);
+}
+
+/// Format a duration as "M:SS" or "S:SS" for longer durations.
+fn format_duration(d: std::time::Duration) -> String {
+    let total_secs = d.as_secs();
+    if total_secs < 60 {
+        format!("0:{:02}", total_secs)
+    } else {
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!("{mins}:{secs:02}")
+    }
 }
 
 fn render_slash_autocomplete(
@@ -799,4 +905,43 @@ fn render_toasts(frame: &mut Frame, state: &AppState, area: Rect) {
             .style(Style::default().bg(state.theme.background_panel));
         frame.render_widget(para, inner);
     }
+}
+
+fn render_diff_view_overlay(
+    frame: &mut Frame,
+    diff_view: &mut DiffView,
+    area: Rect,
+    theme: &Theme,
+) {
+    let overlay_width = area.width.saturating_sub(4).min(120).max(40);
+    let overlay_height = area.height.saturating_sub(6).max(10);
+    let overlay_x = (area.width.saturating_sub(overlay_width)) / 2;
+    let overlay_y = (area.height.saturating_sub(overlay_height)) / 2;
+
+    let overlay_area = Rect {
+        x: area.x + overlay_x,
+        y: area.y + overlay_y,
+        width: overlay_width,
+        height: overlay_height,
+    };
+
+    let border_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border_active))
+        .border_type(BorderType::Rounded)
+        .title(format!(
+            " {} (j/k:scroll, g/G:top/bottom, q:close) ",
+            diff_view.title
+        ))
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(theme.background_panel));
+
+    let inner = border_block.inner(overlay_area);
+    frame.render_widget(border_block, overlay_area);
+
+    diff_view.render(frame, inner, theme);
 }

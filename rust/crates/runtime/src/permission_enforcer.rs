@@ -31,6 +31,7 @@ impl PermissionEnforcer {
 
     /// Check whether a tool can be executed under the current permission policy.
     /// Auto-denies when prompting is required but no prompter is provided.
+    #[must_use]
     pub fn check(&self, tool_name: &str, input: &str) -> EnforcementResult {
         // When the active mode is Prompt, defer to the caller's interactive
         // prompt flow rather than hard-denying (the enforcer has no prompter).
@@ -66,6 +67,7 @@ impl PermissionEnforcer {
     }
 
     /// Classify a file operation against workspace boundaries.
+    #[must_use]
     pub fn check_file_write(&self, path: &str, workspace_root: &str) -> EnforcementResult {
         let mode = self.policy.active_mode();
 
@@ -84,10 +86,7 @@ impl PermissionEnforcer {
                         tool: "write_file".to_owned(),
                         active_mode: mode.as_str().to_owned(),
                         required_mode: PermissionMode::DangerFullAccess.as_str().to_owned(),
-                        reason: format!(
-                            "path '{}' is outside workspace root '{}'",
-                            path, workspace_root
-                        ),
+                        reason: format!("path '{path}' is outside workspace root '{workspace_root}'"),
                     }
                 }
             }
@@ -103,6 +102,7 @@ impl PermissionEnforcer {
     }
 
     /// Check if a bash command should be allowed based on current mode.
+    #[must_use]
     pub fn check_bash(&self, command: &str) -> EnforcementResult {
         let mode = self.policy.active_mode();
 
@@ -394,7 +394,7 @@ mod tests {
                 assert_eq!(required_mode, "workspace-write");
                 assert!(reason.contains("requires workspace-write permission"));
             }
-            other => panic!("expected denied result, got {other:?}"),
+            other @ EnforcementResult::Allowed => panic!("expected denied result, got {other:?}"),
         }
     }
 
@@ -515,7 +515,7 @@ mod tests {
                 assert_eq!(required_mode, "danger-full-access");
                 assert_eq!(reason, "bash requires confirmation in prompt mode");
             }
-            other => panic!("expected denied result, got {other:?}"),
+            other @ EnforcementResult::Allowed => panic!("expected denied result, got {other:?}"),
         }
     }
 
@@ -540,7 +540,7 @@ mod tests {
                 assert_eq!(required_mode, "workspace-write");
                 assert!(reason.contains("file writes are not allowed"));
             }
-            other => panic!("expected denied result, got {other:?}"),
+            other @ EnforcementResult::Allowed => panic!("expected denied result, got {other:?}"),
         }
     }
 }

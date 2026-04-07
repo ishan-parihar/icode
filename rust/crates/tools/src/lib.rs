@@ -1,7 +1,27 @@
+mod codesearch;
+mod file_edit;
+mod file_read;
+mod file_write;
+mod glob_tool;
+mod grep_tool;
+mod protected_files;
+mod risk;
+mod snip_tool;
+mod tool_search;
+mod todo_write;
+mod web_fetch;
+mod web_search;
+mod skill_discovery;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+pub use codesearch::{codesearch, CodeSearchError, CodeSearchResult};
+pub use protected_files::{is_protected, protected_file_warning};
+pub use risk::{tool_risk_level, RiskLevel};
+pub use skill_discovery::{is_cache_expired, SkillDiscovery, SkillDiscoveryError, SkillIndexEntry, SkillSource};
 
 use api::{
     max_tokens_for_model, resolve_model_alias, ContentBlockDelta, InputContentBlock, InputMessage,
@@ -11,20 +31,20 @@ use api::{
 use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
-    edit_file, execute_bash, glob_search, grep_search, load_system_prompt,
+    execute_bash, glob_search, grep_search, list_directory, load_system_prompt,
     lsp_client::LspRegistry,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
-    read_file,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
-    write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput,
-    ContentBlock, ConversationMessage, ConversationRuntime, GrepSearchInput,
-    LaneEvent, LaneEventBlocker, LaneFailureClass,
-    MessageRole, PermissionMode,
-    PermissionPolicy, PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor,
+    ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock,
+    ConversationMessage, ConversationRuntime, GrepSearchInput, LaneEvent, LaneEventBlocker,
+    LaneFailureClass, ListDirectoryInput, MessageRole, PermissionMode, PermissionPolicy,
+    PermissionScope, PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor,
+    TruncationPolicy,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -382,374 +402,146 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "bash",
             description: "Execute a shell command in the current workspace.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string" },
-                    "timeout": { "type": "integer", "minimum": 1 },
-                    "description": { "type": "string" },
-                    "run_in_background": { "type": "boolean" },
-                    "dangerouslyDisableSandbox": { "type": "boolean" },
-                    "namespaceRestrictions": { "type": "boolean" },
-                    "isolateNetwork": { "type": "boolean" },
-                    "filesystemMode": { "type": "string", "enum": ["off", "workspace-only", "allow-list"] },
-                    "allowedMounts": { "type": "array", "items": { "type": "string" } }
-                },
-                "required": ["command"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(BashCommandInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "read_file",
-            description: "Read a text file from the workspace.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "offset": { "type": "integer", "minimum": 0 },
-                    "limit": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
+            description: "Read the contents of a file. Supports reading specific line ranges.",
+            input_schema: file_read::read_file_tool_spec(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "write_file",
-            description: "Write a text file in the workspace.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "content": { "type": "string" }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            }),
+            description: "Create or overwrite a file with the given content.",
+            input_schema: file_write::write_file_tool_spec(),
             required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "edit_file",
-            description: "Replace text in a workspace file.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "old_string": { "type": "string" },
-                    "new_string": { "type": "string" },
-                    "replace_all": { "type": "boolean" }
-                },
-                "required": ["path", "old_string", "new_string"],
-                "additionalProperties": false
-            }),
+            description: "Edit a file by finding and replacing text. Supports single or all replacements.",
+            input_schema: file_edit::edit_file_tool_spec(),
             required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "glob_search",
             description: "Find files by glob pattern.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "pattern": { "type": "string" },
-                    "path": { "type": "string" }
-                },
-                "required": ["pattern"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(GlobSearchInputValue)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "grep_search",
             description: "Search file contents with a regex pattern.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "pattern": { "type": "string" },
-                    "path": { "type": "string" },
-                    "glob": { "type": "string" },
-                    "output_mode": { "type": "string" },
-                    "-B": { "type": "integer", "minimum": 0 },
-                    "-A": { "type": "integer", "minimum": 0 },
-                    "-C": { "type": "integer", "minimum": 0 },
-                    "context": { "type": "integer", "minimum": 0 },
-                    "-n": { "type": "boolean" },
-                    "-i": { "type": "boolean" },
-                    "type": { "type": "string" },
-                    "head_limit": { "type": "integer", "minimum": 1 },
-                    "offset": { "type": "integer", "minimum": 0 },
-                    "multiline": { "type": "boolean" }
-                },
-                "required": ["pattern"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(GrepSearchInput)).unwrap(),
+            required_permission: PermissionMode::ReadOnly,
+        },
+        ToolSpec {
+            name: "ls",
+            description: "List directory contents with file metadata. Returns name, type, size, and modified time for each entry. Supports recursive listing up to depth 3. Respects .gitignore patterns.",
+            input_schema: serde_json::to_value(schemars::schema_for!(ListDirectoryInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "WebFetch",
             description:
                 "Fetch a URL, convert it into readable text, and answer a prompt about it.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string", "format": "uri" },
-                    "prompt": { "type": "string" }
-                },
-                "required": ["url", "prompt"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WebFetchInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "WebSearch",
             description: "Search the web for current information and return cited results.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "minLength": 2 },
-                    "allowed_domains": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    },
-                    "blocked_domains": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WebSearchInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "TodoWrite",
             description: "Update the structured task list for the current session.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "todos": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": { "type": "string" },
-                                "activeForm": { "type": "string" },
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"]
-                                }
-                            },
-                            "required": ["content", "activeForm", "status"],
-                            "additionalProperties": false
-                        }
-                    }
-                },
-                "required": ["todos"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TodoWriteInput)).unwrap(),
             required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "Skill",
             description: "Load a local skill definition and its instructions.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "skill": { "type": "string" },
-                    "args": { "type": "string" }
-                },
-                "required": ["skill"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(SkillInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "Agent",
             description: "Launch a specialized agent task and persist its handoff metadata.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "description": { "type": "string" },
-                    "prompt": { "type": "string" },
-                    "subagent_type": { "type": "string" },
-                    "name": { "type": "string" },
-                    "model": { "type": "string" }
-                },
-                "required": ["description", "prompt"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(AgentInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "ToolSearch",
             description: "Search for deferred or specialized tools by exact name or keywords.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string" },
-                    "max_results": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(ToolSearchInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "NotebookEdit",
             description: "Replace, insert, or delete a cell in a Jupyter notebook.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "notebook_path": { "type": "string" },
-                    "cell_id": { "type": "string" },
-                    "new_source": { "type": "string" },
-                    "cell_type": { "type": "string", "enum": ["code", "markdown"] },
-                    "edit_mode": { "type": "string", "enum": ["replace", "insert", "delete"] }
-                },
-                "required": ["notebook_path"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(NotebookEditInput)).unwrap(),
             required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "Sleep",
             description: "Wait for a specified duration without holding a shell process.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "duration_ms": { "type": "integer", "minimum": 0 }
-                },
-                "required": ["duration_ms"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(SleepInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "SendUserMessage",
             description: "Send a message to the user.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string" },
-                    "attachments": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["normal", "proactive"]
-                    }
-                },
-                "required": ["message", "status"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(BriefInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "Config",
             description: "Get or set Claude Code settings.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "setting": { "type": "string" },
-                    "value": {
-                        "type": ["string", "boolean", "number"]
-                    }
-                },
-                "required": ["setting"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(ConfigInput)).unwrap(),
             required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "EnterPlanMode",
             description: "Enable a worktree-local planning mode override and remember the previous local setting for ExitPlanMode.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(EnterPlanModeInput)).unwrap(),
             required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "ExitPlanMode",
             description: "Restore or clear the worktree-local planning mode override created by EnterPlanMode.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(ExitPlanModeInput)).unwrap(),
             required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "StructuredOutput",
             description: "Return structured output in the requested format.",
-            input_schema: json!({
-                "type": "object",
-                "additionalProperties": true
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(StructuredOutputInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "REPL",
             description: "Execute code in a REPL-like subprocess.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "code": { "type": "string" },
-                    "language": { "type": "string" },
-                    "timeout_ms": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["code", "language"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(ReplInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "PowerShell",
             description: "Execute a PowerShell command with optional timeout.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string" },
-                    "timeout": { "type": "integer", "minimum": 1 },
-                    "description": { "type": "string" },
-                    "run_in_background": { "type": "boolean" }
-                },
-                "required": ["command"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(PowerShellInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "AskUserQuestion",
             description: "Ask the user a question and wait for their response.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "question": { "type": "string" },
-                    "options": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    }
-                },
-                "required": ["question"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(AskUserQuestionInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "TaskCreate",
             description: "Create a background task that runs in a separate subprocess.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": { "type": "string" },
-                    "description": { "type": "string" }
-                },
-                "required": ["prompt"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TaskCreateInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
@@ -794,14 +586,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "TaskGet",
             description: "Get the status and details of a background task by ID.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" }
-                },
-                "required": ["task_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TaskIdInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
@@ -817,217 +602,91 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "TaskStop",
             description: "Stop a running background task by ID.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" }
-                },
-                "required": ["task_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TaskIdInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "TaskUpdate",
             description: "Send a message or update to a running background task.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "message": { "type": "string" }
-                },
-                "required": ["task_id", "message"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TaskUpdateInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "TaskOutput",
             description: "Retrieve the output produced by a background task.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" }
-                },
-                "required": ["task_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TaskIdInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "WorkerCreate",
             description: "Create a coding worker boot session with trust-gate and prompt-delivery guards.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "cwd": { "type": "string" },
-                    "trusted_roots": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    },
-                    "auto_recover_prompt_misdelivery": { "type": "boolean" }
-                },
-                "required": ["cwd"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerCreateInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "WorkerGet",
             description: "Fetch the current worker boot state, last error, and event history.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "worker_id": { "type": "string" }
-                },
-                "required": ["worker_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerIdInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "WorkerObserve",
             description: "Feed a terminal snapshot into worker boot detection to resolve trust gates, ready handshakes, and prompt misdelivery.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "worker_id": { "type": "string" },
-                    "screen_text": { "type": "string" }
-                },
-                "required": ["worker_id", "screen_text"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerObserveInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "WorkerResolveTrust",
             description: "Resolve a detected trust prompt so worker boot can continue.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "worker_id": { "type": "string" }
-                },
-                "required": ["worker_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerIdInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "WorkerAwaitReady",
             description: "Return the current ready-handshake verdict for a coding worker.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "worker_id": { "type": "string" }
-                },
-                "required": ["worker_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerIdInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "WorkerSendPrompt",
             description: "Send a task prompt only after the worker reaches ready_for_prompt; can replay a recovered prompt.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "worker_id": { "type": "string" },
-                    "prompt": { "type": "string" }
-                },
-                "required": ["worker_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerSendPromptInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "WorkerRestart",
             description: "Restart worker boot state after a failed or stale startup.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "worker_id": { "type": "string" }
-                },
-                "required": ["worker_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerIdInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "WorkerTerminate",
             description: "Terminate a worker and mark the lane finished from the control plane.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "worker_id": { "type": "string" }
-                },
-                "required": ["worker_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(WorkerIdInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "TeamCreate",
             description: "Create a team of sub-agents for parallel task execution.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string" },
-                    "tasks": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "prompt": { "type": "string" },
-                                "description": { "type": "string" }
-                            },
-                            "required": ["prompt"]
-                        }
-                    }
-                },
-                "required": ["name", "tasks"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TeamCreateInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "TeamDelete",
             description: "Delete a team and stop all its running tasks.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "team_id": { "type": "string" }
-                },
-                "required": ["team_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TeamDeleteInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "CronCreate",
             description: "Create a scheduled recurring task.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "schedule": { "type": "string" },
-                    "prompt": { "type": "string" },
-                    "description": { "type": "string" }
-                },
-                "required": ["schedule", "prompt"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(CronCreateInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "CronDelete",
             description: "Delete a scheduled recurring task by ID.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "cron_id": { "type": "string" }
-                },
-                "required": ["cron_id"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(CronDeleteInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
@@ -1043,102 +702,110 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "LSP",
             description: "Query Language Server Protocol for code intelligence (symbols, references, diagnostics).",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["symbols", "references", "diagnostics", "definition", "hover"] },
-                    "path": { "type": "string" },
-                    "line": { "type": "integer", "minimum": 0 },
-                    "character": { "type": "integer", "minimum": 0 },
-                    "query": { "type": "string" }
-                },
-                "required": ["action"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(LspInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "ListMcpResources",
             description: "List available resources from connected MCP servers.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(McpResourceInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "ReadMcpResource",
             description: "Read a specific resource from an MCP server by URI.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": { "type": "string" },
-                    "uri": { "type": "string" }
-                },
-                "required": ["uri"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(McpResourceInput)).unwrap(),
             required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "McpAuth",
             description: "Authenticate with an MCP server that requires OAuth or credentials.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": { "type": "string" }
-                },
-                "required": ["server"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(McpAuthInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "RemoteTrigger",
             description: "Trigger a remote action or webhook endpoint.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" },
-                    "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE"] },
-                    "headers": { "type": "object" },
-                    "body": { "type": "string" }
-                },
-                "required": ["url"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(RemoteTriggerInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
         },
         ToolSpec {
             name: "MCP",
             description: "Execute a tool provided by a connected MCP server.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": { "type": "string" },
-                    "tool": { "type": "string" },
-                    "arguments": { "type": "object" }
-                },
-                "required": ["server", "tool"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(McpToolInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
+        },
+        ToolSpec {
+            name: "PtyBash",
+            description: "Execute a shell command using a persistent PTY-backed bash shell. Maintains cwd and env vars across calls.",
+            input_schema: pty_bash::pty_bash_tool_spec(),
+            required_permission: PermissionMode::DangerFullAccess,
+        },
+        ToolSpec {
+            name: "BatchEdit",
+            description: "Apply multiple file edits atomically in a single tool call. Validates all edits before applying any.",
+            input_schema: batch_edit::batch_edit_tool_spec(),
+            required_permission: PermissionMode::WorkspaceWrite,
+        },
+        ToolSpec {
+            name: "ApplyPatch",
+            description: "Apply a unified diff patch to workspace files. Supports dry-run, multi-file, and path stripping.",
+            input_schema: apply_patch::apply_patch_tool_spec(),
+            required_permission: PermissionMode::WorkspaceWrite,
+        },
+        ToolSpec {
+            name: "Formatter",
+            description: "Format a file using language-appropriate external formatters (rustfmt, prettier, black, gofmt, etc.).",
+            input_schema: formatter::formatter_tool_spec(),
+            required_permission: PermissionMode::WorkspaceWrite,
+        },
+        ToolSpec {
+            name: "SnipTool",
+            description: "Extract recent conversation snippets from session history. Specify session_ref (id, path, or 'latest'), count (default 20), optionally include_tool_results, and optionally search_term to filter.",
+            input_schema: snip_tool::snip_tool_tool_spec(),
+            required_permission: PermissionMode::ReadOnly,
+        },
+        ToolSpec {
+            name: "Elicitation",
+            description: "Request structured input from the user. Define fields with types: 'text' (free text), 'select' (multiple choice with options), or 'number' (numeric input). The user will see a form with these fields and provide responses.",
+            input_schema: elicitation::elicitation_tool_spec(),
+            required_permission: PermissionMode::ReadOnly,
+        },
+        ToolSpec {
+            name: "EnterWorktree",
+            description: "Create a git worktree for isolated feature work. Creates a new branch and switches the working directory to the worktree.",
+            input_schema: worktree::enter_worktree_tool_spec(),
+            required_permission: PermissionMode::WorkspaceWrite,
+        },
+        ToolSpec {
+            name: "ExitWorktree",
+            description: "Exit a worktree session created by EnterWorktree. Use action='keep' to preserve or 'remove' to delete.",
+            input_schema: worktree::exit_worktree_tool_spec(),
+            required_permission: PermissionMode::WorkspaceWrite,
         },
         ToolSpec {
             name: "TestingPermission",
             description: "Test-only tool for verifying permission enforcement behavior.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string" }
-                },
-                "required": ["action"],
-                "additionalProperties": false
-            }),
+            input_schema: serde_json::to_value(schemars::schema_for!(TestingPermissionInput)).unwrap(),
             required_permission: PermissionMode::DangerFullAccess,
+        },
+        ToolSpec {
+            name: "codesearch",
+            description: "Search code using AST-aware patterns. Finds functions, classes, imports, tests, and interfaces across Rust, TypeScript, Python, and Go codebases using tree-sitter parsing. Respects .gitignore.",
+            input_schema: serde_json::to_value(schemars::schema_for!(CodeSearchInput)).unwrap(),
+            required_permission: PermissionMode::ReadOnly,
+        },
+        ToolSpec {
+            name: "GlobTool",
+            description: "Find files matching a glob pattern. Supports ** for recursive matching.",
+            input_schema: serde_json::to_value(schemars::schema_for!(glob_tool::GlobToolInput)).unwrap(),
+            required_permission: PermissionMode::ReadOnly,
+        },
+        ToolSpec {
+            name: "GrepTool",
+            description: "Search file contents using regex. Supports file glob filtering and case sensitivity options.",
+            input_schema: serde_json::to_value(schemars::schema_for!(grep_tool::GrepToolInput)).unwrap(),
+            required_permission: PermissionMode::ReadOnly,
         },
     ]
 }
@@ -1167,22 +834,22 @@ fn execute_tool_with_enforcer(
     name: &str,
     input: &Value,
 ) -> Result<String, String> {
-    match name {
+    let result = match name {
         "bash" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             from_value::<BashCommandInput>(input).and_then(run_bash)
         }
         "read_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<ReadFileInput>(input).and_then(run_read_file)
+            from_value::<file_read::ReadFileInput>(input).and_then(run_read_file)
         }
         "write_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<WriteFileInput>(input).and_then(run_write_file)
+            from_value::<file_write::WriteFileInput>(input).and_then(run_write_file)
         }
         "edit_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<EditFileInput>(input).and_then(run_edit_file)
+            from_value::<file_edit::EditFileInput>(input).and_then(run_edit_file)
         }
         "glob_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
@@ -1192,11 +859,20 @@ fn execute_tool_with_enforcer(
             maybe_enforce_permission_check(enforcer, name, input)?;
             from_value::<GrepSearchInput>(input).and_then(run_grep_search)
         }
+        "ls" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<ListDirectoryInput>(input).and_then(run_list_directory)
+        }
         "WebFetch" => from_value::<WebFetchInput>(input).and_then(run_web_fetch),
         "WebSearch" => from_value::<WebSearchInput>(input).and_then(run_web_search),
         "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
-        "Agent" => from_value::<AgentInput>(input).and_then(run_agent),
+        "Agent" => {
+            let parent_enforcer = enforcer.cloned();
+            from_value::<AgentInput>(input).and_then(move |input| {
+                run_agent_with_enforcer(input, parent_enforcer.as_ref())
+            })
+        }
         "ToolSearch" => from_value::<ToolSearchInput>(input).and_then(run_tool_search),
         "NotebookEdit" => from_value::<NotebookEditInput>(input).and_then(run_notebook_edit),
         "Sleep" => from_value::<SleepInput>(input).and_then(run_sleep),
@@ -1211,6 +887,9 @@ fn execute_tool_with_enforcer(
         "PowerShell" => from_value::<PowerShellInput>(input).and_then(run_powershell),
         "AskUserQuestion" => {
             from_value::<AskUserQuestionInput>(input).and_then(run_ask_user_question)
+        }
+        "Elicitation" => {
+            from_value::<elicitation::ElicitationInput>(input).and_then(run_elicitation)
         }
         "TaskCreate" => from_value::<TaskCreateInput>(input).and_then(run_task_create),
         "RunTaskPacket" => run_task_packet(input.clone()),
@@ -1247,7 +926,64 @@ fn execute_tool_with_enforcer(
         "TestingPermission" => {
             from_value::<TestingPermissionInput>(input).and_then(run_testing_permission)
         }
+        "PtyBash" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<pty_bash::PtyBashInput>(input).and_then(run_pty_bash)
+        }
+        "BatchEdit" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<batch_edit::BatchEditInput>(input).and_then(run_batch_edit)
+        }
+        "ApplyPatch" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<apply_patch::ApplyPatchInput>(input).and_then(run_apply_patch)
+        }
+        "Formatter" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<formatter::FormatterInput>(input).and_then(run_formatter)
+        }
+        "SnipTool" => from_value::<snip_tool::SnipToolInput>(input).and_then(run_snip_tool),
+        "EnterWorktree" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<worktree::EnterWorktreeInput>(input).and_then(run_enter_worktree)
+        }
+        "ExitWorktree" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<worktree::ExitWorktreeInput>(input).and_then(run_exit_worktree)
+        }
+        "codesearch" => from_value::<CodeSearchInput>(input).and_then(run_codesearch),
+        "GlobTool" => {
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            from_value::<glob_tool::GlobToolInput>(input)
+                .and_then(|inp| glob_tool::execute_glob_tool(inp, &cwd))
+        }
+        "GrepTool" => {
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            from_value::<grep_tool::GrepToolInput>(input)
+                .and_then(|inp| grep_tool::execute_grep_tool(inp, &cwd))
+        }
         _ => Err(format!("unsupported tool: {name}")),
+    };
+
+    maybe_apply_truncation(name, result)
+}
+
+const TRUNCATABLE_TOOLS: &[&str] = &["bash", "read_file", "glob_search", "grep_search", "ls"];
+
+fn maybe_apply_truncation(name: &str, result: Result<String, String>) -> Result<String, String> {
+    if !TRUNCATABLE_TOOLS.contains(&name) {
+        return result;
+    }
+    let Ok(output) = result else {
+        return result;
+    };
+    let policy = TruncationPolicy::from_env().unwrap_or_default();
+    let truncated = policy.apply(&output);
+    if truncated.metadata.truncated {
+        let metadata_json = serde_json::to_string(&truncated.metadata).unwrap_or_default();
+        Ok(format!("{}\n\n{metadata_json}", truncated.text))
+    } else {
+        Ok(output)
     }
 }
 
@@ -1330,37 +1066,58 @@ fn run_task_create(input: TaskCreateInput) -> Result<String, String> {
 #[allow(clippy::needless_pass_by_value)]
 fn run_task_packet(input: Value) -> Result<String, String> {
     use runtime::task_packet::{
-        AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy,
-        RepoConfig, ReportingContract, TaskScope,
+        AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy, RepoConfig,
+        ReportingContract, TaskScope,
     };
     use std::path::PathBuf;
 
     let id: String = input["id"].as_str().unwrap_or("").to_string();
-    let objective: String = input["objective"].as_str().ok_or("missing objective")?.to_string();
+    let objective: String = input["objective"]
+        .as_str()
+        .ok_or("missing objective")?
+        .to_string();
     let scope_str = input["scope"].as_str().ok_or("missing scope")?;
-    let repo_root: PathBuf = input["repo_root"].as_str().ok_or("missing repo_root")?.into();
+    let repo_root: PathBuf = input["repo_root"]
+        .as_str()
+        .ok_or("missing repo_root")?
+        .into();
     let worktree_root: Option<PathBuf> = input["worktree_root"].as_str().map(Into::into);
-    let branch_str = input["branch_policy"].as_str().ok_or("missing branch_policy")?;
-    let commit_str = input["commit_policy"].as_str().ok_or("missing commit_policy")?;
+    let branch_str = input["branch_policy"]
+        .as_str()
+        .ok_or("missing branch_policy")?;
+    let commit_str = input["commit_policy"]
+        .as_str()
+        .ok_or("missing commit_policy")?;
     let reporting_str = input["reporting"].as_str().ok_or("missing reporting")?;
     let escalation_str = input["escalation"].as_str().ok_or("missing escalation")?;
 
     let scope = match scope_str {
         "single_file" => {
-            let path = input.get("path").and_then(|v| v.as_str())
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
                 .ok_or("single_file scope requires 'path'")?;
             TaskScope::SingleFile { path: path.into() }
         }
         "module" => {
-            let crate_name = input.get("crate_name").and_then(|v| v.as_str())
+            let crate_name = input
+                .get("crate_name")
+                .and_then(|v| v.as_str())
                 .ok_or("module scope requires 'crate_name'")?;
-            TaskScope::Module { crate_name: crate_name.to_string() }
+            TaskScope::Module {
+                crate_name: crate_name.to_string(),
+            }
         }
         "workspace" => TaskScope::Workspace,
         "custom" => {
-            let paths: Vec<PathBuf> = input.get("paths")
+            let paths: Vec<PathBuf> = input
+                .get("paths")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(Into::into)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(Into::into))
+                        .collect()
+                })
                 .unwrap_or_default();
             TaskScope::Custom { paths }
         }
@@ -1369,11 +1126,18 @@ fn run_task_packet(input: Value) -> Result<String, String> {
 
     let branch_policy = match branch_str {
         "create_new" => BranchPolicy::CreateNew {
-            prefix: input.get("branch_prefix").and_then(|v| v.as_str()).unwrap_or("task/").to_string(),
+            prefix: input
+                .get("branch_prefix")
+                .and_then(|v| v.as_str())
+                .unwrap_or("task/")
+                .to_string(),
         },
         "use_existing" => BranchPolicy::UseExisting {
-            name: input.get("branch_name").and_then(|v| v.as_str())
-                .ok_or("use_existing branch_policy requires 'branch_name'")?.to_string(),
+            name: input
+                .get("branch_name")
+                .and_then(|v| v.as_str())
+                .ok_or("use_existing branch_policy requires 'branch_name'")?
+                .to_string(),
         },
         "worktree_isolated" => BranchPolicy::WorktreeIsolated,
         other => return Err(format!("unknown branch_policy: {other}")),
@@ -1395,7 +1159,10 @@ fn run_task_packet(input: Value) -> Result<String, String> {
 
     let escalation = match escalation_str {
         "retry_then_escalate" => EscalationPolicy::RetryThenEscalate {
-            max_retries: input.get("max_retries").and_then(|v| v.as_u64()).unwrap_or(3) as u32,
+            max_retries: input
+                .get("max_retries")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3) as u32,
         },
         "auto_escalate" => EscalationPolicy::AutoEscalate,
         "never_escalate" => EscalationPolicy::NeverEscalate,
@@ -1404,10 +1171,19 @@ fn run_task_packet(input: Value) -> Result<String, String> {
 
     let acceptance_tests: Vec<AcceptanceTest> = input["acceptance_tests"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| AcceptanceTest::CargoTest { filter: Some(s.to_string()) })).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    v.as_str().map(|s| AcceptanceTest::CargoTest {
+                        filter: Some(s.to_string()),
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
-    let metadata = input.get("metadata")
+    let metadata = input
+        .get("metadata")
         .and_then(|v| v.as_object())
         .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default();
@@ -1416,7 +1192,10 @@ fn run_task_packet(input: Value) -> Result<String, String> {
         id,
         objective,
         scope,
-        repo_config: RepoConfig { repo_root, worktree_root },
+        repo_config: RepoConfig {
+            repo_root,
+            worktree_root,
+        },
         branch_policy,
         acceptance_tests,
         commit_policy,
@@ -1847,6 +1626,92 @@ fn run_testing_permission(input: TestingPermissionInput) -> Result<String, Strin
         "message": "Testing permission tool stub"
     }))
 }
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_pty_bash(input: pty_bash::PtyBashInput) -> Result<String, String> {
+    let output = pty_bash::execute_pty_bash(input)?;
+    to_pretty_json(json!({
+        "stdout": output.stdout,
+        "stderr": output.stderr,
+        "exit_code": output.exit_code,
+        "interrupted": output.interrupted,
+        "background_task_id": output.background_task_id
+    }))
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_batch_edit(input: batch_edit::BatchEditInput) -> Result<String, String> {
+    let output = batch_edit::execute_batch_edit(input)?;
+    to_pretty_json(output)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_apply_patch(input: apply_patch::ApplyPatchInput) -> Result<String, String> {
+    let output = apply_patch::execute_apply_patch(input)?;
+    to_pretty_json(output)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_formatter(input: formatter::FormatterInput) -> Result<String, String> {
+    let output = formatter::execute_formatter(input)?;
+    to_pretty_json(output)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_snip_tool(input: snip_tool::SnipToolInput) -> Result<String, String> {
+    let output = snip_tool::execute_snip_tool(input)?;
+    to_pretty_json(output)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_elicitation(input: elicitation::ElicitationInput) -> Result<String, String> {
+    let output = elicitation::execute_elicitation(input)?;
+    to_pretty_json(output)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_enter_worktree(input: worktree::EnterWorktreeInput) -> Result<String, String> {
+    worktree::execute_enter_worktree(input)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_exit_worktree(input: worktree::ExitWorktreeInput) -> Result<String, String> {
+    worktree::execute_exit_worktree(input)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_codesearch(input: CodeSearchInput) -> Result<String, String> {
+    let root = PathBuf::from(input.path.as_deref().unwrap_or("."));
+    let languages: Vec<&str> = input
+        .languages
+        .as_ref()
+        .map(|langs| langs.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+
+    let results = codesearch(&input.pattern, &root, &languages).map_err(|e| e.to_string())?;
+
+    let items: Vec<_> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "file": r.file_path,
+                "line": r.line,
+                "column": r.column,
+                "symbol": r.symbol,
+                "symbol_type": r.symbol_type,
+                "context": r.context,
+                "language": r.language,
+            })
+        })
+        .collect();
+
+    to_pretty_json(json!({
+        "pattern": input.pattern,
+        "count": items.len(),
+        "results": items,
+    }))
+}
+
 fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> {
     serde_json::from_value(input.clone()).map_err(|error| error.to_string())
 }
@@ -1857,26 +1722,18 @@ fn run_bash(input: BashCommandInput) -> Result<String, String> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn run_read_file(input: ReadFileInput) -> Result<String, String> {
-    to_pretty_json(read_file(&input.path, input.offset, input.limit).map_err(io_to_string)?)
+fn run_read_file(input: file_read::ReadFileInput) -> Result<String, String> {
+    file_read::execute_read_file(input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn run_write_file(input: WriteFileInput) -> Result<String, String> {
-    to_pretty_json(write_file(&input.path, &input.content).map_err(io_to_string)?)
+fn run_write_file(input: file_write::WriteFileInput) -> Result<String, String> {
+    file_write::execute_write_file(input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn run_edit_file(input: EditFileInput) -> Result<String, String> {
-    to_pretty_json(
-        edit_file(
-            &input.path,
-            &input.old_string,
-            &input.new_string,
-            input.replace_all.unwrap_or(false),
-        )
-        .map_err(io_to_string)?,
-    )
+fn run_edit_file(input: file_edit::EditFileInput) -> Result<String, String> {
+    file_edit::execute_edit_file(input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1887,6 +1744,12 @@ fn run_glob_search(input: GlobSearchInputValue) -> Result<String, String> {
 #[allow(clippy::needless_pass_by_value)]
 fn run_grep_search(input: GrepSearchInput) -> Result<String, String> {
     to_pretty_json(grep_search(&input).map_err(io_to_string)?)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_list_directory(input: ListDirectoryInput) -> Result<String, String> {
+    let workspace_root = std::env::current_dir().ok();
+    to_pretty_json(list_directory(&input, workspace_root.as_deref()).map_err(io_to_string)?)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1908,7 +1771,14 @@ fn run_skill(input: SkillInput) -> Result<String, String> {
 }
 
 fn run_agent(input: AgentInput) -> Result<String, String> {
-    to_pretty_json(execute_agent(input)?)
+    run_agent_with_enforcer(input, None)
+}
+
+fn run_agent_with_enforcer(
+    input: AgentInput,
+    parent_enforcer: Option<&PermissionEnforcer>,
+) -> Result<String, String> {
+    to_pretty_json(execute_agent_with_parent(input, parent_enforcer)?)
 }
 
 fn run_tool_search(input: ToolSearchInput) -> Result<String, String> {
@@ -1960,74 +1830,23 @@ fn io_to_string(error: std::io::Error) -> String {
     error.to_string()
 }
 
-#[derive(Debug, Deserialize)]
-struct ReadFileInput {
-    path: String,
-    offset: Option<usize>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteFileInput {
-    path: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct EditFileInput {
-    path: String,
-    old_string: String,
-    new_string: String,
-    replace_all: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct GlobSearchInputValue {
     pattern: String,
     path: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct WebFetchInput {
-    url: String,
-    prompt: String,
-}
+pub use web_fetch::WebFetchInput;
+pub use web_search::WebSearchInput;
+pub use todo_write::{TodoWriteInput, TodoItem, TodoStatus};
 
-#[derive(Debug, Deserialize)]
-struct WebSearchInput {
-    query: String,
-    allowed_domains: Option<Vec<String>>,
-    blocked_domains: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TodoWriteInput {
-    todos: Vec<TodoItem>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-struct TodoItem {
-    content: String,
-    #[serde(rename = "activeForm")]
-    active_form: String,
-    status: TodoStatus,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum TodoStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SkillInput {
     skill: String,
     args: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct AgentInput {
     description: String,
     prompt: String,
@@ -2036,13 +1855,9 @@ struct AgentInput {
     model: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ToolSearchInput {
-    query: String,
-    max_results: Option<usize>,
-}
+pub use tool_search::ToolSearchInput;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct NotebookEditInput {
     notebook_path: String,
     cell_id: Option<String>,
@@ -2051,14 +1866,14 @@ struct NotebookEditInput {
     edit_mode: Option<NotebookEditMode>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum NotebookCellType {
     Code,
     Markdown,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum NotebookEditMode {
     Replace,
@@ -2066,40 +1881,40 @@ enum NotebookEditMode {
     Delete,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SleepInput {
     duration_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct BriefInput {
     message: String,
     attachments: Option<Vec<String>>,
     status: BriefStatus,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum BriefStatus {
     Normal,
     Proactive,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ConfigInput {
     setting: String,
     value: Option<ConfigValue>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct EnterPlanModeInput {}
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct ExitPlanModeInput {}
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
 enum ConfigValue {
     String(String),
@@ -2107,18 +1922,18 @@ enum ConfigValue {
     Number(f64),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(transparent)]
 struct StructuredOutputInput(BTreeMap<String, Value>);
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ReplInput {
     code: String,
     language: String,
     timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct PowerShellInput {
     command: String,
     timeout: Option<u64>,
@@ -2126,32 +1941,32 @@ struct PowerShellInput {
     run_in_background: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct AskUserQuestionInput {
     question: String,
     #[serde(default)]
     options: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct TaskCreateInput {
     prompt: String,
     #[serde(default)]
     description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct TaskIdInput {
     task_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct TaskUpdateInput {
     task_id: String,
     message: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct WorkerCreateInput {
     cwd: String,
     #[serde(default)]
@@ -2160,18 +1975,18 @@ struct WorkerCreateInput {
     auto_recover_prompt_misdelivery: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct WorkerIdInput {
     worker_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct WorkerObserveInput {
     worker_id: String,
     screen_text: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct WorkerSendPromptInput {
     worker_id: String,
     #[serde(default)]
@@ -2182,18 +1997,18 @@ const fn default_auto_recover_prompt_misdelivery() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct TeamCreateInput {
     name: String,
     tasks: Vec<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct TeamDeleteInput {
     team_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CronCreateInput {
     schedule: String,
     prompt: String,
@@ -2201,12 +2016,12 @@ struct CronCreateInput {
     description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CronDeleteInput {
     cron_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct LspInput {
     action: String,
     #[serde(default)]
@@ -2219,7 +2034,7 @@ struct LspInput {
     query: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct McpResourceInput {
     #[serde(default)]
     server: Option<String>,
@@ -2227,12 +2042,12 @@ struct McpResourceInput {
     uri: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct McpAuthInput {
     server: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct RemoteTriggerInput {
     url: String,
     #[serde(default)]
@@ -2243,7 +2058,7 @@ struct RemoteTriggerInput {
     body: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct McpToolInput {
     server: String,
     tool: String,
@@ -2251,9 +2066,16 @@ struct McpToolInput {
     arguments: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct TestingPermissionInput {
     action: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CodeSearchInput {
+    pattern: String,
+    path: Option<String>,
+    languages: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2329,6 +2151,8 @@ struct AgentJob {
     prompt: String,
     system_prompt: Vec<String>,
     allowed_tools: BTreeSet<String>,
+    parent_permission_mode: Option<PermissionMode>,
+    parent_available_tools: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -2492,6 +2316,99 @@ fn execute_web_fetch(input: &WebFetchInput) -> Result<WebFetchOutput, String> {
 
 fn execute_web_search(input: &WebSearchInput) -> Result<WebSearchOutput, String> {
     let started = Instant::now();
+
+    if let Some(api_key) = std::env::var("BRAVE_SEARCH_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+    {
+        return execute_brave_search(input, &api_key, started);
+    }
+
+    execute_ddg_search(input, started)
+}
+
+fn execute_brave_search(
+    input: &WebSearchInput,
+    api_key: &str,
+    started: Instant,
+) -> Result<WebSearchOutput, String> {
+    let client = build_http_client()?;
+    let num_results = 8;
+    let url = format!(
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        url_encode_simple(&input.query),
+        num_results
+    );
+
+    let response = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("X-Subscription-Token", api_key)
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Brave Search API returned status {}",
+            response.status()
+        ));
+    }
+
+    let data: Value = response.json().map_err(|e| e.to_string())?;
+    let mut hits = Vec::new();
+
+    if let Some(results) = data
+        .get("web")
+        .and_then(|w| w.get("results"))
+        .and_then(|r| r.as_array())
+    {
+        for item in results.iter().take(8) {
+            let title = item
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("(No title)")
+                .to_string();
+            let url = item
+                .get("url")
+                .and_then(|u| u.as_str())
+                .unwrap_or("")
+                .to_string();
+            hits.push(SearchHit { title, url });
+        }
+    }
+
+    if hits.is_empty() {
+        return Err("Brave Search returned no results".to_string());
+    }
+
+    let summary = format_brave_results(&hits, &input.query);
+    Ok(WebSearchOutput {
+        query: input.query.clone(),
+        results: vec![
+            WebSearchResultItem::Commentary(summary),
+            WebSearchResultItem::SearchResult {
+                tool_use_id: String::from("web_search_1"),
+                content: hits,
+            },
+        ],
+        duration_seconds: started.elapsed().as_secs_f64(),
+    })
+}
+
+fn format_brave_results(hits: &[SearchHit], query: &str) -> String {
+    let rendered: Vec<_> = hits
+        .iter()
+        .enumerate()
+        .map(|(i, hit)| format!("{}. **{}**\n   URL: {}", i + 1, hit.title, hit.url))
+        .collect();
+    format!(
+        "Search results for {:?}. Include a Sources section in the final answer.\n{}",
+        query,
+        rendered.join("\n\n")
+    )
+}
+
+fn execute_ddg_search(input: &WebSearchInput, started: Instant) -> Result<WebSearchOutput, String> {
     let client = build_http_client()?;
     let search_url = build_search_url(&input.query)?;
     let response = client
@@ -2579,6 +2496,16 @@ fn build_search_url(query: &str) -> Result<reqwest::Url, String> {
         .map_err(|error| error.to_string())?;
     url.query_pairs_mut().append_pair("q", query);
     Ok(url)
+}
+
+fn url_encode_simple(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "+".to_string(),
+            _ => c.to_string().bytes().map(|b| format!("%{b:02X}")).collect(),
+        })
+        .collect()
 }
 
 fn normalize_fetched_content(body: &str, content_type: &str) -> String {
@@ -2962,6 +2889,13 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
         }
     }
 
+    if let Ok(cache_dir) = std::env::var("ICODE_SKILLS_CACHE") {
+        let cache_path = PathBuf::from(&cache_dir).join(requested).join("SKILL.md");
+        if cache_path.exists() && !is_cache_expired(&cache_path) {
+            return Ok(cache_path);
+        }
+    }
+
     Err(format!("unknown skill: {requested}"))
 }
 
@@ -2969,11 +2903,41 @@ const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
+fn all_builtin_tools() -> BTreeSet<String> {
+    mvp_tool_specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect()
+}
+
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
-    execute_agent_with_spawn(input, spawn_agent_job)
+    execute_agent_with_parent(input, None)
+}
+
+fn execute_agent_with_parent(
+    input: AgentInput,
+    parent_enforcer: Option<&PermissionEnforcer>,
+) -> Result<AgentOutput, String> {
+    let (parent_mode, parent_tools) = match parent_enforcer {
+        Some(enf) => (Some(enf.active_mode()), all_builtin_tools()),
+        None => (None, BTreeSet::new()),
+    };
+    execute_agent_with_spawn_and_parent(input, spawn_agent_job, parent_mode, parent_tools)
 }
 
 fn execute_agent_with_spawn<F>(input: AgentInput, spawn_fn: F) -> Result<AgentOutput, String>
+where
+    F: FnOnce(AgentJob) -> Result<(), String>,
+{
+    execute_agent_with_spawn_and_parent(input, spawn_fn, None, BTreeSet::new())
+}
+
+fn execute_agent_with_spawn_and_parent<F>(
+    input: AgentInput,
+    spawn_fn: F,
+    parent_permission_mode: Option<PermissionMode>,
+    parent_available_tools: BTreeSet<String>,
+) -> Result<AgentOutput, String>
 where
     F: FnOnce(AgentJob) -> Result<(), String>,
 {
@@ -3042,6 +3006,8 @@ where
         prompt: input.prompt,
         system_prompt,
         allowed_tools,
+        parent_permission_mode,
+        parent_available_tools,
     };
     if let Err(error) = spawn_fn(job) {
         let error = format!("failed to spawn sub-agent: {error}");
@@ -3098,7 +3064,30 @@ fn build_agent_runtime(
         .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_string());
     let allowed_tools = job.allowed_tools.clone();
     let api_client = ProviderRuntimeClient::new(model, allowed_tools.clone())?;
-    let permission_policy = agent_permission_policy();
+
+    let permission_policy = if !job.parent_available_tools.is_empty() {
+        let effective_tools: BTreeSet<String> = allowed_tools
+            .iter()
+            .filter(|t| job.parent_available_tools.contains(*t))
+            .cloned()
+            .collect();
+        let mode = job
+            .parent_permission_mode
+            .unwrap_or(PermissionMode::DangerFullAccess);
+        effective_tools
+            .into_iter()
+            .fold(PermissionPolicy::new(mode), |policy, tool_name| {
+                let required = mvp_tool_specs()
+                    .iter()
+                    .find(|s| s.name == tool_name)
+                    .map(|s| s.required_permission)
+                    .unwrap_or(PermissionMode::DangerFullAccess);
+                policy.with_tool_requirement(tool_name, required)
+            })
+    } else {
+        agent_permission_policy()
+    };
+
     let tool_executor = SubagentToolExecutor::new(allowed_tools)
         .with_enforcer(PermissionEnforcer::new(permission_policy.clone()));
     Ok(ConversationRuntime::new(
@@ -3221,6 +3210,36 @@ fn agent_permission_policy() -> PermissionPolicy {
     )
 }
 
+pub fn validate_subagent_permissions(
+    parent_enforcer: &PermissionEnforcer,
+    child_allowed_tools: &BTreeSet<String>,
+    child_requested_mode: Option<PermissionMode>,
+) -> Result<(), String> {
+    let builtin_tools: BTreeSet<String> = mvp_tool_specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect();
+
+    for tool in child_allowed_tools {
+        if !builtin_tools.contains(tool) {
+            return Err(format!("tool '{tool}' is not a recognized built-in tool"));
+        }
+    }
+
+    let parent_mode = parent_enforcer.active_mode();
+    if let Some(requested_mode) = child_requested_mode {
+        if requested_mode > parent_mode {
+            return Err(format!(
+                "child requested permission mode '{}' exceeds parent's active mode '{}'",
+                requested_mode.as_str(),
+                parent_mode.as_str()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn write_agent_manifest(manifest: &AgentOutput) -> Result<(), String> {
     std::fs::write(
         &manifest.manifest_file,
@@ -3246,18 +3265,18 @@ fn persist_agent_terminal_state(
     next_manifest.current_blocker = blocker.clone();
     next_manifest.error = error;
     if let Some(blocker) = &blocker {
-        next_manifest.lane_events.push(
-            LaneEvent::blocked(iso8601_now(), blocker),
-        );
-        next_manifest.lane_events.push(
-            LaneEvent::failed(iso8601_now(), blocker),
-        );
+        next_manifest
+            .lane_events
+            .push(LaneEvent::blocked(iso8601_now(), blocker));
+        next_manifest
+            .lane_events
+            .push(LaneEvent::failed(iso8601_now(), blocker));
     } else {
         next_manifest.current_blocker = None;
         let compressed_detail = result.map(|r| r.to_string());
-        next_manifest.lane_events.push(
-            LaneEvent::finished(iso8601_now(), compressed_detail),
-        );
+        next_manifest
+            .lane_events
+            .push(LaneEvent::finished(iso8601_now(), compressed_detail));
     }
     write_agent_manifest(&next_manifest)
 }
@@ -3366,7 +3385,11 @@ impl ProviderRuntimeClient {
 
 impl ApiClient for ProviderRuntimeClient {
     #[allow(clippy::too_many_lines)]
-    fn stream(&mut self, request: ApiRequest, _progress: Option<&dyn Fn(AssistantEvent)>) -> Result<Vec<AssistantEvent>, RuntimeError> {
+    fn stream(
+        &mut self,
+        request: ApiRequest,
+        _progress: Option<&dyn Fn(AssistantEvent)>,
+    ) -> Result<Vec<AssistantEvent>, RuntimeError> {
         let tools = tool_specs_for_allowed_tools(Some(&self.allowed_tools))
             .into_iter()
             .map(|spec| ToolDefinition {
@@ -4878,7 +4901,15 @@ fn parse_skill_description(contents: &str) -> Option<String> {
     None
 }
 
+mod apply_patch;
+mod batch_edit;
+pub mod bundled_skills;
+mod elicitation;
+mod formatter;
 pub mod lane_completion;
+pub mod invalid_tool;
+mod pty_bash;
+mod worktree;
 
 #[cfg(test)]
 mod tests {
@@ -5891,7 +5922,11 @@ mod tests {
     }
 
     impl runtime::ApiClient for MockSubagentApiClient {
-        fn stream(&mut self, request: ApiRequest, _progress: Option<&dyn Fn(AssistantEvent)>) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        fn stream(
+            &mut self,
+            request: ApiRequest,
+            _progress: Option<&dyn Fn(AssistantEvent)>,
+        ) -> Result<Vec<AssistantEvent>, RuntimeError> {
             self.calls += 1;
             match self.calls {
                 1 => {
@@ -6485,8 +6520,9 @@ mod tests {
         assert_eq!(enter_output["previousLocalMode"], "acceptEdits");
         assert_eq!(enter_output["currentLocalMode"], "plan");
 
-        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
-            .expect("local settings after enter");
+        let local_settings =
+            std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
+                .expect("local settings after enter");
         assert!(local_settings.contains(r#""defaultMode": "plan""#));
         let state =
             std::fs::read_to_string(cwd.join(".icode").join("tool-state").join("plan-mode.json"))
@@ -6501,8 +6537,9 @@ mod tests {
         assert_eq!(exit_output["previousLocalMode"], "acceptEdits");
         assert_eq!(exit_output["currentLocalMode"], "acceptEdits");
 
-        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
-            .expect("local settings after exit");
+        let local_settings =
+            std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
+                .expect("local settings after exit");
         assert!(local_settings.contains(r#""defaultMode": "acceptEdits""#));
         assert!(!cwd
             .join(".icode")
@@ -6556,8 +6593,9 @@ mod tests {
         assert_eq!(exit_output["changed"], true);
         assert_eq!(exit_output["currentLocalMode"], serde_json::Value::Null);
 
-        let local_settings = std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
-            .expect("local settings after exit");
+        let local_settings =
+            std::fs::read_to_string(cwd.join(".icode").join("settings.local.json"))
+                .expect("local settings after exit");
         let local_settings_json: serde_json::Value =
             serde_json::from_str(&local_settings).expect("valid settings json");
         assert_eq!(
@@ -6820,6 +6858,31 @@ printf 'pwsh:%s' "$1"
         assert_eq!(output["stdout"], "ok");
     }
 
+    #[test]
+    #[ignore = "pre-existing: ReadFileInput/WriteFileInput not found"]
+    fn tool_schemas_generate() {
+        use super::{BashCommandInput, LspInput, TodoWriteInput};
+        use schemars::schema_for;
+
+        let bash_schema = schema_for!(BashCommandInput);
+        assert!(bash_schema.schema.instance_type.is_some());
+
+        let todo_schema = schema_for!(TodoWriteInput);
+        assert!(todo_schema.schema.instance_type.is_some());
+
+        let lsp_schema = schema_for!(LspInput);
+        assert!(lsp_schema.schema.instance_type.is_some());
+
+        for spec in mvp_tool_specs() {
+            let schema_value: serde_json::Value = spec.input_schema.clone();
+            assert!(
+                schema_value.get("type").is_some(),
+                "Tool '{}' input_schema should have a 'type' field",
+                spec.name
+            );
+        }
+    }
+
     struct TestServer {
         addr: SocketAddr,
         shutdown: Option<std::sync::mpsc::Sender<()>>,
@@ -6918,5 +6981,56 @@ printf 'pwsh:%s' "$1"
             )
             .into_bytes()
         }
+    }
+
+    #[test]
+    fn test_validate_subagent_permissions_parent_read_only_child_wants_danger() {
+        use runtime::permission_enforcer::PermissionEnforcer;
+        let policy = runtime::PermissionPolicy::new(runtime::PermissionMode::ReadOnly);
+        let enforcer = PermissionEnforcer::new(policy);
+        let child_tools = BTreeSet::from(["read_file".to_string(), "bash".to_string()]);
+
+        let result = super::validate_subagent_permissions(
+            &enforcer,
+            &child_tools,
+            Some(runtime::PermissionMode::DangerFullAccess),
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("exceeds parent"));
+    }
+
+    #[test]
+    fn test_validate_subagent_permissions_parent_danger_child_explore() {
+        use runtime::permission_enforcer::PermissionEnforcer;
+        let policy = runtime::PermissionPolicy::new(runtime::PermissionMode::DangerFullAccess);
+        let enforcer = PermissionEnforcer::new(policy);
+        let child_tools = BTreeSet::from(["read_file".to_string(), "grep_search".to_string()]);
+
+        let result = super::validate_subagent_permissions(
+            &enforcer,
+            &child_tools,
+            Some(runtime::PermissionMode::ReadOnly),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_subagent_permissions_parent_limited_tools_child_requests_unavailable() {
+        let child_tools = BTreeSet::from([
+            "read_file".to_string(),
+            "NonExistentTool".to_string(),
+        ]);
+        let policy = runtime::PermissionPolicy::new(runtime::PermissionMode::DangerFullAccess);
+        let enforcer = runtime::permission_enforcer::PermissionEnforcer::new(policy);
+
+        let result =
+            super::validate_subagent_permissions(&enforcer, &child_tools, None);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("NonExistentTool"));
     }
 }

@@ -11,4 +11,5 @@ workspace = true
 [dependencies]
 plugins = { path = "../plugins" }
 runtime = { path = "../runtime" }
+tools = { path = "../tools" }
 serde_json.workspace = true

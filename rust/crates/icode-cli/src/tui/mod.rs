@@ -1,9 +1,12 @@
 pub mod app;
 pub mod command_palette;
+pub mod context_suggestions;
+pub mod dialog_context_viz;
 pub mod dialog_help;
 pub mod dialog_mcp;
 pub mod dialog_message_actions;
 pub mod dialog_plugins;
+pub mod dialog_session_branching;
 pub mod dialog_sessions;
 pub mod dialog_skills;
 pub mod event;

@@ -18,18 +18,27 @@ pub enum LspAction {
     Format,
 }
 
-impl LspAction {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for LspAction {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "diagnostics" => Some(Self::Diagnostics),
-            "hover" => Some(Self::Hover),
-            "definition" | "goto_definition" => Some(Self::Definition),
-            "references" | "find_references" => Some(Self::References),
-            "completion" | "completions" => Some(Self::Completion),
-            "symbols" | "document_symbols" => Some(Self::Symbols),
-            "format" | "formatting" => Some(Self::Format),
-            _ => None,
+            "diagnostics" => Ok(Self::Diagnostics),
+            "hover" => Ok(Self::Hover),
+            "definition" | "goto_definition" => Ok(Self::Definition),
+            "references" | "find_references" => Ok(Self::References),
+            "completion" | "completions" => Ok(Self::Completion),
+            "symbols" | "document_symbols" => Ok(Self::Symbols),
+            "format" | "formatting" => Ok(Self::Format),
+            _ => Err(()),
         }
+    }
+}
+
+impl LspAction {
+    #[must_use]
+    pub fn try_from_str(s: &str) -> Option<Self> {
+        s.parse().ok()
     }
 }
 
@@ -141,12 +150,14 @@ impl LspRegistry {
         );
     }
 
+    #[must_use]
     pub fn get(&self, language: &str) -> Option<LspServerState> {
         let inner = self.inner.lock().expect("lsp registry lock poisoned");
         inner.servers.get(language).cloned()
     }
 
     /// Find the appropriate server for a file path based on extension.
+    #[must_use]
     pub fn find_server_for_path(&self, path: &str) -> Option<LspServerState> {
         let ext = std::path::Path::new(path)
             .extension()
@@ -171,6 +182,7 @@ impl LspRegistry {
     }
 
     /// List all registered servers.
+    #[must_use]
     pub fn list_servers(&self) -> Vec<LspServerState> {
         let inner = self.inner.lock().expect("lsp registry lock poisoned");
         inner.servers.values().cloned().collect()
@@ -192,6 +204,7 @@ impl LspRegistry {
     }
 
     /// Get diagnostics for a specific file path.
+    #[must_use]
     pub fn get_diagnostics(&self, path: &str) -> Vec<LspDiagnostic> {
         let inner = self.inner.lock().expect("lsp registry lock poisoned");
         inner
@@ -215,6 +228,7 @@ impl LspRegistry {
     }
 
     /// Disconnect a server.
+    #[must_use]
     pub fn disconnect(&self, language: &str) -> Option<LspServerState> {
         let mut inner = self.inner.lock().expect("lsp registry lock poisoned");
         inner.servers.remove(language)
@@ -241,7 +255,7 @@ impl LspRegistry {
         _query: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         let lsp_action =
-            LspAction::from_str(action).ok_or_else(|| format!("unknown LSP action: {action}"))?;
+            LspAction::try_from_str(action).ok_or_else(|| format!("unknown LSP action: {action}"))?;
 
         // For diagnostics, we can check existing cached diagnostics
         if lsp_action == LspAction::Diagnostics {
@@ -444,7 +458,7 @@ mod tests {
         // when
         let resolved: Vec<_> = cases
             .into_iter()
-            .map(|(input, expected)| (input, LspAction::from_str(input), expected))
+            .map(|(input, expected)| (input, LspAction::try_from_str(input), expected))
             .collect();
 
         // then

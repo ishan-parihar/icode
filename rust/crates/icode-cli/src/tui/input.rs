@@ -22,6 +22,46 @@ const SLASH_COMMANDS: &[&str] = &[
     "/redo",
 ];
 
+fn complete_file_path(cwd: &str, partial: &str) -> Vec<String> {
+    let (dir, file_prefix) = if partial.is_empty() || partial.ends_with('/') {
+        (partial.to_string(), String::new())
+    } else {
+        let path = std::path::Path::new(partial);
+        let parent = path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        (parent, file_name)
+    };
+
+    let dir_path = if dir.is_empty() { cwd } else { &dir };
+    std::fs::read_dir(dir_path)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|e| e.ok()))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&file_prefix) {
+                let is_dir = entry.file_type().ok()?.is_dir();
+                let full = if dir.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", dir, name)
+                };
+                Some(if is_dir { format!("{}/", full) } else { full })
+            } else {
+                None
+            }
+        })
+        .take(20)
+        .collect()
+}
+
 #[derive(Debug, Default)]
 pub struct InputState {
     pub value: String,
@@ -37,6 +77,9 @@ pub struct InputState {
     pub history: Vec<String>,
     pub history_idx: usize,
     pub history_temp: Option<String>,
+    available_models: Vec<String>,
+    available_sessions: Vec<String>,
+    cwd: String,
 }
 
 impl InputState {
@@ -404,6 +447,63 @@ impl InputState {
     pub fn set_completions(&mut self, completions: Vec<String>) {
         self.completions = completions;
         self.completion_idx = 0;
+    }
+
+    pub fn set_models(&mut self, models: Vec<String>) {
+        self.available_models = models;
+    }
+
+    pub fn set_sessions(&mut self, sessions: Vec<String>) {
+        self.available_sessions = sessions;
+    }
+
+    pub fn set_cwd(&mut self, cwd: String) {
+        self.cwd = cwd;
+    }
+
+    pub fn complete_contextual(&mut self) -> bool {
+        let value = &self.value;
+        let cursor = self.cursor;
+
+        if !value.starts_with('/') {
+            return false;
+        }
+
+        let completions = if let Some(partial) = value.get(8..).filter(|_| {
+            (value.starts_with("/export ") || value.starts_with("/export\t")) && cursor >= 8
+        }) {
+            complete_file_path(&self.cwd, partial)
+        } else if let Some(partial) = value.get(7..).filter(|_| {
+            (value.starts_with("/model ") || value.starts_with("/model\t")) && cursor >= 7
+        }) {
+            self.available_models
+                .iter()
+                .filter(|m| m.starts_with(partial))
+                .cloned()
+                .take(20)
+                .collect()
+        } else if let Some(partial) = value.get(16..).filter(|_| {
+            (value.starts_with("/session switch ") || value.starts_with("/session switch\t"))
+                && cursor >= 16
+        }) {
+            self.available_sessions
+                .iter()
+                .filter(|s| s.starts_with(partial))
+                .cloned()
+                .take(20)
+                .collect()
+        } else {
+            return false;
+        };
+
+        if !completions.is_empty() {
+            self.completions = completions;
+            self.completion_idx = 0;
+            self.show_completions = true;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn cycle_completion_forward(&mut self) {

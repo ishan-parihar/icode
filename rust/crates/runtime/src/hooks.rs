@@ -20,6 +20,11 @@ pub enum HookEvent {
     PreToolUse,
     PostToolUse,
     PostToolUseFailure,
+    SystemPromptTransform,
+    ChatParamsTransform,
+    RequestHeaders,
+    ToolDefinitionTransform,
+    ShellEnvInject,
 }
 
 impl HookEvent {
@@ -29,6 +34,11 @@ impl HookEvent {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::PostToolUseFailure => "PostToolUseFailure",
+            Self::SystemPromptTransform => "SystemPromptTransform",
+            Self::ChatParamsTransform => "ChatParamsTransform",
+            Self::RequestHeaders => "RequestHeaders",
+            Self::ToolDefinitionTransform => "ToolDefinitionTransform",
+            Self::ShellEnvInject => "ShellEnvInject",
         }
     }
 }
@@ -145,6 +155,110 @@ impl HookRunResult {
     #[must_use]
     pub fn updated_input_json(&self) -> Option<&str> {
         self.updated_input()
+    }
+}
+
+// --- Input/Output types for transformation hooks ---
+
+/// Result returned by a `SystemPromptTransform` hook.
+/// The `updated_input` field in `HookRunResult` carries the transformed system prompt as a JSON string.
+#[derive(Debug, Clone, Default)]
+pub struct SystemPromptTransformInput {
+    pub system_prompt: String,
+}
+
+impl SystemPromptTransformInput {
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        json!({
+            "system_prompt": self.system_prompt,
+        })
+        .to_string()
+    }
+}
+
+/// Result returned by a `ChatParamsTransform` hook.
+/// The `updated_input` field carries the transformed chat params as a JSON string.
+#[derive(Debug, Clone, Default)]
+pub struct ChatParamsTransformInput {
+    pub model: String,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub top_p: Option<f64>,
+}
+
+impl ChatParamsTransformInput {
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        json!({
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "top_p": self.top_p,
+        })
+        .to_string()
+    }
+}
+
+/// Result returned by a `RequestHeaders` hook.
+/// The `updated_input` field carries additional headers as a JSON object string.
+#[derive(Debug, Clone, Default)]
+pub struct RequestHeadersInput {
+    pub url: String,
+    pub existing_headers: Vec<(String, String)>,
+}
+
+impl RequestHeadersInput {
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        json!({
+            "url": self.url,
+            "existing_headers": self.existing_headers.iter().map(|(k, v)| {
+                json!({"key": k, "value": v})
+            }).collect::<Vec<_>>(),
+        })
+        .to_string()
+    }
+}
+
+/// Input for a `ToolDefinitionTransform` hook.
+/// The `updated_input` field carries the transformed tool definition as a JSON string.
+#[derive(Debug, Clone, Default)]
+pub struct ToolDefinitionTransformInput {
+    pub tool_name: String,
+    pub tool_definition: String,
+}
+
+impl ToolDefinitionTransformInput {
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        json!({
+            "tool_name": self.tool_name,
+            "tool_definition": serde_json::from_str::<Value>(&self.tool_definition)
+                .unwrap_or_else(|_| json!({ "raw": self.tool_definition })),
+        })
+        .to_string()
+    }
+}
+
+/// Input/Result for a `ShellEnvInject` hook.
+/// The `updated_input` field carries environment variables to inject as a JSON object string.
+#[derive(Debug, Clone, Default)]
+pub struct ShellEnvInjectInput {
+    pub command: String,
+    pub existing_env: Vec<(String, String)>,
+}
+
+impl ShellEnvInjectInput {
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        json!({
+            "command": self.command,
+            "existing_env": self.existing_env.iter().map(|(k, v)| {
+                json!({"key": k, "value": v})
+            }).collect::<Vec<_>>(),
+        })
+        .to_string()
     }
 }
 
@@ -306,6 +420,124 @@ impl HookRunner {
         )
     }
 
+    #[must_use]
+    pub fn run_system_prompt_transform(&self, input: &SystemPromptTransformInput) -> HookRunResult {
+        self.run_system_prompt_transform_with_context(input, None, None)
+    }
+
+    #[must_use]
+    pub fn run_system_prompt_transform_with_context(
+        &self,
+        input: &SystemPromptTransformInput,
+        abort_signal: Option<&HookAbortSignal>,
+        reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        let payload = input.to_json();
+        Self::run_transform_commands(
+            HookEvent::SystemPromptTransform,
+            self.config.system_prompt_transform(),
+            "SystemPromptTransform",
+            &payload,
+            abort_signal,
+            reporter,
+        )
+    }
+
+    #[must_use]
+    pub fn run_chat_params_transform(&self, input: &ChatParamsTransformInput) -> HookRunResult {
+        self.run_chat_params_transform_with_context(input, None, None)
+    }
+
+    #[must_use]
+    pub fn run_chat_params_transform_with_context(
+        &self,
+        input: &ChatParamsTransformInput,
+        abort_signal: Option<&HookAbortSignal>,
+        reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        let payload = input.to_json();
+        Self::run_transform_commands(
+            HookEvent::ChatParamsTransform,
+            self.config.chat_params_transform(),
+            "ChatParamsTransform",
+            &payload,
+            abort_signal,
+            reporter,
+        )
+    }
+
+    #[must_use]
+    pub fn run_request_headers(&self, input: &RequestHeadersInput) -> HookRunResult {
+        self.run_request_headers_with_context(input, None, None)
+    }
+
+    #[must_use]
+    pub fn run_request_headers_with_context(
+        &self,
+        input: &RequestHeadersInput,
+        abort_signal: Option<&HookAbortSignal>,
+        reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        let payload = input.to_json();
+        Self::run_transform_commands(
+            HookEvent::RequestHeaders,
+            self.config.request_headers(),
+            "RequestHeaders",
+            &payload,
+            abort_signal,
+            reporter,
+        )
+    }
+
+    #[must_use]
+    pub fn run_tool_definition_transform(
+        &self,
+        input: &ToolDefinitionTransformInput,
+    ) -> HookRunResult {
+        self.run_tool_definition_transform_with_context(input, None, None)
+    }
+
+    #[must_use]
+    pub fn run_tool_definition_transform_with_context(
+        &self,
+        input: &ToolDefinitionTransformInput,
+        abort_signal: Option<&HookAbortSignal>,
+        reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        let payload = input.to_json();
+        Self::run_transform_commands(
+            HookEvent::ToolDefinitionTransform,
+            self.config.tool_definition_transform(),
+            "ToolDefinitionTransform",
+            &payload,
+            abort_signal,
+            reporter,
+        )
+    }
+
+    #[must_use]
+    pub fn run_shell_env_inject(&self, input: &ShellEnvInjectInput) -> HookRunResult {
+        self.run_shell_env_inject_with_context(input, None, None)
+    }
+
+    #[must_use]
+    pub fn run_shell_env_inject_with_context(
+        &self,
+        input: &ShellEnvInjectInput,
+        abort_signal: Option<&HookAbortSignal>,
+        reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        let payload = input.to_json();
+        Self::run_transform_commands(
+            HookEvent::ShellEnvInject,
+            self.config.shell_env_inject(),
+            "ShellEnvInject",
+            &payload,
+            abort_signal,
+            reporter,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_commands(
         event: HookEvent,
@@ -408,6 +640,147 @@ impl HookRunner {
         }
 
         result
+    }
+
+    fn run_transform_commands(
+        event: HookEvent,
+        commands: &[String],
+        hook_label: &str,
+        payload: &str,
+        abort_signal: Option<&HookAbortSignal>,
+        mut reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        if commands.is_empty() {
+            return HookRunResult::allow(Vec::new());
+        }
+
+        if abort_signal.is_some_and(HookAbortSignal::is_aborted) {
+            return HookRunResult {
+                denied: false,
+                failed: false,
+                cancelled: true,
+                messages: vec![format!(
+                    "{} hook cancelled before execution",
+                    event.as_str()
+                )],
+                permission_override: None,
+                permission_reason: None,
+                updated_input: None,
+            };
+        }
+
+        let mut result = HookRunResult::allow(Vec::new());
+
+        for command in commands {
+            if let Some(reporter) = reporter.as_deref_mut() {
+                reporter.on_event(&HookProgressEvent::Started {
+                    event,
+                    tool_name: hook_label.to_string(),
+                    command: command.clone(),
+                });
+            }
+
+            match Self::run_transform_command(command, event, hook_label, payload, abort_signal) {
+                HookCommandOutcome::Allow { parsed } => {
+                    if let Some(reporter) = reporter.as_deref_mut() {
+                        reporter.on_event(&HookProgressEvent::Completed {
+                            event,
+                            tool_name: hook_label.to_string(),
+                            command: command.clone(),
+                        });
+                    }
+                    merge_parsed_hook_output(&mut result, parsed);
+                }
+                HookCommandOutcome::Failed { parsed } => {
+                    if let Some(reporter) = reporter.as_deref_mut() {
+                        reporter.on_event(&HookProgressEvent::Completed {
+                            event,
+                            tool_name: hook_label.to_string(),
+                            command: command.clone(),
+                        });
+                    }
+                    merge_parsed_hook_output(&mut result, parsed);
+                    result.failed = true;
+                    return result;
+                }
+                HookCommandOutcome::Cancelled { message } => {
+                    if let Some(reporter) = reporter.as_deref_mut() {
+                        reporter.on_event(&HookProgressEvent::Cancelled {
+                            event,
+                            tool_name: hook_label.to_string(),
+                            command: command.clone(),
+                        });
+                    }
+                    result.cancelled = true;
+                    result.messages.push(message);
+                    return result;
+                }
+                HookCommandOutcome::Deny { parsed } => {
+                    merge_parsed_hook_output(&mut result, parsed);
+                    result.denied = true;
+                    return result;
+                }
+            }
+        }
+
+        result
+    }
+
+    fn run_transform_command(
+        command: &str,
+        event: HookEvent,
+        hook_label: &str,
+        payload: &str,
+        abort_signal: Option<&HookAbortSignal>,
+    ) -> HookCommandOutcome {
+        let mut child = shell_command(command);
+        child.stdin(Stdio::piped());
+        child.stdout(Stdio::piped());
+        child.stderr(Stdio::piped());
+        child.env("HOOK_EVENT", event.as_str());
+        child.env("HOOK_EVENT_TYPE", hook_label);
+
+        match child.output_with_stdin(payload.as_bytes(), abort_signal) {
+            Ok(CommandExecution::Finished(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let parsed = parse_hook_output(&stdout);
+                let primary_message = parsed.primary_message().map(ToOwned::to_owned);
+                match output.status.code() {
+                    Some(0) => HookCommandOutcome::Allow { parsed },
+                    Some(2) => HookCommandOutcome::Deny {
+                        parsed: parsed
+                            .with_fallback_message(format!("{} hook denied", event.as_str())),
+                    },
+                    Some(code) => HookCommandOutcome::Failed {
+                        parsed: parsed.with_fallback_message(format_hook_failure(
+                            command,
+                            code,
+                            primary_message.as_deref(),
+                            stderr.as_str(),
+                        )),
+                    },
+                    None => HookCommandOutcome::Failed {
+                        parsed: parsed.with_fallback_message(format!(
+                            "{} hook `{command}` terminated by signal",
+                            event.as_str()
+                        )),
+                    },
+                }
+            }
+            Ok(CommandExecution::Cancelled) => HookCommandOutcome::Cancelled {
+                message: format!("{} hook `{command}` cancelled", event.as_str()),
+            },
+            Err(error) => HookCommandOutcome::Failed {
+                parsed: ParsedHookOutput {
+                    messages: vec![format!(
+                        "{} hook `{command}` failed to start: {error}",
+                        event.as_str()
+                    )],
+                    ..ParsedHookOutput::default()
+                },
+            },
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -983,5 +1356,232 @@ mod tests {
     #[cfg(not(windows))]
     fn shell_snippet(script: &str) -> String {
         script.to_string()
+    }
+
+    fn transform_config() -> RuntimeHookConfig {
+        RuntimeHookConfig::with_transform_hooks(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![shell_snippet(
+                "printf '{\"hookSpecificOutput\":{\"updatedInput\":\"transformed prompt\"}}'",
+            )],
+            vec![shell_snippet(
+                "printf '{\"hookSpecificOutput\":{\"updatedInput\":{\"model\":\"test\"}}}'",
+            )],
+            vec![shell_snippet(
+                "printf '{\"hookSpecificOutput\":{\"updatedInput\":{\"X-Custom\":\"value\"}}}'",
+            )],
+            vec![shell_snippet(
+                "printf '{\"hookSpecificOutput\":{\"updatedInput\":{\"name\":\"test\",\"description\":\"t\"}}}'",
+            )],
+            vec![shell_snippet(
+                "printf '{\"hookSpecificOutput\":{\"updatedInput\":{\"PATH\":\"/custom\"}}}'",
+            )],
+        )
+    }
+
+    #[test]
+    fn system_prompt_transform_returns_updated_input() {
+        let runner = HookRunner::new(transform_config());
+        let input = super::SystemPromptTransformInput {
+            system_prompt: "You are a helpful assistant.".to_string(),
+        };
+
+        let result = runner.run_system_prompt_transform(&input);
+
+        assert!(!result.is_denied());
+        assert!(!result.is_failed());
+        assert_eq!(result.updated_input(), Some("\"transformed prompt\""));
+    }
+
+    #[test]
+    fn chat_params_transform_returns_updated_input() {
+        let runner = HookRunner::new(transform_config());
+        let input = super::ChatParamsTransformInput {
+            model: "claude-sonnet-4-6".to_string(),
+            temperature: Some(0.7),
+            max_tokens: Some(4096),
+            top_p: None,
+        };
+
+        let result = runner.run_chat_params_transform(&input);
+
+        assert!(!result.is_failed());
+        assert!(result.updated_input().is_some());
+    }
+
+    #[test]
+    fn request_headers_transform_returns_updated_input() {
+        let runner = HookRunner::new(transform_config());
+        let input = super::RequestHeadersInput {
+            url: "https://api.example.com".to_string(),
+            existing_headers: vec![("Authorization".to_string(), "Bearer token".to_string())],
+        };
+
+        let result = runner.run_request_headers(&input);
+
+        assert!(!result.is_failed());
+        assert!(result.updated_input().is_some());
+    }
+
+    #[test]
+    fn tool_definition_transform_returns_updated_input() {
+        let runner = HookRunner::new(transform_config());
+        let input = super::ToolDefinitionTransformInput {
+            tool_name: "bash".to_string(),
+            tool_definition: r#"{"name":"bash","description":"Run a command"}"#.to_string(),
+        };
+
+        let result = runner.run_tool_definition_transform(&input);
+
+        assert!(!result.is_failed());
+        assert!(result.updated_input().is_some());
+    }
+
+    #[test]
+    fn shell_env_inject_returns_updated_input() {
+        let runner = HookRunner::new(transform_config());
+        let input = super::ShellEnvInjectInput {
+            command: "ls -la".to_string(),
+            existing_env: vec![("HOME".to_string(), "/home/user".to_string())],
+        };
+
+        let result = runner.run_shell_env_inject(&input);
+
+        assert!(!result.is_failed());
+        assert!(result.updated_input().is_some());
+    }
+
+    #[test]
+    fn transform_hook_failure_stops_execution() {
+        let config = RuntimeHookConfig::with_transform_hooks(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![shell_snippet("printf 'broken'; exit 1")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let runner = HookRunner::new(config);
+        let input = super::SystemPromptTransformInput {
+            system_prompt: "test".to_string(),
+        };
+
+        let result = runner.run_system_prompt_transform(&input);
+
+        assert!(result.is_failed());
+        assert!(result.messages().iter().any(|m| m.contains("broken")));
+    }
+
+    #[test]
+    fn transform_hook_deny_on_exit_two() {
+        let config = RuntimeHookConfig::with_transform_hooks(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![shell_snippet("printf 'denied'; exit 2")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let runner = HookRunner::new(config);
+        let input = super::SystemPromptTransformInput {
+            system_prompt: "test".to_string(),
+        };
+
+        let result = runner.run_system_prompt_transform(&input);
+
+        assert!(result.is_denied());
+        assert!(result.messages().iter().any(|m| m.contains("denied")));
+    }
+
+    #[test]
+    fn empty_transform_config_returns_allow() {
+        let runner = HookRunner::new(RuntimeHookConfig::default());
+        let input = super::SystemPromptTransformInput {
+            system_prompt: "test".to_string(),
+        };
+
+        let result = runner.run_system_prompt_transform(&input);
+
+        assert!(!result.is_denied());
+        assert!(!result.is_failed());
+        assert!(result.messages().is_empty());
+    }
+
+    #[test]
+    fn transform_hook_reports_progress() {
+        let config = RuntimeHookConfig::with_transform_hooks(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![shell_snippet("printf 'ok'")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let runner = HookRunner::new(config);
+        let mut reporter = RecordingReporter { events: Vec::new() };
+        let input = super::SystemPromptTransformInput {
+            system_prompt: "test".to_string(),
+        };
+
+        let _result =
+            runner.run_system_prompt_transform_with_context(&input, None, Some(&mut reporter));
+
+        assert_eq!(reporter.events.len(), 2);
+        assert!(matches!(
+            &reporter.events[0],
+            HookProgressEvent::Started {
+                event: HookEvent::SystemPromptTransform,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &reporter.events[1],
+            HookProgressEvent::Completed {
+                event: HookEvent::SystemPromptTransform,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn transform_hook_abort_signal_cancels() {
+        let config = RuntimeHookConfig::with_transform_hooks(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![shell_snippet("sleep 5")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let runner = HookRunner::new(config);
+        let abort_signal = HookAbortSignal::new();
+        let abort_clone = abort_signal.clone();
+        let mut reporter = RecordingReporter { events: Vec::new() };
+        let input = super::SystemPromptTransformInput {
+            system_prompt: "test".to_string(),
+        };
+
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            abort_clone.abort();
+        });
+
+        let result = runner.run_system_prompt_transform_with_context(
+            &input,
+            Some(&abort_signal),
+            Some(&mut reporter),
+        );
+
+        assert!(result.is_cancelled());
     }
 }

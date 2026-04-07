@@ -1,0 +1,85 @@
+use utoipa::OpenApi;
+
+use crate::routes::schemas::{
+    CronCreateRequest, ErrorResponse, EventResponse, FileReadRequest, FileReadResponse,
+    HealthResponse, LspConnectRequest, MessageRequest, SessionResponse, TaskCreateRequest,
+    TeamCreateRequest, WorkerCreateRequest,
+};
+// Handler names and __path_* types must both be in scope for utoipa macro resolution.
+#[allow(unused_imports)]
+use crate::routes::{
+    __path_connect_lsp, __path_connect_mcp, __path_create_cron, __path_create_session,
+    __path_create_task, __path_create_team, __path_create_worker, __path_delete_cron,
+    __path_delete_team, __path_disconnect_mcp, __path_events, __path_get_config,
+    __path_get_session, __path_get_task, __path_get_worker, __path_health, __path_list_crons,
+    __path_list_lsp, __path_list_mcp, __path_list_sessions, __path_list_tasks, __path_list_teams,
+    __path_list_workers, __path_read_file_handler, __path_restart_worker, __path_send_message,
+    __path_stop_task, connect_lsp, connect_mcp, create_cron, create_session, create_task,
+    create_team, create_worker, delete_cron, delete_team, disconnect_mcp, events, get_config,
+    get_session, get_task, get_worker, health, list_crons, list_lsp, list_mcp, list_sessions,
+    list_tasks, list_teams, list_workers, read_file_handler, restart_worker, send_message,
+    stop_task, CreateSessionRequest, SendMessageRequest,
+};
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        health,
+        create_session,
+        list_sessions,
+        get_session,
+        send_message,
+        events,
+        read_file_handler,
+        get_config,
+        list_tasks,
+        get_task,
+        create_task,
+        stop_task,
+        list_teams,
+        create_team,
+        delete_team,
+        list_crons,
+        create_cron,
+        delete_cron,
+        list_mcp,
+        connect_mcp,
+        disconnect_mcp,
+        list_workers,
+        create_worker,
+        get_worker,
+        restart_worker,
+        list_lsp,
+        connect_lsp,
+    ),
+    components(schemas(
+        HealthResponse,
+        SessionResponse,
+        MessageRequest,
+        FileReadRequest,
+        FileReadResponse,
+        EventResponse,
+        ErrorResponse,
+        CreateSessionRequest,
+        SendMessageRequest,
+        TaskCreateRequest,
+        TeamCreateRequest,
+        CronCreateRequest,
+        WorkerCreateRequest,
+        LspConnectRequest,
+    )),
+    tags(
+        (name = "Health", description = "Health check endpoint"),
+        (name = "Sessions", description = "Session management operations"),
+        (name = "Events", description = "SSE event streaming"),
+        (name = "Files", description = "File read operations"),
+        (name = "Config", description = "Configuration retrieval"),
+        (name = "Tasks", description = "Task lifecycle management"),
+        (name = "Teams", description = "Team management operations"),
+        (name = "Cron", description = "Scheduled task management"),
+        (name = "MCP", description = "MCP server lifecycle"),
+        (name = "Workers", description = "Worker management and orchestration"),
+        (name = "LSP", description = "Language server protocol management"),
+    ),
+)]
+pub struct ApiDoc;

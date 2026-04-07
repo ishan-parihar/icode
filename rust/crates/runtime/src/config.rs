@@ -61,6 +61,11 @@ pub struct RuntimeHookConfig {
     pre_tool_use: Vec<String>,
     post_tool_use: Vec<String>,
     post_tool_use_failure: Vec<String>,
+    system_prompt_transform: Vec<String>,
+    chat_params_transform: Vec<String>,
+    request_headers: Vec<String>,
+    tool_definition_transform: Vec<String>,
+    shell_env_inject: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -471,6 +476,35 @@ impl RuntimeHookConfig {
             pre_tool_use,
             post_tool_use,
             post_tool_use_failure,
+            system_prompt_transform: Vec::new(),
+            chat_params_transform: Vec::new(),
+            request_headers: Vec::new(),
+            tool_definition_transform: Vec::new(),
+            shell_env_inject: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_transform_hooks(
+        pre_tool_use: Vec<String>,
+        post_tool_use: Vec<String>,
+        post_tool_use_failure: Vec<String>,
+        system_prompt_transform: Vec<String>,
+        chat_params_transform: Vec<String>,
+        request_headers: Vec<String>,
+        tool_definition_transform: Vec<String>,
+        shell_env_inject: Vec<String>,
+    ) -> Self {
+        Self {
+            pre_tool_use,
+            post_tool_use,
+            post_tool_use_failure,
+            system_prompt_transform,
+            chat_params_transform,
+            request_headers,
+            tool_definition_transform,
+            shell_env_inject,
         }
     }
 
@@ -498,11 +532,50 @@ impl RuntimeHookConfig {
             &mut self.post_tool_use_failure,
             other.post_tool_use_failure(),
         );
+        extend_unique(
+            &mut self.system_prompt_transform,
+            other.system_prompt_transform(),
+        );
+        extend_unique(
+            &mut self.chat_params_transform,
+            other.chat_params_transform(),
+        );
+        extend_unique(&mut self.request_headers, other.request_headers());
+        extend_unique(
+            &mut self.tool_definition_transform,
+            other.tool_definition_transform(),
+        );
+        extend_unique(&mut self.shell_env_inject, other.shell_env_inject());
     }
 
     #[must_use]
     pub fn post_tool_use_failure(&self) -> &[String] {
         &self.post_tool_use_failure
+    }
+
+    #[must_use]
+    pub fn system_prompt_transform(&self) -> &[String] {
+        &self.system_prompt_transform
+    }
+
+    #[must_use]
+    pub fn chat_params_transform(&self) -> &[String] {
+        &self.chat_params_transform
+    }
+
+    #[must_use]
+    pub fn request_headers(&self) -> &[String] {
+        &self.request_headers
+    }
+
+    #[must_use]
+    pub fn tool_definition_transform(&self) -> &[String] {
+        &self.tool_definition_transform
+    }
+
+    #[must_use]
+    pub fn shell_env_inject(&self) -> &[String] {
+        &self.shell_env_inject
     }
 }
 
@@ -645,6 +718,28 @@ fn parse_optional_hooks_config(root: &JsonValue) -> Result<RuntimeHookConfig, Co
             "merged settings.hooks",
         )?
         .unwrap_or_default(),
+        system_prompt_transform: optional_string_array(
+            hooks,
+            "SystemPromptTransform",
+            "merged settings.hooks",
+        )?
+        .unwrap_or_default(),
+        chat_params_transform: optional_string_array(
+            hooks,
+            "ChatParamsTransform",
+            "merged settings.hooks",
+        )?
+        .unwrap_or_default(),
+        request_headers: optional_string_array(hooks, "RequestHeaders", "merged settings.hooks")?
+            .unwrap_or_default(),
+        tool_definition_transform: optional_string_array(
+            hooks,
+            "ToolDefinitionTransform",
+            "merged settings.hooks",
+        )?
+        .unwrap_or_default(),
+        shell_env_inject: optional_string_array(hooks, "ShellEnvInject", "merged settings.hooks")?
+            .unwrap_or_default(),
     })
 }
 

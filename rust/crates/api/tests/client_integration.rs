@@ -290,7 +290,7 @@ async fn stream_message_parses_sse_events_with_tool_use() {
         .await
         .expect("stream should start");
 
-    assert_eq!(stream.request_id(), Some("req_stream_456"));
+    assert_eq!(stream.request_id(), Some("req_stream_456".to_string()));
 
     let mut events = Vec::new();
     while let Some(event) = stream

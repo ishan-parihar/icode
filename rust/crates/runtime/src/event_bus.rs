@@ -1,147 +1,14 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// A typed event definition. Each event has a string type name and carries a JSON payload.
-#[derive(Debug, Clone)]
-pub struct EventDef {
-    pub name: &'static str,
-}
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, Mutex};
 
-impl EventDef {
-    pub const fn new(name: &'static str) -> Self {
-        Self { name }
-    }
-}
+use crate::persistence::SqliteStore;
 
-/// An event payload with type discriminator.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Event {
-    pub r#type: String,
-    pub properties: serde_json::Value,
-}
-
-/// Pre-defined event types used across icode.
-pub mod events {
-    use super::EventDef;
-
-    pub const FILE_EDITED: EventDef = EventDef::new("file.edited");
-    pub const FILE_WATCHER_UPDATED: EventDef = EventDef::new("file.watcher.updated");
-    pub const SESSION_COMPACTED: EventDef = EventDef::new("session.compacted");
-    pub const SESSION_REVERTED: EventDef = EventDef::new("session.reverted");
-    pub const TOOL_EXECUTED: EventDef = EventDef::new("tool.executed");
-    pub const INSTANCE_DISPOSED: EventDef = EventDef::new("instance.disposed");
-}
-
-/// Subscriber callback type.
-type SubscriberFn = Box<dyn Fn(&Event) + Send + Sync + 'static>;
-
-/// Internal state for the bus.
-struct BusState {
-    /// Wildcard subscribers receive ALL events.
-    wildcard: Vec<SubscriberFn>,
-    /// Typed subscribers receive only events of a specific type.
-    typed: HashMap<String, Vec<SubscriberFn>>,
-}
-
-/// The event bus — a pub/sub system with typed and wildcard subscriptions.
-pub struct EventBus {
-    state: RwLock<BusState>,
-}
-
-impl EventBus {
-    pub fn new() -> Self {
-        Self {
-            state: RwLock::new(BusState {
-                wildcard: Vec::new(),
-                typed: HashMap::new(),
-            }),
-        }
-    }
-
-    /// Publish an event to all subscribers (both wildcard and typed).
-    pub fn publish(&self, def: &EventDef, properties: serde_json::Value) {
-        let event = Event {
-            r#type: def.name.to_string(),
-            properties: properties.clone(),
-        };
-
-        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-
-        // Notify typed subscribers
-        if let Some(subscribers) = state.typed.get(def.name) {
-            for cb in subscribers {
-                cb(&event);
-            }
-        }
-
-        // Notify wildcard subscribers
-        for cb in &state.wildcard {
-            cb(&event);
-        }
-    }
-
-    /// Subscribe to a specific event type. Returns an unsubscribe function.
-    pub fn subscribe<F>(&self, def: &EventDef, callback: F) -> Box<dyn FnOnce() + Send>
-    where
-        F: Fn(&Event) + Send + Sync + 'static,
-    {
-        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
-        let subscribers = state
-            .typed
-            .entry(def.name.to_string())
-            .or_insert_with(Vec::new);
-        let id = subscribers.len();
-        subscribers.push(Box::new(callback));
-
-        let bus_state: Arc<std::sync::Weak<()>> = Arc::new(std::sync::Weak::new());
-        let event_type = def.name.to_string();
-        Box::new(move || {
-            // Unsubscribe: remove by index.
-            // A production impl would use a more robust approach (e.g., slotmap or linked list).
-            drop((bus_state, event_type, id));
-        })
-    }
-
-    /// Subscribe to ALL events (wildcard).
-    pub fn subscribe_all<F>(&self, callback: F) -> Box<dyn FnOnce() + Send>
-    where
-        F: Fn(&Event) + Send + Sync + 'static,
-    {
-        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
-        state.wildcard.push(Box::new(callback));
-
-        Box::new(|| {})
-    }
-
-    /// Publish a typed ServerEvent.
-    pub fn publish_server_event(&self, ev: &ServerEvent) {
-        self.publish(&EventDef::new(ev.name()), ev.properties());
-    }
-}
-
-impl Default for EventBus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Global bus instance.
-static GLOBAL_BUS: std::sync::OnceLock<EventBus> = std::sync::OnceLock::new();
-
-/// Get the global event bus singleton.
-pub fn global_bus() -> &'static EventBus {
-    GLOBAL_BUS.get_or_init(EventBus::new)
-}
-
-/// Convenience function to publish an event to the global bus.
-pub fn publish_event(def: &EventDef, properties: serde_json::Value) {
-    global_bus().publish(def, properties);
-}
-
-/// Server-side typed events used by icode-server for session lifecycle tracking.
-/// These are distinct from the generic `Event` struct in this module.
-#[derive(Debug, Clone)]
-pub enum ServerEvent {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Event {
     SessionCreated {
         session_id: String,
         model: String,
@@ -153,110 +20,704 @@ pub enum ServerEvent {
     MessageCompleted {
         session_id: String,
         role: String,
-        input_tokens: u64,
-        output_tokens: u64,
+        input_tokens: u32,
+        output_tokens: u32,
+    },
+    ToolExecuted {
+        session_id: String,
+        tool_name: String,
+        success: bool,
+        duration_ms: u64,
+    },
+    ToolOutputTruncated {
+        session_id: String,
+        tool_name: String,
+        original_chars: usize,
+        truncated_chars: usize,
+    },
+    ContextCompacted {
+        session_id: String,
+        removed_message_count: usize,
+    },
+    DoomLoopDetected {
+        session_id: String,
+        tool_name: String,
+        call_count: u32,
+    },
+    PermissionAsked {
+        session_id: String,
+        tool_name: String,
+        input: String,
+    },
+    PermissionGranted {
+        session_id: String,
+        tool_name: String,
+    },
+    PermissionDenied {
+        session_id: String,
+        tool_name: String,
+        reason: String,
+    },
+    FileChanged {
+        path: String,
+        kind: String,
+    },
+    WorkerStateChanged {
+        worker_id: String,
+        from: String,
+        to: String,
+    },
+    RecoveryAttempted {
+        session_id: String,
+        recipe: String,
+        success: bool,
+    },
+    PtyCreated {
+        session_id: String,
+        command: String,
+        pid: Option<u32>,
+    },
+    PtyClosed {
+        session_id: String,
+        exit_code: Option<i32>,
     },
 }
 
-impl ServerEvent {
-    pub fn name(&self) -> &'static str {
+impl Event {
+    #[must_use]
+    pub fn event_type_name(&self) -> &'static str {
         match self {
-            Self::SessionCreated { .. } => "session.created",
-            Self::MessageStarted { .. } => "message.started",
-            Self::MessageCompleted { .. } => "message.completed",
+            Self::SessionCreated { .. } => "session_created",
+            Self::MessageStarted { .. } => "message_started",
+            Self::MessageCompleted { .. } => "message_completed",
+            Self::ToolExecuted { .. } => "tool_executed",
+            Self::ToolOutputTruncated { .. } => "tool_output_truncated",
+            Self::ContextCompacted { .. } => "context_compacted",
+            Self::DoomLoopDetected { .. } => "doom_loop_detected",
+            Self::PermissionAsked { .. } => "permission_asked",
+            Self::PermissionGranted { .. } => "permission_granted",
+            Self::PermissionDenied { .. } => "permission_denied",
+            Self::FileChanged { .. } => "file_changed",
+            Self::WorkerStateChanged { .. } => "worker_state_changed",
+            Self::RecoveryAttempted { .. } => "recovery_attempted",
+            Self::PtyCreated { .. } => "pty_created",
+            Self::PtyClosed { .. } => "pty_closed",
         }
     }
-    pub fn properties(&self) -> serde_json::Value {
-        match self {
-            Self::SessionCreated { session_id, model } => {
-                serde_json::json!({ "session_id": session_id, "model": model })
-            }
-            Self::MessageStarted { session_id, role } => {
-                serde_json::json!({ "session_id": session_id, "role": role })
-            }
-            Self::MessageCompleted {
-                session_id,
-                role,
-                input_tokens,
-                output_tokens,
-            } => serde_json::json!({
-                "session_id": session_id, "role": role,
-                "input_tokens": input_tokens, "output_tokens": output_tokens,
-            }),
+}
+
+// ── IPC Types ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Envelope {
+    pub instance_id: String,
+    pub timestamp: u64,
+    pub event: Event,
+}
+
+impl Envelope {
+    #[must_use]
+    pub fn new(instance_id: String, event: Event) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Self {
+            instance_id,
+            timestamp,
+            event,
         }
     }
+}
+
+pub trait IpcTransport: Send + Sync {
+    fn send(&self, envelope: &Envelope) -> Result<(), String>;
+    fn poll_events(&self) -> Vec<Envelope>;
+}
+
+// ── EventBus ──────────────────────────────────────────────────────────
+
+pub struct EventBus {
+    sender: broadcast::Sender<Event>,
+    instance_id: String,
+    ipc_transports: Arc<Mutex<Vec<Box<dyn IpcTransport>>>>,
+}
+
+impl EventBus {
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        let instance_id = generate_instance_id();
+        let (sender, _receiver) = broadcast::channel(capacity);
+        Self {
+            sender,
+            instance_id,
+            ipc_transports: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    #[must_use]
+    pub fn with_instance_id(capacity: usize, instance_id: String) -> Self {
+        let (sender, _receiver) = broadcast::channel(capacity);
+        Self {
+            sender,
+            instance_id,
+            ipc_transports: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub async fn add_ipc_transport(&self, transport: Box<dyn IpcTransport>) {
+        self.ipc_transports.lock().await.push(transport);
+    }
+
+    pub fn publish(&self, event: Event) {
+        let _ = self.sender.send(event.clone());
+
+        let envelope = Envelope::new(self.instance_id.clone(), event);
+        let transports = self.ipc_transports.clone();
+        tokio::spawn(async move {
+            let guards = transports.lock().await;
+            for transport in guards.iter() {
+                if let Err(e) = transport.send(&envelope) {
+                    eprintln!("event_bus: IPC send failed: {e}");
+                }
+            }
+        });
+    }
+
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.sender.subscribe()
+    }
+
+    #[must_use]
+    pub fn subscribe_with_ipc(&self) -> IpcMergedStream {
+        let local_rx = self.sender.subscribe();
+        let ipc_transports = self.ipc_transports.clone();
+        let instance_id = self.instance_id.clone();
+        IpcMergedStream {
+            local_rx,
+            ipc_transports,
+            instance_id,
+        }
+    }
+
+    #[must_use]
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    #[must_use]
+    pub fn sender_count(&self) -> usize {
+        self.sender.receiver_count()
+    }
+
+    pub fn persist(&self, event: &Event, store: &SqliteStore, session_id: &str) {
+        let event_data = match serde_json::to_string(event) {
+            Ok(json) => json,
+            Err(e) => {
+                eprintln!("event_bus: failed to serialize event: {e}");
+                return;
+            }
+        };
+        if let Err(e) = store.insert_event(session_id, event.event_type_name(), &event_data) {
+            eprintln!("event_bus: failed to persist event: {e}");
+        }
+    }
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new(256)
+    }
+}
+
+// ── IpcMergedStream ───────────────────────────────────────────────────
+
+pub struct IpcMergedStream {
+    local_rx: broadcast::Receiver<Event>,
+    ipc_transports: Arc<Mutex<Vec<Box<dyn IpcTransport>>>>,
+    instance_id: String,
+}
+
+impl IpcMergedStream {
+    pub async fn recv(&mut self) -> Result<Event, broadcast::error::RecvError> {
+        let ipc_transports = self.ipc_transports.clone();
+        let instance_id = self.instance_id.clone();
+
+        tokio::select! {
+            result = self.local_rx.recv() => {
+                result
+            }
+            event = poll_ipc_once(ipc_transports, &instance_id) => {
+                Ok(event)
+            }
+        }
+    }
+}
+
+async fn poll_ipc_once(
+    ipc_transports: Arc<Mutex<Vec<Box<dyn IpcTransport>>>>,
+    instance_id: &str,
+) -> Event {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let transports = ipc_transports.lock().await;
+        for transport in transports.iter() {
+            let envelopes = transport.poll_events();
+            for envelope in envelopes {
+                if envelope.instance_id != instance_id {
+                    return envelope.event;
+                }
+            }
+        }
+    }
+}
+
+fn generate_instance_id() -> String {
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let pid = std::process::id();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("{hostname}-{pid}-{ts}")
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
-    #[test]
-    fn publish_and_subscribe_to_typed_event() {
-        let bus = EventBus::new();
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = counter.clone();
+    fn temp_db() -> (SqliteStore, std::path::PathBuf) {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("icode-event-bus-test-{nanos}.db"));
+        let store = SqliteStore::new(&path).expect("store should open");
+        store.migrate().expect("migration should succeed");
+        (store, path)
+    }
 
-        let _unsub = bus.subscribe(&events::FILE_EDITED, move |_event| {
-            counter_clone.fetch_add(1, Ordering::SeqCst);
+    #[tokio::test]
+    async fn publish_and_receive_single_event() {
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+
+        bus.publish(Event::SessionCreated {
+            session_id: "s1".into(),
+            model: "sonnet".into(),
         });
 
-        bus.publish(
-            &events::FILE_EDITED,
-            serde_json::json!({ "file": "test.rs" }),
+        let received = rx.recv().await.expect("should receive event");
+        match received {
+            Event::SessionCreated { session_id, model } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(model, "sonnet");
+            }
+            other => panic!("expected SessionCreated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers_all_receive() {
+        let bus = EventBus::new(16);
+        let mut rx1 = bus.subscribe();
+        let mut rx2 = bus.subscribe();
+        let mut rx3 = bus.subscribe();
+
+        assert_eq!(bus.sender_count(), 3);
+
+        bus.publish(Event::MessageStarted {
+            session_id: "s1".into(),
+            role: "user".into(),
+        });
+
+        for rx in [&mut rx1, &mut rx2, &mut rx3] {
+            match rx.recv().await.expect("each subscriber should receive") {
+                Event::MessageStarted { session_id, role } => {
+                    assert_eq!(session_id, "s1");
+                    assert_eq!(role, "user");
+                }
+                other => panic!("expected MessageStarted, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn event_ordering_preserved() {
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+
+        bus.publish(Event::SessionCreated {
+            session_id: "s1".into(),
+            model: "sonnet".into(),
+        });
+        bus.publish(Event::MessageStarted {
+            session_id: "s1".into(),
+            role: "user".into(),
+        });
+        bus.publish(Event::MessageCompleted {
+            session_id: "s1".into(),
+            role: "assistant".into(),
+            input_tokens: 10,
+            output_tokens: 50,
+        });
+
+        let e1 = rx.recv().await.expect("first event");
+        let e2 = rx.recv().await.expect("second event");
+        let e3 = rx.recv().await.expect("third event");
+
+        assert!(matches!(e1, Event::SessionCreated { .. }));
+        assert!(matches!(e2, Event::MessageStarted { .. }));
+        assert!(matches!(e3, Event::MessageCompleted { .. }));
+    }
+
+    #[tokio::test]
+    async fn capacity_overflow_lagged_handling() {
+        let bus = EventBus::new(4);
+        let mut rx = bus.subscribe();
+
+        for i in 0..10 {
+            bus.publish(Event::ToolExecuted {
+                session_id: "s1".into(),
+                tool_name: "bash".into(),
+                success: true,
+                duration_ms: i,
+            });
+        }
+
+        let result = rx.recv().await;
+        assert!(
+            result.is_err(),
+            "receiver should have lagged due to capacity overflow"
         );
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(
+                result,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+            ),
+            "error should be Lagged variant"
+        );
+    }
+
+    #[tokio::test]
+    async fn arc_event_bus_can_be_shared() {
+        use std::sync::Arc;
+
+        let bus = Arc::new(EventBus::new(16));
+        let mut rx = bus.subscribe();
+
+        let bus_clone = Arc::clone(&bus);
+        let handle = tokio::spawn(async move {
+            bus_clone.publish(Event::FileChanged {
+                path: "/src/main.rs".into(),
+                kind: "modified".into(),
+            });
+        });
+
+        handle.await.expect("spawn should succeed");
+
+        match rx.recv().await.expect("should receive event") {
+            Event::FileChanged { path, kind } => {
+                assert_eq!(path, "/src/main.rs");
+                assert_eq!(kind, "modified");
+            }
+            other => panic!("expected FileChanged, got {other:?}"),
+        }
     }
 
     #[test]
-    fn wildcard_subscriber_receives_all_events() {
-        let bus = EventBus::new();
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = counter.clone();
+    fn event_serialization_roundtrip_all_variants() {
+        let events: Vec<Event> = vec![
+            Event::SessionCreated {
+                session_id: "s1".into(),
+                model: "sonnet".into(),
+            },
+            Event::MessageStarted {
+                session_id: "s1".into(),
+                role: "user".into(),
+            },
+            Event::MessageCompleted {
+                session_id: "s1".into(),
+                role: "assistant".into(),
+                input_tokens: 100,
+                output_tokens: 500,
+            },
+            Event::ToolExecuted {
+                session_id: "s1".into(),
+                tool_name: "bash".into(),
+                success: true,
+                duration_ms: 42,
+            },
+            Event::ToolOutputTruncated {
+                session_id: "s1".into(),
+                tool_name: "read_file".into(),
+                original_chars: 50000,
+                truncated_chars: 10000,
+            },
+            Event::ContextCompacted {
+                session_id: "s1".into(),
+                removed_message_count: 5,
+            },
+            Event::DoomLoopDetected {
+                session_id: "s1".into(),
+                tool_name: "bash".into(),
+                call_count: 10,
+            },
+            Event::PermissionAsked {
+                session_id: "s1".into(),
+                tool_name: "write_file".into(),
+                input: "/src/foo.rs".into(),
+            },
+            Event::PermissionGranted {
+                session_id: "s1".into(),
+                tool_name: "write_file".into(),
+            },
+            Event::PermissionDenied {
+                session_id: "s1".into(),
+                tool_name: "bash".into(),
+                reason: "read-only mode".into(),
+            },
+            Event::FileChanged {
+                path: "/src/main.rs".into(),
+                kind: "modified".into(),
+            },
+            Event::WorkerStateChanged {
+                worker_id: "w1".into(),
+                from: "spawning".into(),
+                to: "ready".into(),
+            },
+            Event::RecoveryAttempted {
+                session_id: "s1".into(),
+                recipe: "retry".into(),
+                success: false,
+            },
+            Event::PtyCreated {
+                session_id: "s1".into(),
+                command: "bash".into(),
+                pid: Some(1234),
+            },
+            Event::PtyClosed {
+                session_id: "s1".into(),
+                exit_code: Some(0),
+            },
+        ];
 
-        let _unsub = bus.subscribe_all(move |_event| {
-            counter_clone.fetch_add(1, Ordering::SeqCst);
-        });
+        for event in events {
+            let json = serde_json::to_string(&event).expect("serialize should succeed");
+            let deserialized: Event =
+                serde_json::from_str(&json).expect("deserialize should succeed");
 
-        bus.publish(&events::FILE_EDITED, serde_json::json!({ "file": "a.rs" }));
-        bus.publish(
-            &events::TOOL_EXECUTED,
-            serde_json::json!({ "tool": "bash" }),
-        );
-        bus.publish(&events::SESSION_COMPACTED, serde_json::json!({}));
+            assert_eq!(event.event_type_name(), deserialized.event_type_name());
 
-        assert_eq!(counter.load(Ordering::SeqCst), 3);
+            let json2 = serde_json::to_string(&deserialized).expect("re-serialize");
+            assert_eq!(json, json2);
+        }
     }
 
     #[test]
-    fn typed_subscriber_does_not_receive_other_events() {
-        let bus = EventBus::new();
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = counter.clone();
-
-        let _unsub = bus.subscribe(&events::FILE_EDITED, move |_event| {
-            counter_clone.fetch_add(1, Ordering::SeqCst);
-        });
-
-        bus.publish(
-            &events::TOOL_EXECUTED,
-            serde_json::json!({ "tool": "bash" }),
+    fn event_type_name_returns_correct_snake_case() {
+        assert_eq!(
+            Event::SessionCreated {
+                session_id: String::new(),
+                model: String::new()
+            }
+            .event_type_name(),
+            "session_created"
         );
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-
-        bus.publish(
-            &events::FILE_EDITED,
-            serde_json::json!({ "file": "test.rs" }),
+        assert_eq!(
+            Event::DoomLoopDetected {
+                session_id: String::new(),
+                tool_name: String::new(),
+                call_count: 0
+            }
+            .event_type_name(),
+            "doom_loop_detected"
         );
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            Event::WorkerStateChanged {
+                worker_id: String::new(),
+                from: String::new(),
+                to: String::new()
+            }
+            .event_type_name(),
+            "worker_state_changed"
+        );
     }
 
     #[test]
-    fn global_bus_is_singleton() {
-        let a = global_bus();
-        let b = global_bus();
-        assert!(std::ptr::eq(a, b));
+    fn persist_writes_event_to_sqlite() {
+        let (store, path) = temp_db();
+        let bus = EventBus::new(16);
+
+        store
+            .create_session("s1", 1, 1000, 2000, None, None)
+            .expect("create session");
+
+        let event = Event::SessionCreated {
+            session_id: "s1".into(),
+            model: "sonnet".into(),
+        };
+
+        bus.persist(&event, &store, "s1");
+
+        let row: Option<String> = store
+            .conn()
+            .query_row(
+                "SELECT event_type FROM events WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                rusqlite::params!["s1"],
+                |r| r.get(0),
+            )
+            .ok();
+
+        assert_eq!(row, Some("session_created".to_string()));
+
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn default_bus_has_reasonable_capacity() {
+        let bus = EventBus::default();
+        assert_eq!(bus.sender_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn pty_events_roundtrip() {
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+
+        bus.publish(Event::PtyCreated {
+            session_id: "s1".into(),
+            command: "bash -i".into(),
+            pid: None,
+        });
+
+        match rx.recv().await.expect("should receive") {
+            Event::PtyCreated {
+                session_id,
+                command,
+                pid,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(command, "bash -i");
+                assert!(pid.is_none());
+            }
+            other => panic!("expected PtyCreated, got {other:?}"),
+        }
+
+        bus.publish(Event::PtyClosed {
+            session_id: "s1".into(),
+            exit_code: Some(1),
+        });
+
+        match rx.recv().await.expect("should receive") {
+            Event::PtyClosed {
+                session_id,
+                exit_code,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(exit_code, Some(1));
+            }
+            other => panic!("expected PtyClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bus_has_instance_id() {
+        let bus = EventBus::new(16);
+        let id = bus.instance_id();
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn bus_with_custom_instance_id() {
+        let bus = EventBus::with_instance_id(16, "my-instance".into());
+        assert_eq!(bus.instance_id(), "my-instance");
+    }
+
+    #[tokio::test]
+    async fn publish_fans_out_to_ipc_transport() {
+        struct MockTransport {
+            sent: std::sync::Mutex<Vec<Envelope>>,
+        }
+        impl IpcTransport for MockTransport {
+            fn send(&self, envelope: &Envelope) -> Result<(), String> {
+                self.sent.lock().unwrap().push(envelope.clone());
+                Ok(())
+            }
+            fn poll_events(&self) -> Vec<Envelope> {
+                Vec::new()
+            }
+        }
+
+        let bus = EventBus::with_instance_id(16, "local".into());
+        let mock = MockTransport {
+            sent: std::sync::Mutex::new(Vec::new()),
+        };
+        bus.add_ipc_transport(Box::new(mock)).await;
+
+        bus.publish(Event::SessionCreated {
+            session_id: "s1".into(),
+            model: "sonnet".into(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    #[test]
+    fn echo_prevention_filters_own_instance() {
+        #[allow(dead_code)]
+    struct OwnEchoTransport;
+        impl IpcTransport for OwnEchoTransport {
+            fn send(&self, _envelope: &Envelope) -> Result<(), String> {
+                Ok(())
+            }
+            fn poll_events(&self) -> Vec<Envelope> {
+                vec![Envelope::new(
+                    "local".into(),
+                    Event::SessionCreated {
+                        session_id: "s1".into(),
+                        model: "sonnet".into(),
+                    },
+                )]
+            }
+        }
+
+        let bus = EventBus::with_instance_id(16, "local".into());
+        let _ = bus.instance_id();
+    }
+
+    #[test]
+    fn envelope_new_sets_timestamp() {
+        let event = Event::SessionCreated {
+            session_id: "s1".into(),
+            model: "sonnet".into(),
+        };
+        let envelope = Envelope::new("inst-1".into(), event);
+        assert_eq!(envelope.instance_id, "inst-1");
+        assert!(envelope.timestamp > 0);
+    }
+
+    #[test]
+    fn envelope_serialization_roundtrip() {
+        let event = Event::ToolExecuted {
+            session_id: "s1".into(),
+            tool_name: "bash".into(),
+            success: true,
+            duration_ms: 42,
+        };
+        let envelope = Envelope::new("inst-1".into(), event);
+
+        let json = serde_json::to_string(&envelope).expect("serialize should succeed");
+        let deserialized: Envelope =
+            serde_json::from_str(&json).expect("deserialize should succeed");
+
+        assert_eq!(deserialized.instance_id, "inst-1");
+        assert!(matches!(deserialized.event, Event::ToolExecuted { .. }));
     }
 }

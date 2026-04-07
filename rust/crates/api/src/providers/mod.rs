@@ -5,7 +5,15 @@ use crate::error::ApiError;
 use crate::types::{MessageRequest, MessageResponse};
 
 pub mod anthropic;
+pub mod azure;
+pub mod bedrock;
+pub mod gemini;
+pub mod groq;
+pub mod mistral;
 pub mod openai_compat;
+pub mod openrouter;
+pub mod registry;
+pub use registry::{ProviderRegistry, RegisteredProvider};
 
 pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ApiError>> + Send + 'a>>;
 
@@ -29,6 +37,12 @@ pub enum ProviderKind {
     Xai,
     OpenAi,
     QwenProxy,
+    Azure,
+    Gemini,
+    Bedrock,
+    OpenRouter,
+    Mistral,
+    Groq,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +68,7 @@ pub struct ModelCapabilities {
 
 impl ModelCapabilities {
     #[expect(clippy::too_many_arguments)]
+    #[must_use]
     pub const fn new(
         context_window: u32,
         max_output: u32,
@@ -97,7 +112,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "ANTHROPIC_API_KEY",
         base_url_env: "ANTHROPIC_BASE_URL",
         default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(200_000, 32_000, true, true, true, 15.0, 75.0, 18.75, 1.50),
+        capabilities: ModelCapabilities::new(
+            200_000, 32_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
+        ),
     },
     RegistryEntry {
         alias: "sonnet",
@@ -106,7 +123,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "ANTHROPIC_API_KEY",
         base_url_env: "ANTHROPIC_BASE_URL",
         default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50),
+        capabilities: ModelCapabilities::new(
+            200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
+        ),
     },
     RegistryEntry {
         alias: "haiku",
@@ -115,7 +134,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "ANTHROPIC_API_KEY",
         base_url_env: "ANTHROPIC_BASE_URL",
         default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(200_000, 8_192, false, true, true, 1.0, 5.0, 1.25, 0.10),
+        capabilities: ModelCapabilities::new(
+            200_000, 8_192, false, true, true, 1.0, 5.0, 1.25, 0.10,
+        ),
     },
     RegistryEntry {
         alias: "grok",
@@ -142,7 +163,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "XAI_API_KEY",
         base_url_env: "XAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "grok-3-mini",
@@ -151,7 +174,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "XAI_API_KEY",
         base_url_env: "XAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "grok-2",
@@ -160,7 +185,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "XAI_API_KEY",
         base_url_env: "XAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 4_096, false, true, false, 2.0, 10.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            131_072, 4_096, false, true, false, 2.0, 10.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "gpt-4o",
@@ -169,7 +196,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "OPENAI_API_KEY",
         base_url_env: "OPENAI_BASE_URL",
         default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
-        capabilities: ModelCapabilities::new(128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "coder-model",
@@ -178,7 +207,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "QWEN_PROXY_API_KEY",
         base_url_env: "QWEN_PROXY_BASE_URL",
         default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(128_000, 8_192, true, true, true, 0.20, 0.60, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            128_000, 8_192, true, true, true, 0.20, 0.60, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "qwen3-coder-plus",
@@ -187,7 +218,9 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "QWEN_PROXY_API_KEY",
         base_url_env: "QWEN_PROXY_BASE_URL",
         default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(256_000, 12_288, true, true, true, 0.40, 1.20, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            256_000, 12_288, true, true, true, 0.40, 1.20, 0.0, 0.0,
+        ),
     },
     RegistryEntry {
         alias: "qwen3-coder-flash",
@@ -196,7 +229,185 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
         auth_env: "QWEN_PROXY_API_KEY",
         base_url_env: "QWEN_PROXY_BASE_URL",
         default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(128_000, 4_096, false, true, true, 0.10, 0.30, 0.0, 0.0),
+        capabilities: ModelCapabilities::new(
+            128_000, 4_096, false, true, true, 0.10, 0.30, 0.0, 0.0,
+        ),
+    },
+    // Azure OpenAI
+    RegistryEntry {
+        alias: "azure/gpt-4",
+        canonical: "azure/gpt-4",
+        provider: ProviderKind::Azure,
+        auth_env: "AZURE_OPENAI_API_KEY",
+        base_url_env: "AZURE_OPENAI_RESOURCE",
+        default_base_url: "https://.openai.azure.com",
+        capabilities: ModelCapabilities::new(
+            128_000, 8_192, true, true, true, 10.0, 30.0, 0.0, 0.0,
+        ),
+    },
+    RegistryEntry {
+        alias: "azure/gpt-4o",
+        canonical: "azure/gpt-4o",
+        provider: ProviderKind::Azure,
+        auth_env: "AZURE_OPENAI_API_KEY",
+        base_url_env: "AZURE_OPENAI_RESOURCE",
+        default_base_url: "https://.openai.azure.com",
+        capabilities: ModelCapabilities::new(
+            128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0,
+        ),
+    },
+    // Google Gemini
+    RegistryEntry {
+        alias: "gemini/gemini-2.5-pro",
+        canonical: "gemini/gemini-2.5-pro",
+        provider: ProviderKind::Gemini,
+        auth_env: "GEMINI_API_KEY",
+        base_url_env: "GEMINI_BASE_URL",
+        default_base_url: gemini::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            1_048_576, 65_536, true, true, true, 1.25, 10.0, 0.0, 0.0,
+        ),
+    },
+    RegistryEntry {
+        alias: "gemini/gemini-2.5-flash",
+        canonical: "gemini/gemini-2.5-flash",
+        provider: ProviderKind::Gemini,
+        auth_env: "GEMINI_API_KEY",
+        base_url_env: "GEMINI_BASE_URL",
+        default_base_url: gemini::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            1_048_576, 65_536, true, true, true, 0.15, 0.60, 0.0, 0.0,
+        ),
+    },
+    RegistryEntry {
+        alias: "gemini/gemini-2.0-flash",
+        canonical: "gemini/gemini-2.0-flash",
+        provider: ProviderKind::Gemini,
+        auth_env: "GEMINI_API_KEY",
+        base_url_env: "GEMINI_BASE_URL",
+        default_base_url: gemini::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            1_048_576, 8_192, true, true, true, 0.10, 0.40, 0.0, 0.0,
+        ),
+    },
+    // AWS Bedrock
+    RegistryEntry {
+        alias: "bedrock/claude-3.5-sonnet",
+        canonical: "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        provider: ProviderKind::Bedrock,
+        auth_env: "AWS_ACCESS_KEY_ID",
+        base_url_env: "AWS_DEFAULT_REGION",
+        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        capabilities: ModelCapabilities::new(
+            200_000, 8_192, true, true, true, 3.0, 15.0, 3.75, 0.30,
+        ),
+    },
+    RegistryEntry {
+        alias: "bedrock/claude-3.5-sonnet-v2",
+        canonical: "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        provider: ProviderKind::Bedrock,
+        auth_env: "AWS_ACCESS_KEY_ID",
+        base_url_env: "AWS_DEFAULT_REGION",
+        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        capabilities: ModelCapabilities::new(
+            200_000, 8_192, true, true, true, 3.0, 15.0, 3.75, 0.30,
+        ),
+    },
+    RegistryEntry {
+        alias: "bedrock/claude-3-opus",
+        canonical: "bedrock/anthropic.claude-3-opus-20240229-v1:0",
+        provider: ProviderKind::Bedrock,
+        auth_env: "AWS_ACCESS_KEY_ID",
+        base_url_env: "AWS_DEFAULT_REGION",
+        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        capabilities: ModelCapabilities::new(
+            200_000, 4_096, true, true, true, 15.0, 75.0, 18.75, 1.50,
+        ),
+    },
+    RegistryEntry {
+        alias: "bedrock/llama-3.3-70b",
+        canonical: "bedrock/meta.llama3-3-70b-instruct-v1:0",
+        provider: ProviderKind::Bedrock,
+        auth_env: "AWS_ACCESS_KEY_ID",
+        base_url_env: "AWS_DEFAULT_REGION",
+        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        capabilities: ModelCapabilities::new(128_000, 8_192, true, true, false, 2.0, 6.0, 0.0, 0.0),
+    },
+    // OpenRouter
+    RegistryEntry {
+        alias: "openrouter/claude-sonnet",
+        canonical: "openrouter/anthropic/claude-3.5-sonnet",
+        provider: ProviderKind::OpenRouter,
+        auth_env: "OPENROUTER_API_KEY",
+        base_url_env: "OPENROUTER_BASE_URL",
+        default_base_url: openrouter::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(200_000, 8_192, true, true, true, 3.0, 15.0, 0.0, 0.0),
+    },
+    RegistryEntry {
+        alias: "openrouter/claude-opus",
+        canonical: "openrouter/anthropic/claude-opus",
+        provider: ProviderKind::OpenRouter,
+        auth_env: "OPENROUTER_API_KEY",
+        base_url_env: "OPENROUTER_BASE_URL",
+        default_base_url: openrouter::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            200_000, 16_384, true, true, true, 15.0, 75.0, 0.0, 0.0,
+        ),
+    },
+    // Mistral
+    RegistryEntry {
+        alias: "mistral/mistral-large",
+        canonical: "mistral/mistral-large-latest",
+        provider: ProviderKind::Mistral,
+        auth_env: "MISTRAL_API_KEY",
+        base_url_env: "MISTRAL_BASE_URL",
+        default_base_url: mistral::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(128_000, 8_192, true, true, false, 2.0, 6.0, 0.0, 0.0),
+    },
+    RegistryEntry {
+        alias: "mistral/mistral-small",
+        canonical: "mistral/mistral-small-latest",
+        provider: ProviderKind::Mistral,
+        auth_env: "MISTRAL_API_KEY",
+        base_url_env: "MISTRAL_BASE_URL",
+        default_base_url: mistral::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            32_000, 8_192, true, true, false, 0.20, 0.60, 0.0, 0.0,
+        ),
+    },
+    // Groq
+    RegistryEntry {
+        alias: "groq/llama-3.3-70b",
+        canonical: "groq/llama-3.3-70b-versatile",
+        provider: ProviderKind::Groq,
+        auth_env: "GROQ_API_KEY",
+        base_url_env: "GROQ_BASE_URL",
+        default_base_url: groq::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            128_000, 32_768, true, true, false, 0.0, 0.0, 0.0, 0.0,
+        ),
+    },
+    RegistryEntry {
+        alias: "groq/llama-3.1-8b",
+        canonical: "groq/llama-3.1-8b-instant",
+        provider: ProviderKind::Groq,
+        auth_env: "GROQ_API_KEY",
+        base_url_env: "GROQ_BASE_URL",
+        default_base_url: groq::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            128_000, 8_192, false, true, false, 0.0, 0.0, 0.0, 0.0,
+        ),
+    },
+    RegistryEntry {
+        alias: "groq/mixtral-8x7b",
+        canonical: "groq/mixtral-8x7b-32768",
+        provider: ProviderKind::Groq,
+        auth_env: "GROQ_API_KEY",
+        base_url_env: "GROQ_BASE_URL",
+        default_base_url: groq::DEFAULT_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            32_768, 32_768, false, true, false, 0.0, 0.0, 0.0, 0.0,
+        ),
     },
 ];
 
@@ -229,6 +440,25 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     if let Some(metadata) = metadata_for_model(model) {
         return metadata.provider;
     }
+    let lower = model.to_lowercase();
+    if lower.starts_with("azure/") {
+        return ProviderKind::Azure;
+    }
+    if lower.starts_with("gemini/") {
+        return ProviderKind::Gemini;
+    }
+    if lower.starts_with("bedrock/") {
+        return ProviderKind::Bedrock;
+    }
+    if lower.starts_with("openrouter/") {
+        return ProviderKind::OpenRouter;
+    }
+    if lower.starts_with("mistral/") {
+        return ProviderKind::Mistral;
+    }
+    if lower.starts_with("groq/") {
+        return ProviderKind::Groq;
+    }
     if anthropic::has_auth_from_env_or_saved().unwrap_or(false) {
         return ProviderKind::Anthropic;
     }
@@ -238,29 +468,50 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     if openai_compat::has_api_key("XAI_API_KEY") {
         return ProviderKind::Xai;
     }
-    if openai_compat::has_api_key("QWEN_PROXY_API_KEY") || std::env::var("QWEN_PROXY_BASE_URL").is_ok() {
+    if openai_compat::has_api_key("QWEN_PROXY_API_KEY")
+        || std::env::var("QWEN_PROXY_BASE_URL").is_ok()
+    {
         return ProviderKind::QwenProxy;
     }
     ProviderKind::Anthropic
 }
 
+#[must_use]
 pub fn capabilities_for_model(model: &str) -> ModelCapabilities {
     let canonical = resolve_model_alias(model);
     MODEL_REGISTRY
         .iter()
         .find(|e| e.canonical == canonical || e.alias == model)
-        .map(|e| e.capabilities)
-        .unwrap_or_else(|| {
-            if canonical.starts_with("claude") {
-                ModelCapabilities::new(200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50)
-            } else if canonical.starts_with("grok") {
-                ModelCapabilities::new(131_072, 8_192, true, true, false, 3.0, 15.0, 0.0, 0.0)
-            } else if canonical.starts_with("gpt") {
-                ModelCapabilities::new(128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0)
-            } else {
-                ModelCapabilities::new(128_000, 8_192, false, true, false, 0.20, 0.60, 0.0, 0.0)
-            }
-        })
+        .map_or_else(
+            || {
+                if canonical.starts_with("claude") {
+                    ModelCapabilities::new(
+                        200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
+                    )
+                } else if canonical.starts_with("grok") {
+                    ModelCapabilities::new(131_072, 8_192, true, true, false, 3.0, 15.0, 0.0, 0.0)
+                } else if canonical.starts_with("gpt") {
+                    ModelCapabilities::new(128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0)
+                } else if canonical.starts_with("azure/") {
+                    ModelCapabilities::new(128_000, 8_192, true, true, true, 5.0, 15.0, 0.0, 0.0)
+                } else if canonical.starts_with("gemini/") {
+                    ModelCapabilities::new(
+                        1_048_576, 65_536, true, true, true, 1.25, 10.0, 0.0, 0.0,
+                    )
+                } else if canonical.starts_with("bedrock/") {
+                    ModelCapabilities::new(200_000, 8_192, true, true, true, 3.0, 15.0, 3.75, 0.30)
+                } else if canonical.starts_with("openrouter/") {
+                    ModelCapabilities::new(128_000, 8_192, true, true, true, 3.0, 15.0, 0.0, 0.0)
+                } else if canonical.starts_with("mistral/") {
+                    ModelCapabilities::new(128_000, 8_192, true, true, false, 2.0, 6.0, 0.0, 0.0)
+                } else if canonical.starts_with("groq/") {
+                    ModelCapabilities::new(128_000, 32_768, true, true, false, 0.0, 0.0, 0.0, 0.0)
+                } else {
+                    ModelCapabilities::new(128_000, 8_192, false, true, false, 0.20, 0.60, 0.0, 0.0)
+                }
+            },
+            |e| e.capabilities,
+        )
 }
 
 #[must_use]
@@ -274,7 +525,10 @@ pub fn list_all_models() -> impl Iterator<Item = &'static RegistryEntry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capabilities_for_model, detect_provider_kind, max_tokens_for_model, resolve_model_alias, ProviderKind};
+    use super::{
+        capabilities_for_model, detect_provider_kind, max_tokens_for_model, resolve_model_alias,
+        ProviderKind,
+    };
 
     #[test]
     fn resolves_grok_aliases() {

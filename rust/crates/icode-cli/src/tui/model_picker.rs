@@ -394,6 +394,7 @@ fn provider_color(kind: ProviderKind, theme: Theme) -> Color {
         ProviderKind::Xai => theme.text,
         ProviderKind::OpenAi => Color::Rgb(16, 163, 127),
         ProviderKind::QwenProxy => Color::Rgb(100, 149, 237),
+        _ => theme.text_muted,
     }
 }
 

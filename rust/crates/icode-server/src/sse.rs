@@ -1,21 +1,46 @@
+use std::convert::Infallible;
+use std::time::Duration;
+
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
-use futures::stream::StreamExt;
-use runtime::EventBus;
-use tokio::sync::mpsc;
+use futures::stream::{Stream, StreamExt};
+use tokio_stream::wrappers::BroadcastStream;
+
+/// Convert an `EventBus` broadcast receiver into an SSE stream.
 pub fn event_bus_to_sse(
-    e: &EventBus,
-) -> Sse<impl futures::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
-    let (tx, rx) = mpsc::unbounded_channel::<String>();
-    let _unsub = e.subscribe_all(move |ev| {
-        let _ = tx.send(serde_json::to_string(&ev).unwrap_or_default());
+    event_bus: &runtime::EventBus,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let receiver = event_bus.subscribe();
+    let broadcast_stream = BroadcastStream::new(receiver);
+
+    let stream = broadcast_stream.filter_map(|result| async move {
+        match result {
+            Ok(event) => {
+                let json = serde_json::to_string(&event).ok()?;
+                Some(Ok(SseEvent::default()
+                    .event(event.event_type_name())
+                    .data(json)))
+            }
+            Err(_) => None,
+        }
     });
-    Sse::new(
-        tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
-            .map(|t| Ok(SseEvent::default().event("event").data(t))),
-    )
-    .keep_alive(
+
+    Sse::new(stream).keep_alive(
         KeepAlive::new()
-            .interval(std::time::Duration::from_secs(15))
+            .interval(Duration::from_secs(15))
+            .text("ping"),
+    )
+}
+
+/// Create an SSE stream from a channel of text deltas.
+pub fn text_stream_to_sse(
+    rx: tokio::sync::mpsc::Receiver<String>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
+        .map(|text| Ok(SseEvent::default().event("content").data(text)));
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
             .text("ping"),
     )
 }

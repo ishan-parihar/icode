@@ -3,16 +3,18 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::tui::command_palette::CommandPaletteState;
+use crate::tui::dialog_context_viz::ContextVizDialogState;
 use crate::tui::dialog_help::HelpDialogState;
 use crate::tui::dialog_mcp::McpDialogState;
 use crate::tui::dialog_message_actions::MessageActionDialogState;
 use crate::tui::dialog_plugins::PluginsDialogState;
+use crate::tui::dialog_session_branching::SessionBranchingState;
 use crate::tui::dialog_sessions::SessionsDialogState;
 use crate::tui::dialog_skills::SkillsDialogState;
 use crate::tui::input::InputState;
 use crate::tui::model_picker::ModelPickerState;
 use crate::tui::theme::Theme;
-use crate::tui::widgets::{capabilities_for_model, MessageList, Sidebar};
+use crate::tui::widgets::{capabilities_for_model, DiffView, MessageList, PagerState, Sidebar};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppMode {
@@ -46,6 +48,8 @@ pub struct Message {
     pub agent: String,
     pub timestamp: u64,
     pub is_streaming: bool,
+    pub tool_timeline: Vec<(String, bool, u64)>,
+    pub turn_duration_ms: u64,
 }
 
 impl Message {
@@ -105,6 +109,14 @@ pub struct SessionInfo {
     pub turns: u32,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    pub cache_create_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cumulative_cost: f64,
+    pub budget_max: Option<f64>,
+    pub budget_remaining: Option<f64>,
+    pub compaction_count: u32,
+    pub compaction_removed_messages: u32,
+    pub effort_level: String,
 }
 
 pub struct Toast {
@@ -152,6 +164,8 @@ pub struct AppState {
     pub sessions_dialog: SessionsDialogState,
     pub message_action_dialog: MessageActionDialogState,
     pub help_dialog: HelpDialogState,
+    pub context_viz_dialog: ContextVizDialogState,
+    pub branching_dialog: SessionBranchingState,
     pub skill_count: usize,
     pub plugin_count: usize,
     pub revert: Option<RevertState>,
@@ -165,6 +179,10 @@ pub struct AppState {
     pub is_thinking: bool,
     pub interrupt_count: u8,
     pub interrupt_timestamp: Option<Instant>,
+    pub turn_started_at: Option<Instant>,
+    pub last_turn_duration: Option<std::time::Duration>,
+    pub diff_view: Option<DiffView>,
+    pub pager: PagerState,
 }
 
 #[derive(Debug, Clone)]
@@ -227,6 +245,14 @@ impl AppState {
                 turns: 0,
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_create_tokens: 0,
+                cache_read_tokens: 0,
+                cumulative_cost: 0.0,
+                budget_max: None,
+                budget_remaining: None,
+                compaction_count: 0,
+                compaction_removed_messages: 0,
+                effort_level: "balanced".into(),
             },
             tools: Vec::new(),
             sidebar_visible: true,
@@ -246,6 +272,8 @@ impl AppState {
             sessions_dialog: SessionsDialogState::new(),
             message_action_dialog: MessageActionDialogState::new(),
             help_dialog: HelpDialogState::new(),
+            context_viz_dialog: ContextVizDialogState::new(),
+            branching_dialog: SessionBranchingState::new(),
             skill_count: 0,
             plugin_count: 0,
             revert: None,
@@ -259,6 +287,10 @@ impl AppState {
             is_thinking: false,
             interrupt_count: 0,
             interrupt_timestamp: None,
+            turn_started_at: None,
+            last_turn_duration: None,
+            diff_view: None,
+            pager: PagerState::default(),
         }
     }
 
@@ -292,6 +324,8 @@ impl AppState {
                 .unwrap_or_default()
                 .as_secs(),
             is_streaming: false,
+            tool_timeline: Vec::new(),
+            turn_duration_ms: 0,
         });
         self.scroll_to_bottom();
     }
@@ -310,6 +344,8 @@ impl AppState {
                 .unwrap_or_default()
                 .as_secs(),
             is_streaming: true,
+            tool_timeline: Vec::new(),
+            turn_duration_ms: 0,
         });
         self.is_streaming = true;
         self.scroll_to_bottom();
@@ -445,6 +481,8 @@ impl AppState {
                 .unwrap_or_default()
                 .as_secs(),
             is_streaming: false,
+            tool_timeline: Vec::new(),
+            turn_duration_ms: 0,
         });
         self.scroll_to_bottom();
     }
