@@ -1,4 +1,6 @@
 use crate::tui::plugin::{PluginApi, PluginCommand, PluginSlot, SlotStyle, TuiPlugin};
+use crate::tui::theme::Theme;
+use crate::tui::theme_loader::find_theme;
 
 pub struct ThemeSwitcherPlugin;
 
@@ -12,115 +14,96 @@ impl TuiPlugin for ThemeSwitcherPlugin {
     }
 
     fn description(&self) -> &'static str {
-        "Switch between light and dark themes"
+        "Switch between 37 OpenCode themes"
     }
 
     fn init(&self, api: &mut PluginApi<'_>) -> Result<(), String> {
         let saved_theme = api.kv.get("theme-switcher:last", String::new());
-        if !saved_theme.is_empty() {
+        if !saved_theme.is_empty() && Theme::from_name(&saved_theme).is_some() {
             api.state.set_theme(&saved_theme);
         }
         Ok(())
     }
 
     fn dispose(&self, api: &mut PluginApi<'_>) {
-        let theme_name = if api.state.theme.is_dark() {
-            "dark"
-        } else {
-            "light"
-        };
-        api.kv.set("theme-switcher:last", theme_name);
+        let theme_id = current_theme_id(api);
+        api.kv.set("theme-switcher:last", &theme_id);
         let _ = api.kv.save();
     }
 
     fn register_slots(&self, api: &mut PluginApi<'_>) {
-        let label = if api.state.theme.is_dark() {
-            "\u{25cf} dark"
+        let theme_id = current_theme_id(api);
+        let display = Theme::display_name(&theme_id);
+        let icon = if Theme::from_name(&theme_id).map_or(true, |t| t.is_dark()) {
+            "\u{25cf}"
         } else {
-            "\u{25cb} light"
+            "\u{25cb}"
         };
         api.register_slot_content(
             self.id(),
             PluginSlot::StatusBarRight,
-            vec![label.to_string()],
+            vec![format!("{icon} {display}")],
             SlotStyle::Accent,
         );
     }
 
     fn register_commands(&self) -> Vec<PluginCommand> {
-        vec![
-            PluginCommand {
-                id: "theme-switcher:toggle".to_string(),
-                title: "Toggle theme".to_string(),
-                description: "Switch between light and dark themes".to_string(),
-                category: "System".to_string(),
-                keybind: Some("Ctrl+T".to_string()),
-                on_execute: Box::new(|api| {
-                    let new_name = api.state.toggle_theme();
-                    api.kv.set("theme-switcher:last", new_name);
-                    let label = if new_name == "dark" {
-                        "\u{25cf} dark"
-                    } else {
-                        "\u{25cb} light"
-                    };
-                    api.register_slot_content(
-                        "theme-switcher",
-                        PluginSlot::StatusBarRight,
-                        vec![label.to_string()],
-                        SlotStyle::Accent,
-                    );
-                    api.toast_success(format!("Theme switched to {new_name}"));
-                    Some(format!("__theme_change__{new_name}"))
-                }),
-            },
-            PluginCommand {
-                id: "theme-switcher:dark".to_string(),
-                title: "Set dark theme".to_string(),
-                description: "Switch to dark theme".to_string(),
+        let mut commands = vec![PluginCommand {
+            id: "theme-switcher:toggle".to_string(),
+            title: "Cycle theme".to_string(),
+            description: "Cycle to the next theme".to_string(),
+            category: "System".to_string(),
+            keybind: Some("Ctrl+T".to_string()),
+            on_execute: Box::new(|api| {
+                let new_name = api.state.toggle_theme();
+                api.kv.set("theme-switcher:last", new_name);
+                update_slot(api, new_name);
+                api.toast_success(format!("Theme: {}", Theme::display_name(new_name)));
+                None
+            }),
+        }];
+
+        if let Some(current_id) = find_theme("opencode").map(|_| "opencode") {
+            commands.push(PluginCommand {
+                id: "theme-switcher:default".to_string(),
+                title: "Set OpenCode theme".to_string(),
+                description: "Switch to the default OpenCode theme".to_string(),
                 category: "System".to_string(),
                 keybind: None,
                 on_execute: Box::new(|api| {
-                    if !api.state.theme.is_dark() {
-                        api.state.set_theme("dark");
-                        api.kv.set("theme-switcher:last", "dark");
-                        api.register_slot_content(
-                            "theme-switcher",
-                            PluginSlot::StatusBarRight,
-                            vec!["\u{25cf} dark".to_string()],
-                            SlotStyle::Accent,
-                        );
-                        api.toast_success("Switched to dark theme");
-                        Some("__theme_change__dark".to_string())
-                    } else {
-                        api.toast("Already using dark theme");
-                        None
-                    }
+                    api.state.set_theme("opencode");
+                    api.kv.set("theme-switcher:last", "opencode");
+                    update_slot(api, "opencode");
+                    api.toast_success("Theme: OpenCode");
+                    None
                 }),
-            },
-            PluginCommand {
-                id: "theme-switcher:light".to_string(),
-                title: "Set light theme".to_string(),
-                description: "Switch to light theme".to_string(),
-                category: "System".to_string(),
-                keybind: None,
-                on_execute: Box::new(|api| {
-                    if api.state.theme.is_dark() {
-                        api.state.set_theme("light");
-                        api.kv.set("theme-switcher:last", "light");
-                        api.register_slot_content(
-                            "theme-switcher",
-                            PluginSlot::StatusBarRight,
-                            vec!["\u{25cb} light".to_string()],
-                            SlotStyle::Accent,
-                        );
-                        api.toast_success("Switched to light theme");
-                        Some("__theme_change__light".to_string())
-                    } else {
-                        api.toast("Already using light theme");
-                        None
-                    }
-                }),
-            },
-        ]
+            });
+        }
+
+        commands
     }
+}
+
+fn current_theme_id(api: &PluginApi<'_>) -> String {
+    use crate::tui::theme_loader::THEMES;
+    THEMES
+        .iter()
+        .find(|entry| entry.theme.background == api.state.theme.background)
+        .map(|entry| entry.id.to_string())
+        .unwrap_or_else(|| "opencode".to_string())
+}
+
+fn update_slot(api: &mut PluginApi<'_>, theme_id: &str) {
+    let display = Theme::display_name(theme_id);
+    let icon = if Theme::from_name(theme_id).map_or(true, |t| t.is_dark()) {
+        "\u{25cf}"
+    } else {
+        "\u{25cb}"
+    };
+    api.register_slot_content(
+        "theme-switcher",
+        PluginSlot::StatusBarRight,
+        vec![format!("{icon} {display}")],
+        SlotStyle::Accent,
+    );
 }

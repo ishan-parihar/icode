@@ -86,7 +86,9 @@ impl PermissionEnforcer {
                         tool: "write_file".to_owned(),
                         active_mode: mode.as_str().to_owned(),
                         required_mode: PermissionMode::DangerFullAccess.as_str().to_owned(),
-                        reason: format!("path '{path}' is outside workspace root '{workspace_root}'"),
+                        reason: format!(
+                            "path '{path}' is outside workspace root '{workspace_root}'"
+                        ),
                     }
                 }
             }

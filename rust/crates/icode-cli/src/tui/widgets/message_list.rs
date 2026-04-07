@@ -1,8 +1,12 @@
 use crate::tui::app::{AppState, MessagePart, MessageRole, TextSelection, ToolStatus};
-use crate::tui::markdown::render_markdown_to_lines;
+use crate::tui::markdown::{render_markdown_streaming, render_markdown_to_lines};
 use crate::tui::theme::Theme;
+use crate::tui::widgets::subagent_display::{
+    render_subagent_footer_collapsed, render_subagent_footer_expanded, subagent_footer_line_count,
+};
+use crate::tui::widgets::SubAgentInfo;
 use ratatui::layout::Rect;
-use ratatui::prelude::StatefulWidget;
+use ratatui::prelude::{StatefulWidget, Widget};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -48,6 +52,7 @@ enum RenderItem {
         timeline: Vec<(String, bool, u64)>,
         turn_duration_ms: u64,
     },
+    SubAgentFooter(Vec<SubAgentInfo>),
 }
 
 #[derive(Clone)]
@@ -534,7 +539,7 @@ impl MessageList {
         Self
     }
 
-    pub fn render(frame: &mut Frame, state: &AppState, area: Rect) -> usize {
+    pub fn render(frame: &mut Frame, state: &mut AppState, area: Rect) -> usize {
         let messages = &state.messages;
         let revert_boundary = state.revert.as_ref().map(|r| r.message_boundary);
 
@@ -656,11 +661,19 @@ impl MessageList {
                     for part in &msg.parts {
                         match part {
                             MessagePart::Text { content } => {
-                                let md_lines = render_markdown_to_lines(
-                                    content,
-                                    content_width.saturating_sub(4),
-                                    &state.theme,
-                                );
+                                let md_lines = if msg.is_streaming {
+                                    render_markdown_streaming(
+                                        content,
+                                        content_width.saturating_sub(4),
+                                        &state.theme,
+                                    )
+                                } else {
+                                    render_markdown_to_lines(
+                                        content,
+                                        content_width.saturating_sub(4),
+                                        &state.theme,
+                                    )
+                                };
                                 let mut prefixed = Vec::new();
                                 for md_line in md_lines {
                                     let mut spans = Vec::with_capacity(md_line.spans.len() + 1);
@@ -761,6 +774,14 @@ impl MessageList {
                         });
                         line_counts.push(1);
                     }
+
+                    if !msg.sub_agents.is_empty() {
+                        let sa_lines = subagent_footer_line_count(&msg.sub_agents, content_width);
+                        if sa_lines > 0 {
+                            items.push(RenderItem::SubAgentFooter(msg.sub_agents.clone()));
+                            line_counts.push(sa_lines);
+                        }
+                    }
                 }
                 MessageRole::Tool { name } => {
                     if !items.is_empty() {
@@ -821,6 +842,12 @@ impl MessageList {
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
+        if scroll + visible_lines >= total_lines.saturating_sub(1) {
+            state.auto_scroll = true;
+            state.scroll_paused = false;
+            state.scroll_offset = usize::MAX;
+        }
+
         let start = scroll;
         let end = start + visible_lines;
 
@@ -841,6 +868,9 @@ impl MessageList {
                 RenderItem::Cursor(_) => 1,
                 RenderItem::AgentSignature { .. } => 1,
                 RenderItem::ToolTimelineSummary { .. } => 1,
+                RenderItem::SubAgentFooter(agents) => {
+                    subagent_footer_line_count(agents, content_width)
+                }
             };
 
             let item_start = current_line;
@@ -985,6 +1015,19 @@ impl MessageList {
                     let spans = build_timeline_spans(timeline, *turn_duration_ms, &state.theme);
                     frame.render_widget(Paragraph::new(Line::from(spans)), item_area);
                 }
+                RenderItem::SubAgentFooter(agents) => {
+                    let all_expanded = agents.iter().any(|a| a.expanded);
+                    let lines = if all_expanded {
+                        render_subagent_footer_expanded(agents, &state.theme, content_width)
+                    } else {
+                        render_subagent_footer_collapsed(agents, &state.theme)
+                    };
+                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())]
+                        .iter()
+                        .cloned()
+                        .collect();
+                    frame.render_widget(Paragraph::new(visible), item_area);
+                }
             }
 
             current_line = item_end;
@@ -1004,6 +1047,10 @@ impl MessageList {
                         .position(scroll)
                         .viewport_content_length(visible_lines),
                 );
+        }
+
+        if state.scroll_paused && state.is_streaming {
+            render_new_messages_hint(frame, area, &state.theme);
         }
 
         total_lines
@@ -1456,4 +1503,37 @@ pub fn render_selection_highlight(
             }
         }
     }
+}
+
+fn render_new_messages_hint(frame: &mut Frame, area: Rect, theme: &Theme) {
+    let hint_text = "↓ New messages";
+    let hint_width = hint_text.len() as u16 + 6;
+    if hint_width > area.width {
+        return;
+    }
+
+    let hint_x = area.x + (area.width.saturating_sub(hint_width)) / 2;
+    let hint_y = area.bottom().saturating_sub(1);
+    let hint_area = Rect {
+        x: hint_x,
+        y: hint_y,
+        width: hint_width,
+        height: 1,
+    };
+
+    if hint_y < area.y || hint_y >= area.bottom() {
+        return;
+    }
+
+    let hint_span = Span::styled(
+        hint_text,
+        Style::default()
+            .fg(theme.primary)
+            .bg(theme.background_element)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let bg = Paragraph::new("").style(Style::default().bg(theme.background_element));
+    bg.render(hint_area, frame.buffer_mut());
+    hint_span.render(hint_area, frame.buffer_mut());
 }

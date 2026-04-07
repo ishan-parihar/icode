@@ -1,8 +1,11 @@
+use crate::tui::frecency::FrecencyStore;
 use crate::tui::theme::Theme;
 use ratatui::prelude::Widget;
 use ratatui::widgets::{StatefulWidget, Wrap};
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, text::Span, widgets::Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+const KNOWN_AGENTS: &[&str] = &["build", "plan", "debug", "review", "test"];
 
 const SLASH_COMMANDS: &[&str] = &[
     "/help",
@@ -62,6 +65,54 @@ fn complete_file_path(cwd: &str, partial: &str) -> Vec<String> {
         .collect()
 }
 
+#[derive(Debug, Clone)]
+enum InputSegment {
+    Text(String),
+    FileChip(String),
+    AgentChip(String),
+}
+
+fn parse_input_segments(value: &str) -> Vec<InputSegment> {
+    let mut segments = Vec::new();
+    let mut current_text = String::new();
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '@' && i + 1 < len && is_ref_char(chars[i + 1]) {
+            if !current_text.is_empty() {
+                segments.push(InputSegment::Text(std::mem::take(&mut current_text)));
+            }
+            let start = i;
+            i += 1;
+            while i < len && is_ref_char(chars[i]) {
+                i += 1;
+            }
+            let ref_text: String = chars[start..i].iter().collect();
+            let ref_name = &ref_text[1..];
+            if KNOWN_AGENTS.contains(&ref_name) {
+                segments.push(InputSegment::AgentChip(ref_text));
+            } else {
+                segments.push(InputSegment::FileChip(ref_text));
+            }
+        } else {
+            current_text.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    if !current_text.is_empty() {
+        segments.push(InputSegment::Text(current_text));
+    }
+
+    segments
+}
+
+fn is_ref_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '.' || c == '/' || c == '-'
+}
+
 #[derive(Debug, Default)]
 pub struct InputState {
     pub value: String,
@@ -77,6 +128,7 @@ pub struct InputState {
     pub history: Vec<String>,
     pub history_idx: usize,
     pub history_temp: Option<String>,
+    pub frecency: Option<FrecencyStore>,
     available_models: Vec<String>,
     available_sessions: Vec<String>,
     cwd: String,
@@ -444,6 +496,28 @@ impl InputState {
         }
     }
 
+    pub fn history_suggestions(&self, prefix: &str, limit: usize) -> Vec<String> {
+        if let Some(ref frecency) = self.frecency {
+            frecency.suggestions(prefix, limit)
+        } else {
+            let prefix_lower = prefix.to_lowercase();
+            self.history
+                .iter()
+                .filter(|h| h.to_lowercase().starts_with(&prefix_lower))
+                .cloned()
+                .take(limit)
+                .collect()
+        }
+    }
+
+    pub fn frecency_top_entries(&self, limit: usize) -> Vec<String> {
+        if let Some(ref frecency) = self.frecency {
+            frecency.top_entries(limit)
+        } else {
+            self.history.iter().rev().cloned().take(limit).collect()
+        }
+    }
+
     pub fn set_completions(&mut self, completions: Vec<String>) {
         self.completions = completions;
         self.completion_idx = 0;
@@ -592,6 +666,9 @@ impl InputState {
 
     pub fn submit(&mut self) -> String {
         let value = std::mem::take(&mut self.value);
+        if let Some(ref mut frecency) = self.frecency {
+            frecency.record(&value);
+        }
         self.cursor = 0;
         self.show_completions = false;
         self.hide_slash_autocomplete();
@@ -673,17 +750,59 @@ impl StatefulWidget for InputWidget {
                 vec![ratatui::text::Line::from(vec![prompt.clone(), placeholder])]
             } else {
                 let mut result = Vec::new();
-                for (i, segment) in state.value.split('\n').enumerate() {
-                    if i == 0 {
-                        result.push(ratatui::text::Line::from(vec![
-                            prompt.clone(),
-                            Span::styled(segment.to_string(), Style::default().fg(text_color)),
-                        ]));
+                for (line_idx, segment) in state.value.split('\n').enumerate() {
+                    if line_idx == 0 {
+                        let mut spans = vec![prompt.clone()];
+                        for chip in parse_input_segments(segment) {
+                            match chip {
+                                InputSegment::Text(t) => {
+                                    spans.push(Span::styled(t, Style::default().fg(text_color)));
+                                }
+                                InputSegment::FileChip(t) => {
+                                    spans.push(Span::styled(
+                                        format!(" {} ", t),
+                                        Style::default()
+                                            .fg(self.theme.info)
+                                            .bg(self.theme.background_hover),
+                                    ));
+                                }
+                                InputSegment::AgentChip(t) => {
+                                    spans.push(Span::styled(
+                                        format!(" {} ", t),
+                                        Style::default()
+                                            .fg(self.theme.accent)
+                                            .bg(self.theme.background_hover),
+                                    ));
+                                }
+                            }
+                        }
+                        result.push(ratatui::text::Line::from(spans));
                     } else {
-                        result.push(ratatui::text::Line::from(vec![Span::styled(
-                            segment.to_string(),
-                            Style::default().fg(text_color),
-                        )]));
+                        let mut spans = Vec::new();
+                        for chip in parse_input_segments(segment) {
+                            match chip {
+                                InputSegment::Text(t) => {
+                                    spans.push(Span::styled(t, Style::default().fg(text_color)));
+                                }
+                                InputSegment::FileChip(t) => {
+                                    spans.push(Span::styled(
+                                        format!(" {} ", t),
+                                        Style::default()
+                                            .fg(self.theme.info)
+                                            .bg(self.theme.background_hover),
+                                    ));
+                                }
+                                InputSegment::AgentChip(t) => {
+                                    spans.push(Span::styled(
+                                        format!(" {} ", t),
+                                        Style::default()
+                                            .fg(self.theme.accent)
+                                            .bg(self.theme.background_hover),
+                                    ));
+                                }
+                            }
+                        }
+                        result.push(ratatui::text::Line::from(spans));
                     }
                 }
                 if result.is_empty() {
@@ -751,5 +870,107 @@ impl StatefulWidget for InputWidget {
                         .bg(self.theme.primary),
                 );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_plain_text_no_chips() {
+        let segments = parse_input_segments("hello world");
+        assert_eq!(segments.len(), 1);
+        assert!(matches!(&segments[0], InputSegment::Text(t) if t == "hello world"));
+    }
+
+    #[test]
+    fn parse_single_file_chip() {
+        let segments = parse_input_segments("@main.rs");
+        assert_eq!(segments.len(), 1);
+        assert!(matches!(&segments[0], InputSegment::FileChip(t) if t == "@main.rs"));
+    }
+
+    #[test]
+    fn parse_single_agent_chip() {
+        let segments = parse_input_segments("@build");
+        assert_eq!(segments.len(), 1);
+        assert!(matches!(&segments[0], InputSegment::AgentChip(t) if t == "@build"));
+    }
+
+    #[test]
+    fn parse_mixed_text_and_chips() {
+        let segments = parse_input_segments("fix @main.rs using @plan");
+        assert_eq!(segments.len(), 4);
+        assert!(matches!(&segments[0], InputSegment::Text(t) if t == "fix "));
+        assert!(matches!(&segments[1], InputSegment::FileChip(t) if t == "@main.rs"));
+        assert!(matches!(&segments[2], InputSegment::Text(t) if t == " using "));
+        assert!(matches!(&segments[3], InputSegment::AgentChip(t) if t == "@plan"));
+    }
+
+    #[test]
+    fn parse_file_chip_with_path() {
+        let segments = parse_input_segments("@src/main.rs");
+        assert_eq!(segments.len(), 1);
+        assert!(matches!(&segments[0], InputSegment::FileChip(t) if t == "@src/main.rs"));
+    }
+
+    #[test]
+    fn parse_at_without_space_before_is_still_chip() {
+        let segments = parse_input_segments("email@test.com");
+        assert_eq!(segments.len(), 2);
+        assert!(matches!(&segments[0], InputSegment::Text(t) if t == "email"));
+        assert!(matches!(&segments[1], InputSegment::FileChip(t) if t == "@test.com"));
+    }
+
+    #[test]
+    fn parse_empty_input() {
+        let segments = parse_input_segments("");
+        assert_eq!(segments.len(), 0);
+    }
+
+    #[test]
+    fn parse_all_known_agents() {
+        for agent in KNOWN_AGENTS {
+            let input = format!("@{}", agent);
+            let segments = parse_input_segments(&input);
+            assert_eq!(segments.len(), 1);
+            assert!(
+                matches!(&segments[0], InputSegment::AgentChip(t) if t == &input),
+                "Expected AgentChip for @{}, got {:?}",
+                agent,
+                segments[0]
+            );
+        }
+    }
+
+    #[test]
+    fn parse_multiple_file_chips() {
+        let segments = parse_input_segments("@file1.txt and @file2.rs");
+        assert_eq!(segments.len(), 3);
+        assert!(matches!(&segments[0], InputSegment::FileChip(t) if t == "@file1.txt"));
+        assert!(matches!(&segments[1], InputSegment::Text(t) if t == " and "));
+        assert!(matches!(&segments[2], InputSegment::FileChip(t) if t == "@file2.rs"));
+    }
+
+    #[test]
+    fn parse_chip_with_hyphens() {
+        let segments = parse_input_segments("@my-file");
+        assert_eq!(segments.len(), 1);
+        assert!(matches!(&segments[0], InputSegment::FileChip(t) if t == "@my-file"));
+    }
+
+    #[test]
+    fn is_ref_char_valid() {
+        assert!(is_ref_char('a'));
+        assert!(is_ref_char('Z'));
+        assert!(is_ref_char('0'));
+        assert!(is_ref_char('_'));
+        assert!(is_ref_char('.'));
+        assert!(is_ref_char('/'));
+        assert!(is_ref_char('-'));
+        assert!(!is_ref_char(' '));
+        assert!(!is_ref_char('@'));
+        assert!(!is_ref_char('\n'));
     }
 }

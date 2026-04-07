@@ -6,12 +6,12 @@ mod glob_tool;
 mod grep_tool;
 mod protected_files;
 mod risk;
+mod skill_discovery;
 mod snip_tool;
-mod tool_search;
 mod todo_write;
+mod tool_search;
 mod web_fetch;
 mod web_search;
-mod skill_discovery;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 pub use codesearch::{codesearch, CodeSearchError, CodeSearchResult};
 pub use protected_files::{is_protected, protected_file_warning};
 pub use risk::{tool_risk_level, RiskLevel};
-pub use skill_discovery::{is_cache_expired, SkillDiscovery, SkillDiscoveryError, SkillIndexEntry, SkillSource};
+pub use skill_discovery::{
+    is_cache_expired, SkillDiscovery, SkillDiscoveryError, SkillIndexEntry, SkillSource,
+};
 
 use api::{
     max_tokens_for_model, resolve_model_alias, ContentBlockDelta, InputContentBlock, InputMessage,
@@ -38,11 +40,10 @@ use runtime::{
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
-    ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock,
-    ConversationMessage, ConversationRuntime, GrepSearchInput, LaneEvent, LaneEventBlocker,
-    LaneFailureClass, ListDirectoryInput, MessageRole, PermissionMode, PermissionPolicy,
-    PermissionScope, PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor,
-    TruncationPolicy,
+    ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock, ConversationMessage,
+    ConversationRuntime, GrepSearchInput, LaneEvent, LaneEventBlocker, LaneFailureClass,
+    ListDirectoryInput, MessageRole, PermissionMode, PermissionPolicy, PermissionScope,
+    PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor, TruncationPolicy,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -869,9 +870,8 @@ fn execute_tool_with_enforcer(
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         "Agent" => {
             let parent_enforcer = enforcer.cloned();
-            from_value::<AgentInput>(input).and_then(move |input| {
-                run_agent_with_enforcer(input, parent_enforcer.as_ref())
-            })
+            from_value::<AgentInput>(input)
+                .and_then(move |input| run_agent_with_enforcer(input, parent_enforcer.as_ref()))
         }
         "ToolSearch" => from_value::<ToolSearchInput>(input).and_then(run_tool_search),
         "NotebookEdit" => from_value::<NotebookEditInput>(input).and_then(run_notebook_edit),
@@ -1836,9 +1836,9 @@ struct GlobSearchInputValue {
     path: Option<String>,
 }
 
+pub use todo_write::{TodoItem, TodoStatus, TodoWriteInput};
 pub use web_fetch::WebFetchInput;
 pub use web_search::WebSearchInput;
-pub use todo_write::{TodoWriteInput, TodoItem, TodoStatus};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SkillInput {
@@ -4906,8 +4906,8 @@ mod batch_edit;
 pub mod bundled_skills;
 mod elicitation;
 mod formatter;
-pub mod lane_completion;
 pub mod invalid_tool;
+pub mod lane_completion;
 mod pty_bash;
 mod worktree;
 
@@ -7019,15 +7019,11 @@ printf 'pwsh:%s' "$1"
 
     #[test]
     fn test_validate_subagent_permissions_parent_limited_tools_child_requests_unavailable() {
-        let child_tools = BTreeSet::from([
-            "read_file".to_string(),
-            "NonExistentTool".to_string(),
-        ]);
+        let child_tools = BTreeSet::from(["read_file".to_string(), "NonExistentTool".to_string()]);
         let policy = runtime::PermissionPolicy::new(runtime::PermissionMode::DangerFullAccess);
         let enforcer = runtime::permission_enforcer::PermissionEnforcer::new(policy);
 
-        let result =
-            super::validate_subagent_permissions(&enforcer, &child_tools, None);
+        let result = super::validate_subagent_permissions(&enforcer, &child_tools, None);
 
         assert!(result.is_err());
         let err = result.unwrap_err();

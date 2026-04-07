@@ -1,72 +1,37 @@
 [
   {
-    "content": "Test bash tool",
-    "activeForm": "Testing bash tool",
+    "content": "Test filesystem tools (read_file, write_file, edit_file, glob_search, grep_search)",
+    "activeForm": "Testing filesystem tools",
+    "status": "completed"
+  },
+  {
+    "content": "Test search tools (WebSearch, WebFetch)",
+    "activeForm": "Testing search tools",
     "status": "in_progress"
   },
   {
-    "content": "Test read_file and write_file tools",
-    "activeForm": "Testing file read/write tools",
+    "content": "Test code tools (LSP, REPL, PowerShell)",
+    "activeForm": "Testing code tools",
     "status": "pending"
   },
   {
-    "content": "Test glob_search tool",
-    "activeForm": "Testing glob search",
+    "content": "Test task/worker tools",
+    "activeForm": "Testing task/worker tools",
     "status": "pending"
   },
   {
-    "content": "Test grep_search tool",
-    "activeForm": "Testing grep search",
+    "content": "Test utility tools (Config, Sleep, SendUserMessage, AskUserQuestion)",
+    "activeForm": "Testing utility tools",
     "status": "pending"
   },
   {
-    "content": "Test edit_file tool",
-    "activeForm": "Testing file editing",
+    "content": "Test MCP/Remote tools",
+    "activeForm": "Testing MCP/Remote tools",
     "status": "pending"
   },
   {
-    "content": "Test Sleep tool",
-    "activeForm": "Testing sleep",
-    "status": "pending"
-  },
-  {
-    "content": "Test Config tool",
-    "activeForm": "Testing config",
-    "status": "pending"
-  },
-  {
-    "content": "Test ToolSearch",
-    "activeForm": "Testing tool search",
-    "status": "pending"
-  },
-  {
-    "content": "Test TaskCreate/TaskGet/TaskList/TaskOutput/TaskStop",
-    "activeForm": "Testing background tasks",
-    "status": "pending"
-  },
-  {
-    "content": "Test LSP tool",
-    "activeForm": "Testing LSP",
-    "status": "pending"
-  },
-  {
-    "content": "Test WebSearch",
-    "activeForm": "Testing web search",
-    "status": "pending"
-  },
-  {
-    "content": "Test Agent/TeamCreate",
-    "activeForm": "Testing agents and teams",
-    "status": "pending"
-  },
-  {
-    "content": "Test StructuredOutput",
-    "activeForm": "Testing structured output",
-    "status": "pending"
-  },
-  {
-    "content": "Test REPL and PowerShell",
-    "activeForm": "Testing REPL and PowerShell",
+    "content": "Test Notebook tools",
+    "activeForm": "Testing notebook tools",
     "status": "pending"
   }
 ]

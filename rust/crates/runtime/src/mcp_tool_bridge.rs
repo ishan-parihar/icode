@@ -251,7 +251,9 @@ impl McpToolRegistry {
         }
 
         if !state.tools.iter().any(|t| t.name == tool_name) {
-            return Err(format!("tool '{tool_name}' not found on server '{server_name}'"));
+            return Err(format!(
+                "tool '{tool_name}' not found on server '{server_name}'"
+            ));
         }
 
         drop(inner);

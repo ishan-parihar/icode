@@ -1,5 +1,6 @@
-use crate::tui::app::{AppMode, AppState, MessagePart, MessageRole, ToastKind};
+use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
 use crate::tui::event::{Event, EventLoop};
+use crate::tui::frecency::FrecencyStore;
 use crate::tui::input::InputState;
 use crate::tui::layout::render_ui;
 use crate::tui::Theme;
@@ -53,6 +54,11 @@ impl Tui {
             .map(|s| s.id.clone())
             .collect();
         state.prompt.set_sessions(sessions);
+
+        let frecency_path = app::icode_config_dir().join("frecency.json");
+        let mut frecency = FrecencyStore::new(frecency_path);
+        let _ = frecency.load();
+        state.prompt.frecency = Some(frecency);
 
         Ok(Self {
             terminal,
@@ -163,11 +169,11 @@ impl Tui {
                                 self.state.scroll_offset =
                                     self.state.scroll_offset.saturating_sub(3);
                             }
+                            self.state.scroll_paused = true;
+                            self.state.auto_scroll = false;
                         }
                         crossterm::event::MouseEventKind::ScrollDown => {
-                            if self.state.scroll_offset == usize::MAX {
-                                self.state.scroll_offset = 3;
-                            } else {
+                            if self.state.scroll_offset != usize::MAX {
                                 self.state.scroll_offset =
                                     self.state.scroll_offset.saturating_add(3);
                             }
@@ -211,6 +217,10 @@ impl Tui {
             return self.handle_skills_key(key);
         }
 
+        if self.state.theme_list_dialog.open {
+            return self.handle_theme_list_key(key);
+        }
+
         if self.state.plugins_dialog.open {
             return self.handle_plugins_key(key);
         }
@@ -233,6 +243,26 @@ impl Tui {
 
         if self.state.branching_dialog.open {
             return self.handle_branching_key(key);
+        }
+
+        if self.state.prompt_stash.open {
+            return self.handle_stash_key(key);
+        }
+
+        if self.state.export_options.open {
+            return self.handle_export_options_key(key);
+        }
+
+        if self.state.debug_panel.open {
+            return self.handle_debug_panel_key(key);
+        }
+
+        if self.state.provider_dialog.open {
+            return self.handle_provider_key(key);
+        }
+
+        if self.state.workspace_dialog.open {
+            return self.handle_workspace_key(key);
         }
 
         if self.state.pager.open {
@@ -327,22 +357,41 @@ impl Tui {
                     None
                 } else if input.trim().starts_with("/theme") {
                     let args = input.trim().strip_prefix("/theme").unwrap_or("").trim();
-                    let result = if args.is_empty() {
-                        self.state.toggle_theme()
+                    if args.is_empty() || args == "list" {
+                        self.state.theme_list_dialog.open();
+                        None
+                    } else if let Some(theme_name) = args.strip_prefix("set ") {
+                        let theme_name = theme_name.trim();
+                        if Theme::from_name(theme_name).is_some() {
+                            self.state.set_theme(theme_name);
+                            let display = Theme::display_name(theme_name);
+                            self.state
+                                .add_toast(format!("Theme: {display}"), ToastKind::Success);
+                        } else {
+                            self.state.add_toast(
+                                format!("Unknown theme: {theme_name}"),
+                                ToastKind::Error,
+                            );
+                        }
+                        None
                     } else {
-                        self.state.set_theme(args);
-                        args
-                    };
-                    self.state
-                        .add_toast(format!("Theme switched to {result}"), ToastKind::Success);
-                    self.state.add_user_message(format!("/theme {result}"));
-                    self.state.start_assistant_stream("build");
-                    Some(format!("__theme_change__{}", result))
+                        if Theme::from_name(args).is_some() {
+                            self.state.set_theme(args);
+                            let display = Theme::display_name(args);
+                            self.state
+                                .add_toast(format!("Theme: {display}"), ToastKind::Success);
+                        } else {
+                            self.state
+                                .add_toast(format!("Unknown theme: {args}"), ToastKind::Error);
+                        }
+                        None
+                    }
                 } else {
                     self.state.prompt.push_history();
                     self.state.cleanup_reverted();
                     let user_input = input.clone();
                     self.state.add_user_message(input);
+                    self.state.turn_started_at = Some(Instant::now());
                     self.state.start_assistant_stream("build");
                     Some(user_input)
                 }
@@ -361,6 +410,18 @@ impl Tui {
                                 self.state.prompt.set_completions(completions);
                                 self.state.prompt.cycle_completion_forward();
                             }
+                        }
+                    } else if !input.trim().is_empty() {
+                        let suggestions = self.state.prompt.history_suggestions(&input, 20);
+                        if !suggestions.is_empty() {
+                            self.state.prompt.set_completions(suggestions);
+                            self.state.prompt.cycle_completion_forward();
+                        }
+                    } else {
+                        let top = self.state.prompt.frecency_top_entries(20);
+                        if !top.is_empty() {
+                            self.state.prompt.set_completions(top);
+                            self.state.prompt.cycle_completion_forward();
                         }
                     }
                 }
@@ -432,6 +493,11 @@ impl Tui {
                 self.state.branching_dialog.open(&self.state.session.id);
                 None
             }
+            (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
+                self.state.prompt_stash.open();
+                self.state.prompt_stash.load();
+                None
+            }
             (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
                 for (msg_idx, msg) in self.state.messages.iter().enumerate().rev() {
                     if let Some(tc_idx) = msg.parts.iter().rev().position(|p| {
@@ -460,6 +526,27 @@ impl Tui {
                 self.state.sidebar_visible = !self.state.sidebar_visible;
                 None
             }
+            (KeyModifiers::ALT, KeyCode::Char('t')) => {
+                let messages = self.state.messages.clone();
+                self.state
+                    .todo_panel
+                    .update_from_session_with_messages(&messages);
+                self.state.todo_panel.toggle();
+                None
+            }
+            (KeyModifiers::ALT, KeyCode::Char('m')) => {
+                self.state
+                    .mcp_panel
+                    .update_from_dialog(&self.state.mcp_dialog);
+                self.state.mcp_panel.toggle();
+                None
+            }
+            (KeyModifiers::ALT, KeyCode::Char('l')) => {
+                self.state.lsp_panel.update_count(self.state.lsp_count, 0);
+                self.state.lsp_panel.toggle();
+                None
+            }
+            (KeyModifiers::ALT, KeyCode::Char('e')) => self.open_external_editor(),
             (_, KeyCode::Char('?')) => {
                 self.state.help_dialog.open();
                 None
@@ -470,12 +557,12 @@ impl Tui {
                 } else {
                     self.state.scroll_offset = self.state.scroll_offset.saturating_sub(10);
                 }
+                self.state.scroll_paused = true;
+                self.state.auto_scroll = false;
                 None
             }
             (_, KeyCode::PageDown) => {
-                if self.state.scroll_offset == usize::MAX {
-                    self.state.scroll_offset = 10;
-                } else {
+                if self.state.scroll_offset != usize::MAX {
                     self.state.scroll_offset = self.state.scroll_offset.saturating_add(10);
                 }
                 None
@@ -559,6 +646,10 @@ impl Tui {
                         }
                         'a' => {
                             self.state.command_palette.open();
+                            None
+                        }
+                        'd' => {
+                            self.state.debug_panel.toggle();
                             None
                         }
                         _ => {
@@ -741,6 +832,44 @@ impl Tui {
         }
     }
 
+    fn handle_theme_list_key(&mut self, key: KeyEvent) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.theme_list_dialog.close();
+                None
+            }
+            (_, KeyCode::Enter) => {
+                if let Some(theme_id) = self.state.theme_list_dialog.selected_theme_id() {
+                    let theme_id = theme_id.to_string();
+                    self.state.theme_list_dialog.selected_id = theme_id.clone();
+                    self.state.set_theme(&theme_id);
+                    let display = Theme::display_name(&theme_id);
+                    self.state
+                        .add_toast(format!("Theme: {display}"), ToastKind::Success);
+                }
+                self.state.theme_list_dialog.close();
+                None
+            }
+            (_, KeyCode::Up) => {
+                self.state.theme_list_dialog.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                self.state.theme_list_dialog.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                self.state.theme_list_dialog.type_char(c);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                self.state.theme_list_dialog.backspace();
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn handle_plugins_key(&mut self, key: KeyEvent) -> Option<String> {
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc) => {
@@ -839,6 +968,146 @@ impl Tui {
             BranchingAction::Close => None,
             BranchingAction::Switch(path) => Some(format!("__session_switch__{}", path.display())),
             BranchingAction::NewBranch => Some("__fork_session__".to_string()),
+        }
+    }
+
+    fn handle_stash_key(&mut self, key: KeyEvent) -> Option<String> {
+        use crate::tui::dialog_prompt_stash::StashAction;
+        match self.state.prompt_stash.handle_key(key) {
+            StashAction::None => None,
+            StashAction::Close => None,
+            StashAction::StartSearch => None,
+            StashAction::Select(content) => {
+                self.state.prompt.clear();
+                self.state.prompt.insert_str(&content);
+                self.state.prompt_stash.close();
+                None
+            }
+            StashAction::SaveNew(name, _content) => {
+                let prompt_text = self.state.prompt.value.clone();
+                if prompt_text.is_empty() {
+                    self.state
+                        .add_toast("No prompt content to stash", ToastKind::Warning);
+                    return None;
+                }
+                self.state.prompt_stash.save_new(&name, &prompt_text);
+                self.state
+                    .add_toast(format!("Prompt stashed as '{}'", name), ToastKind::Success);
+                self.state.prompt_stash.close();
+                None
+            }
+            StashAction::Delete(_idx) => {
+                self.state.prompt_stash.delete_entry(_idx);
+                self.state.add_toast("Prompt deleted", ToastKind::Info);
+                None
+            }
+        }
+    }
+
+    fn handle_export_options_key(&mut self, key: KeyEvent) -> Option<String> {
+        use crate::tui::dialog_export_options::ExportAction;
+        match self.state.export_options.handle_key(key) {
+            ExportAction::None => None,
+            ExportAction::Close => None,
+            ExportAction::Confirm => {
+                let filename = self.state.export_options.filename.clone();
+                let opts = self.state.export_options.clone();
+                self.state.export_options.close();
+                self.perform_export(&filename, &opts);
+                None
+            }
+            ExportAction::Toggle(_) => None,
+            ExportAction::EditFilename => None,
+        }
+    }
+
+    fn handle_debug_panel_key(&mut self, key: KeyEvent) -> Option<String> {
+        use crate::tui::debug_panel::DebugAction;
+        match self.state.debug_panel.handle_key(key) {
+            DebugAction::None => None,
+            DebugAction::Close => None,
+            DebugAction::NextTab => None,
+            DebugAction::PrevTab => None,
+        }
+    }
+
+    fn perform_export(
+        &mut self,
+        filename: &str,
+        opts: &crate::tui::dialog_export_options::ExportOptionsState,
+    ) {
+        let format = match opts.format_idx {
+            0 => crate::tui::transcript::TranscriptFormat::Plain,
+            1 => crate::tui::transcript::TranscriptFormat::Markdown,
+            2 => crate::tui::transcript::TranscriptFormat::Json,
+            _ => crate::tui::transcript::TranscriptFormat::Markdown,
+        };
+
+        let content = match crate::tui::transcript::export_transcript(&self.state, format) {
+            Ok(c) => c,
+            Err(e) => {
+                self.state
+                    .add_toast(format!("Export failed: {}", e), ToastKind::Error);
+                return;
+            }
+        };
+
+        let export_path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(&filename);
+
+        if let Err(e) = std::fs::write(&export_path, &content) {
+            self.state
+                .add_toast(format!("Export failed: {}", e), ToastKind::Error);
+        } else {
+            self.state.add_toast(
+                format!("Exported to {}", export_path.display()),
+                ToastKind::Success,
+            );
+        }
+    }
+
+    fn handle_provider_key(&mut self, key: KeyEvent) -> Option<String> {
+        use crate::tui::dialog_providers::ProviderAction;
+        match self.state.provider_dialog.handle_key(key) {
+            ProviderAction::None => None,
+            ProviderAction::Close => None,
+            ProviderAction::Toggle(idx) => {
+                let name = self
+                    .state
+                    .provider_dialog
+                    .providers
+                    .get(idx)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                self.state
+                    .add_toast(format!("Provider {} toggled", name), ToastKind::Info);
+                None
+            }
+            ProviderAction::ViewDocs(idx) => {
+                let name = self
+                    .state
+                    .provider_dialog
+                    .providers
+                    .get(idx)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                self.state.add_toast(
+                    format!("Docs for {}: visit provider website", name),
+                    ToastKind::Info,
+                );
+                None
+            }
+        }
+    }
+
+    fn handle_workspace_key(&mut self, key: KeyEvent) -> Option<String> {
+        use crate::tui::dialog_workspaces::WorkspaceAction;
+        match self.state.workspace_dialog.handle_key(key) {
+            WorkspaceAction::None => None,
+            WorkspaceAction::Close => None,
+            WorkspaceAction::Switch(path) => Some(format!("__workspace_switch__{}", path)),
+            WorkspaceAction::StartSearch => None,
         }
     }
 
@@ -959,7 +1228,7 @@ impl Tui {
             self.state.git_branch.as_deref().unwrap_or("none"),
             if self.state.git_dirty { "yes" } else { "no" },
             self.state.lsp_count,
-            self.state.mcp_count,
+            self.state.mcp_dialog.servers.len(),
             self.state.skill_count,
             self.state.plugin_count,
         );
@@ -987,6 +1256,57 @@ impl Tui {
             std::env::consts::OS,
         );
         self.state.pager.open("Version".to_string(), content);
+    }
+
+    pub(crate) fn open_external_editor(&mut self) -> Option<String> {
+        if self.state.is_streaming {
+            self.state
+                .add_toast("Cannot open editor while streaming", ToastKind::Warning);
+            return None;
+        }
+
+        let current_text = self.state.prompt.value.clone();
+
+        let result =
+            self.with_tui_suspended(|tui| crate::tui::external_editor::open_editor(&current_text));
+
+        match result {
+            Ok(edited) => {
+                if edited.trim().is_empty() {
+                    self.state.add_toast(
+                        "Editor returned empty content, keeping original",
+                        ToastKind::Warning,
+                    );
+                } else {
+                    self.state.prompt.clear();
+                    self.state.prompt.insert_str(&edited);
+                    self.state
+                        .add_toast("Content loaded from editor", ToastKind::Success);
+                }
+            }
+            Err(e) => {
+                self.state
+                    .add_toast(format!("Editor error: {}", e), ToastKind::Error);
+            }
+        }
+        None
+    }
+
+    fn with_tui_suspended<F, T>(&mut self, f: F) -> Result<T, String>
+    where
+        F: FnOnce(&mut Self) -> Result<T, String>,
+    {
+        disable_raw_mode().map_err(|e| format!("Failed to disable raw mode: {}", e))?;
+        execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+            .map_err(|e| format!("Failed to leave alternate screen: {}", e))?;
+
+        let result = f(self);
+
+        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+            .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
+        enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
+
+        result
     }
 
     fn get_command_completions(&self, input: &str) -> Vec<String> {
@@ -1881,6 +2201,11 @@ fn encode_base64(input: &[u8]) -> String {
 
 impl Drop for Tui {
     fn drop(&mut self) {
+        if let Some(ref store) = self.state.prompt.frecency {
+            if store.is_dirty() {
+                let _ = store.save();
+            }
+        }
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
     }

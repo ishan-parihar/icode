@@ -69,12 +69,20 @@ pub fn repair_tool_call(
                 "Tool call repaired: '{}' -> '{}', JSON syntax fixed",
                 tool_name, name
             );
-            ToolRepairResult::Repaired { tool_name: name, input: inp, note }
+            ToolRepairResult::Repaired {
+                tool_name: name,
+                input: inp,
+                note,
+            }
         }
         (Some(name), None) => {
             let note = format!("Tool call repaired: '{}' -> '{}'", tool_name, name);
             if let Ok(parsed) = serde_json::from_str::<Value>(input) {
-                ToolRepairResult::Repaired { tool_name: name, input: parsed, note }
+                ToolRepairResult::Repaired {
+                    tool_name: name,
+                    input: parsed,
+                    note,
+                }
             } else {
                 ToolRepairResult::Repaired {
                     tool_name: name,
@@ -140,7 +148,10 @@ fn find_canonical_name(input: &str, available: &[String]) -> Option<String> {
 }
 
 fn normalize_for_comparison(s: &str) -> String {
-    s.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 fn fuzzy_match(query: &str, candidates: &[String]) -> Option<String> {
@@ -165,15 +176,29 @@ fn edit_distance(a: &str, b: &str) -> usize {
     let b_chars: Vec<char> = b.chars().collect();
     let m = a_chars.len();
     let n = b_chars.len();
-    if m == 0 { return n; }
-    if n == 0 { return m; }
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
     let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in 0..=m { dp[i][0] = i; }
-    for j in 0..=n { dp[0][j] = j; }
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for j in 0..=n {
+        dp[0][j] = j;
+    }
     for i in 1..=m {
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
-            dp[i][j] = (dp[i - 1][j] + 1).min(dp[i][j - 1] + 1).min(dp[i - 1][j - 1] + cost);
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
         }
     }
     dp[m][n]
@@ -200,9 +225,16 @@ fn fix_single_quotes(input: &str) -> String {
     while i < len {
         let c = chars[i];
         match c {
-            '"' if !is_escaped(&chars, i) => { in_double_quote = !in_double_quote; result.push(c); }
-            '\'' if !in_double_quote => { result.push('"'); }
-            _ => { result.push(c); }
+            '"' if !is_escaped(&chars, i) => {
+                in_double_quote = !in_double_quote;
+                result.push(c);
+            }
+            '\'' if !in_double_quote => {
+                result.push('"');
+            }
+            _ => {
+                result.push(c);
+            }
         }
         i += 1;
     }
@@ -210,11 +242,21 @@ fn fix_single_quotes(input: &str) -> String {
 }
 
 fn is_escaped(chars: &[char], pos: usize) -> bool {
-    if pos == 0 { return false; }
+    if pos == 0 {
+        return false;
+    }
     let mut count = 0;
     let mut i = pos - 1;
     loop {
-        if chars[i] == '\\' { count += 1; if i == 0 { break; } i -= 1; } else { break; }
+        if chars[i] == '\\' {
+            count += 1;
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        } else {
+            break;
+        }
     }
     count % 2 == 1
 }
@@ -228,8 +270,14 @@ fn remove_trailing_commas(input: &str) -> String {
         result.push(chars[i]);
         if chars[i] == ',' {
             let mut j = i + 1;
-            while j < len && chars[j].is_whitespace() { j += 1; }
-            if j < len && (chars[j] == '}' || chars[j] == ']') { result.pop(); i = j; continue; }
+            while j < len && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < len && (chars[j] == '}' || chars[j] == ']') {
+                result.pop();
+                i = j;
+                continue;
+            }
         }
         i += 1;
     }
@@ -243,19 +291,36 @@ fn fix_unquoted_keys(input: &str) -> String {
     let mut i = 0;
     while i < len {
         if chars[i] == '{' || chars[i] == ',' {
-            result.push(chars[i]); i += 1;
-            while i < len && chars[i].is_whitespace() { result.push(chars[i]); i += 1; }
+            result.push(chars[i]);
+            i += 1;
+            while i < len && chars[i].is_whitespace() {
+                result.push(chars[i]);
+                i += 1;
+            }
             if i < len && chars[i].is_ascii_alphabetic() {
                 let key_start = i;
-                while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '-') { i += 1; }
+                while i < len
+                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '-')
+                {
+                    i += 1;
+                }
                 let key: String = chars[key_start..i].iter().collect();
-                while i < len && chars[i].is_whitespace() { i += 1; }
-                if i < len && chars[i] == ':' { result.push('"'); result.push_str(&key); result.push('"'); continue; }
-                result.push_str(&key); continue;
+                while i < len && chars[i].is_whitespace() {
+                    i += 1;
+                }
+                if i < len && chars[i] == ':' {
+                    result.push('"');
+                    result.push_str(&key);
+                    result.push('"');
+                    continue;
+                }
+                result.push_str(&key);
+                continue;
             }
             continue;
         }
-        result.push(chars[i]); i += 1;
+        result.push(chars[i]);
+        i += 1;
     }
     result
 }
@@ -267,9 +332,18 @@ fn balance_braces(input: &str) -> String {
     let mut in_string = false;
     let mut escape_next = false;
     for ch in result.chars() {
-        if escape_next { escape_next = false; continue; }
-        if ch == '\\' { escape_next = true; continue; }
-        if ch == '"' { in_string = !in_string; continue; }
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
         if !in_string {
             match ch {
                 '{' => open_braces += 1,
@@ -280,19 +354,29 @@ fn balance_braces(input: &str) -> String {
             }
         }
     }
-    for _ in 0..open_brackets { result.push(']'); }
-    for _ in 0..open_braces { result.push('}'); }
+    for _ in 0..open_brackets {
+        result.push(']');
+    }
+    for _ in 0..open_braces {
+        result.push('}');
+    }
     result
 }
 
 fn suggest_tool_names(query: &str, available: &[String]) -> Vec<String> {
     let query_lower = query.to_lowercase();
-    let mut scored: Vec<(usize, String)> = available.iter().map(|t| {
-        (edit_distance(&query_lower, &t.to_lowercase()), t.clone())
-    }).collect();
+    let mut scored: Vec<(usize, String)> = available
+        .iter()
+        .map(|t| (edit_distance(&query_lower, &t.to_lowercase()), t.clone()))
+        .collect();
     scored.sort_by_key(|(score, _)| *score);
     let threshold = (query_lower.len() / 2).max(2);
-    scored.into_iter().filter(|(score, _)| *score <= threshold).take(5).map(|(_, name)| name).collect()
+    scored
+        .into_iter()
+        .filter(|(score, _)| *score <= threshold)
+        .take(5)
+        .map(|(_, name)| name)
+        .collect()
 }
 
 #[cfg(test)]
@@ -300,23 +384,44 @@ mod tests {
     use super::*;
 
     fn sample_tools() -> Vec<String> {
-        vec!["read_file".to_string(), "write_file".to_string(), "edit_file".to_string(),
-             "glob_search".to_string(), "grep_search".to_string(), "WebSearch".to_string(),
-             "WebFetch".to_string(), "TodoWrite".to_string(), "Skill".to_string(),
-             "Agent".to_string(), "ToolSearch".to_string(), "NotebookEdit".to_string(),
-             "Sleep".to_string(), "bash".to_string()]
+        vec![
+            "read_file".to_string(),
+            "write_file".to_string(),
+            "edit_file".to_string(),
+            "glob_search".to_string(),
+            "grep_search".to_string(),
+            "WebSearch".to_string(),
+            "WebFetch".to_string(),
+            "TodoWrite".to_string(),
+            "Skill".to_string(),
+            "Agent".to_string(),
+            "ToolSearch".to_string(),
+            "NotebookEdit".to_string(),
+            "Sleep".to_string(),
+            "bash".to_string(),
+        ]
     }
 
     #[test]
     fn repairs_read_to_read_file() {
         let result = repair_tool_call("read", r#"{"path":"test.rs"}"#, &sample_tools());
-        match result { ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "read_file"), _ => panic!("expected repaired") }
+        match result {
+            ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "read_file"),
+            _ => panic!("expected repaired"),
+        }
     }
 
     #[test]
     fn repairs_write_to_write_file() {
-        let result = repair_tool_call("write", r#"{"path":"out.rs","content":"hi"}"#, &sample_tools());
-        match result { ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "write_file"), _ => panic!("expected repaired") }
+        let result = repair_tool_call(
+            "write",
+            r#"{"path":"out.rs","content":"hi"}"#,
+            &sample_tools(),
+        );
+        match result {
+            ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "write_file"),
+            _ => panic!("expected repaired"),
+        }
     }
 
     #[test]
@@ -324,52 +429,81 @@ mod tests {
         let result = repair_tool_call("webseach", r#"{"query":"rust"}"#, &sample_tools());
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "WebSearch"),
-            ToolRepairResult::Failed { suggestions, .. } => assert!(suggestions.contains(&"WebSearch".to_string())),
+            ToolRepairResult::Failed { suggestions, .. } => {
+                assert!(suggestions.contains(&"WebSearch".to_string()))
+            }
         }
     }
 
     #[test]
     fn repairs_single_quotes_to_double_quotes() {
         let result = repair_tool_call("read_file", r"{'path':'test.rs'}", &sample_tools());
-        match result { ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"), ToolRepairResult::Failed { .. } => {} }
+        match result {
+            ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"),
+            ToolRepairResult::Failed { .. } => {}
+        }
     }
 
     #[test]
     fn repairs_trailing_comma_in_object() {
         let result = repair_tool_call("read_file", r#"{"path": "test.rs",}"#, &sample_tools());
-        match result { ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"), ToolRepairResult::Failed { .. } => {} }
+        match result {
+            ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"),
+            ToolRepairResult::Failed { .. } => {}
+        }
     }
 
     #[test]
     fn repairs_unquoted_keys() {
         let result = repair_tool_call("read_file", r#"{path: "test.rs"}"#, &sample_tools());
-        match result { ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"), ToolRepairResult::Failed { .. } => {} }
+        match result {
+            ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"),
+            ToolRepairResult::Failed { .. } => {}
+        }
     }
 
     #[test]
     fn repairs_missing_closing_brace() {
         let result = repair_tool_call("read_file", r#"{"path": "test.rs""#, &sample_tools());
-        match result { ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"), ToolRepairResult::Failed { .. } => {} }
+        match result {
+            ToolRepairResult::Repaired { input, .. } => assert_eq!(input["path"], "test.rs"),
+            ToolRepairResult::Failed { .. } => {}
+        }
     }
 
     #[test]
     fn failed_repair_returns_suggestions() {
         let result = repair_tool_call("__nonexistent__", r#"{}"#, &sample_tools());
-        match result { ToolRepairResult::Failed { .. } => {}, _ => panic!("expected failed") }
+        match result {
+            ToolRepairResult::Failed { .. } => {}
+            _ => panic!("expected failed"),
+        }
     }
 
     #[test]
-    fn edit_distance_identical() { assert_eq!(edit_distance("abc", "abc"), 0); }
+    fn edit_distance_identical() {
+        assert_eq!(edit_distance("abc", "abc"), 0);
+    }
     #[test]
-    fn edit_distance_one_change() { assert_eq!(edit_distance("abc", "abd"), 1); }
+    fn edit_distance_one_change() {
+        assert_eq!(edit_distance("abc", "abd"), 1);
+    }
     #[test]
-    fn edit_distance_completely_different() { assert_eq!(edit_distance("abc", "xyz"), 3); }
+    fn edit_distance_completely_different() {
+        assert_eq!(edit_distance("abc", "xyz"), 3);
+    }
     #[test]
-    fn edit_distance_empty_strings() { assert_eq!(edit_distance("", ""), 0); }
+    fn edit_distance_empty_strings() {
+        assert_eq!(edit_distance("", ""), 0);
+    }
     #[test]
-    fn edit_distance_empty_first() { assert_eq!(edit_distance("", "abc"), 3); }
+    fn edit_distance_empty_first() {
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
     #[test]
-    fn edit_distance_empty_second() { assert_eq!(edit_distance("abc", ""), 3); }
+    fn edit_distance_empty_second() {
+        assert_eq!(edit_distance("abc", ""), 3);
+    }
 
     #[test]
     fn suggest_returns_closest_matches() {
@@ -387,7 +521,11 @@ mod tests {
     fn repairs_both_name_and_json() {
         let result = repair_tool_call("websearch", r"{'query': 'rust',}", &sample_tools());
         match result {
-            ToolRepairResult::Repaired { tool_name, input, note } => {
+            ToolRepairResult::Repaired {
+                tool_name,
+                input,
+                note,
+            } => {
                 assert_eq!(tool_name, "WebSearch");
                 assert_eq!(input["query"], "rust");
                 assert!(note.contains("repaired"));
@@ -399,7 +537,10 @@ mod tests {
     #[test]
     fn alias_shell_maps_to_bash() {
         let result = repair_tool_call("shell", r#"{"command":"ls"}"#, &sample_tools());
-        match result { ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "bash"), _ => panic!("expected repaired") }
+        match result {
+            ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "bash"),
+            _ => panic!("expected repaired"),
+        }
     }
 
     #[test]
@@ -407,20 +548,28 @@ mod tests {
         let result = repair_tool_call("glob", r#"{"pattern":"*.rs"}"#, &sample_tools());
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "glob_search"),
-            ToolRepairResult::Failed { suggestions, .. } => assert!(suggestions.iter().any(|s| s.contains("glob"))),
+            ToolRepairResult::Failed { suggestions, .. } => {
+                assert!(suggestions.iter().any(|s| s.contains("glob")))
+            }
         }
     }
 
     #[test]
     fn fuzzy_match_close_typo() {
         let tools = vec!["read_file".to_string(), "write_file".to_string()];
-        assert_eq!(find_canonical_name("read_fiel", &tools), Some("read_file".to_string()));
+        assert_eq!(
+            find_canonical_name("read_fiel", &tools),
+            Some("read_file".to_string())
+        );
     }
 
     #[test]
     fn no_match_for_garbage() {
         let result = repair_tool_call("zzzzz", "{}", &sample_tools());
-        match result { ToolRepairResult::Failed { .. } => {}, other => panic!("expected failed, got {:?}", other) }
+        match result {
+            ToolRepairResult::Failed { .. } => {}
+            other => panic!("expected failed, got {:?}", other),
+        }
     }
 
     #[test]
@@ -432,7 +581,10 @@ mod tests {
 
     #[test]
     fn repair_json_fixes_single_quotes() {
-        assert_eq!(repair_json(r"{'path':'test.rs'}").unwrap()["path"], "test.rs");
+        assert_eq!(
+            repair_json(r"{'path':'test.rs'}").unwrap()["path"],
+            "test.rs"
+        );
     }
 
     #[test]
@@ -444,14 +596,23 @@ mod tests {
 
     #[test]
     fn repair_json_balances_braces() {
-        assert_eq!(repair_json(r#"{"path":"test.rs""#).unwrap()["path"], "test.rs");
+        assert_eq!(
+            repair_json(r#"{"path":"test.rs""#).unwrap()["path"],
+            "test.rs"
+        );
     }
 
     #[test]
     fn repair_tool_call_valid_input() {
-        let result = repair_tool_call("read_file", r#"{"path":"x.rs"}"#, &["read_file".to_string()]);
+        let result = repair_tool_call(
+            "read_file",
+            r#"{"path":"x.rs"}"#,
+            &["read_file".to_string()],
+        );
         match result {
-            ToolRepairResult::Repaired { tool_name, input, .. } => {
+            ToolRepairResult::Repaired {
+                tool_name, input, ..
+            } => {
                 assert_eq!(tool_name, "read_file");
                 assert_eq!(input["path"], "x.rs");
             }
@@ -463,7 +624,11 @@ mod tests {
     fn repairs_valid_tool_with_valid_json_is_noop() {
         let result = repair_tool_call("read_file", r#"{"path":"x.rs"}"#, &sample_tools());
         match result {
-            ToolRepairResult::Repaired { tool_name, input, note } => {
+            ToolRepairResult::Repaired {
+                tool_name,
+                input,
+                note,
+            } => {
                 assert_eq!(tool_name, "read_file");
                 assert_eq!(input["path"], "x.rs");
                 assert!(note.contains("repaired"));
@@ -486,7 +651,9 @@ mod tests {
         let tools = vec!["SendUserMessage".to_string()];
         let result = repair_tool_call("send_user_message", r#"{"text":"hi"}"#, &tools);
         match result {
-            ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "SendUserMessage"),
+            ToolRepairResult::Repaired { tool_name, .. } => {
+                assert_eq!(tool_name, "SendUserMessage")
+            }
             _ => {}
         }
     }
@@ -495,6 +662,9 @@ mod tests {
     fn repairs_taskcreate_alias() {
         let tools = vec!["TaskCreate".to_string()];
         let result = repair_tool_call("taskcreate", r#"{}"#, &tools);
-        match result { ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "TaskCreate"), _ => panic!("expected repaired, got {:?}", result) }
+        match result {
+            ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "TaskCreate"),
+            _ => panic!("expected repaired, got {:?}", result),
+        }
     }
 }

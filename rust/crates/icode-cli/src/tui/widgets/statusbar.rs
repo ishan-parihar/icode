@@ -47,6 +47,24 @@ impl StatusBar {
             ));
         }
 
+        if let Some(elapsed) = state.turn_elapsed() {
+            left_spans.push(Span::raw(" "));
+            left_spans.push(Span::styled(
+                format!("\u{23f1} {}", elapsed),
+                Style::default()
+                    .fg(state.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        if let Some(ref last_dur) = state.last_turn_duration {
+            left_spans.push(Span::raw(" "));
+            left_spans.push(Span::styled(
+                format!("last: {}", format_duration(last_dur)),
+                Style::default().fg(state.theme.text_muted),
+            ));
+        }
+
         let mut right_spans = Vec::new();
 
         if state.lsp_count > 0 {
@@ -62,14 +80,14 @@ impl StatusBar {
             right_spans.push(Span::raw("  "));
         }
 
-        if state.mcp_count > 0 {
+        if state.mcp_dialog.servers.len() > 0 {
             right_spans.push(Span::styled(
                 "\u{2299}",
                 Style::default().fg(state.theme.success),
             ));
             right_spans.push(Span::raw(" "));
             right_spans.push(Span::styled(
-                format!("{} MCP", state.mcp_count),
+                format!("{} MCP", state.mcp_dialog.servers.len()),
                 Style::default().fg(state.theme.text),
             ));
             right_spans.push(Span::raw("  "));
@@ -124,6 +142,21 @@ impl StatusBar {
 
         let paragraph = Paragraph::new(Line::from(combined)).block(block);
         frame.render_widget(paragraph, area);
+    }
+}
+
+fn format_duration(d: &std::time::Duration) -> String {
+    let total_secs = d.as_secs();
+    if total_secs >= 3600 {
+        let hours = total_secs / 3600;
+        let mins = (total_secs % 3600) / 60;
+        format!("{hours}h {mins}m")
+    } else if total_secs >= 60 {
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!("{mins}m {secs}s")
+    } else {
+        format!("{total_secs}s")
     }
 }
 

@@ -1,13 +1,19 @@
 use crate::tui::app::{AppMode, AppState, ToastKind};
 use crate::tui::command_palette::render_command_palette;
+use crate::tui::debug_panel::render_debug_panel;
 use crate::tui::dialog_context_viz::render_context_viz_dialog;
+use crate::tui::dialog_export_options::render_export_options_dialog;
 use crate::tui::dialog_help::render_help_dialog;
 use crate::tui::dialog_mcp::render_mcp_dialog;
 use crate::tui::dialog_message_actions::render_message_action_dialog;
 use crate::tui::dialog_plugins::render_plugins_dialog;
+use crate::tui::dialog_prompt_stash::render_prompt_stash_dialog;
+use crate::tui::dialog_providers::render_provider_dialog;
 use crate::tui::dialog_session_branching::render_session_branching;
 use crate::tui::dialog_sessions::render_sessions_dialog;
 use crate::tui::dialog_skills::render_skills_dialog;
+use crate::tui::dialog_theme_list::render_theme_list_dialog;
+use crate::tui::dialog_workspaces::render_workspace_dialog;
 use crate::tui::model_picker::render_model_picker;
 use crate::tui::widgets::{render_pager, DiffView, MessageList, Sidebar};
 use crate::tui::InputWidget;
@@ -108,6 +114,8 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
         render_skills_dialog(frame, &mut state.skills_dialog, area, theme);
     }
 
+    render_theme_list_dialog(frame, &state.theme_list_dialog, area, state.theme);
+
     if state.plugins_dialog.open {
         render_plugins_dialog(frame, &mut state.plugins_dialog, area, theme);
     }
@@ -149,6 +157,26 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
 
     if state.branching_dialog.open {
         render_session_branching(frame, &mut state.branching_dialog, area, state.theme);
+    }
+
+    if state.prompt_stash.open {
+        render_prompt_stash_dialog(frame, &state.prompt_stash, area, state.theme);
+    }
+
+    if state.export_options.open {
+        render_export_options_dialog(frame, &state.export_options, area, state.theme);
+    }
+
+    if state.debug_panel.open {
+        render_debug_panel(frame, &state.debug_panel, area, state.theme, state);
+    }
+
+    if state.provider_dialog.open {
+        render_provider_dialog(frame, &mut state.provider_dialog, area, state.theme);
+    }
+
+    if state.workspace_dialog.open {
+        render_workspace_dialog(frame, &mut state.workspace_dialog, area, state.theme);
     }
 
     if let Some(ref mut diff_view) = state.diff_view {
@@ -659,11 +687,14 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
         right_spans.push(Span::raw("  "));
     }
 
-    if state.mcp_count > 0 {
-        right_spans.push(Span::styled("⊙", Style::default().fg(state.theme.success)));
+    if state.mcp_dialog.servers.len() > 0 {
+        right_spans.push(Span::styled(
+            "\u{2299}",
+            Style::default().fg(state.theme.success),
+        ));
         right_spans.push(Span::raw(" "));
         right_spans.push(Span::styled(
-            format!("{} MCP", state.mcp_count),
+            format!("{} MCP", state.mcp_dialog.servers.len()),
             Style::default().fg(state.theme.text),
         ));
         right_spans.push(Span::raw("  "));

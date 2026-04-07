@@ -93,6 +93,326 @@ impl Sidebar {
         ]));
 
         lines.push(Line::from(""));
+
+        let total_files = state.files_panel.files.len();
+        if total_files > 0 {
+            let header_icon = if state.files_panel.expanded {
+                "▼"
+            } else {
+                "▶"
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {header_icon} Files "),
+                    Style::default()
+                        .fg(state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({total_files})"),
+                    Style::default().fg(state.theme.text_muted),
+                ),
+            ]));
+
+            if state.files_panel.expanded {
+                let max_visible = 8;
+                let visible = if total_files > max_visible {
+                    &state.files_panel.files[..max_visible]
+                } else {
+                    &state.files_panel.files[..]
+                };
+
+                for entry in visible {
+                    let (icon, color) = match entry.status {
+                        crate::tui::widgets::FileStatus::Modified => {
+                            ("M", state.theme.diff_changed)
+                        }
+                        crate::tui::widgets::FileStatus::Created => ("A", state.theme.diff_added),
+                        crate::tui::widgets::FileStatus::Deleted => ("D", state.theme.diff_removed),
+                    };
+
+                    let display_name = if entry.path.len() > 30 {
+                        entry.path.rsplit('/').next().unwrap_or(&entry.path)
+                    } else {
+                        &entry.path
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("[{icon}]"),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(display_name, Style::default().fg(state.theme.text)),
+                    ]));
+                }
+
+                if total_files > max_visible {
+                    let remaining = total_files - max_visible;
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  ...{remaining} more"),
+                        Style::default().fg(state.theme.text_muted),
+                    )]));
+                }
+            }
+
+            lines.push(Line::from(""));
+        }
+
+        let total_todos = state.todo_panel.todos.len();
+        if total_todos > 0 {
+            let pending = state
+                .todo_panel
+                .todos
+                .iter()
+                .filter(|t| matches!(t.status, crate::tui::widgets::TodoStatus::Pending))
+                .count();
+            let completed = total_todos - pending;
+
+            let todo_header_icon = if state.todo_panel.expanded {
+                "\u{25bc}"
+            } else {
+                "\u{25b6}"
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {todo_header_icon} Todos "),
+                    Style::default()
+                        .fg(state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({pending}/{completed})"),
+                    Style::default().fg(state.theme.text_muted),
+                ),
+            ]));
+
+            if state.todo_panel.expanded {
+                let max_visible = 8;
+                let visible = if total_todos > max_visible {
+                    &state.todo_panel.todos[..max_visible]
+                } else {
+                    &state.todo_panel.todos[..]
+                };
+
+                for item in visible {
+                    let (icon, color) = match item.status {
+                        crate::tui::widgets::TodoStatus::Completed => {
+                            ("\u{2713}", state.theme.success)
+                        }
+                        crate::tui::widgets::TodoStatus::Pending => (" ", state.theme.text_muted),
+                    };
+
+                    let display_text = if item.text.len() > 35 {
+                        format!("{}...", &item.text[..32])
+                    } else {
+                        item.text.clone()
+                    };
+
+                    let item_style =
+                        if matches!(item.status, crate::tui::widgets::TodoStatus::Completed) {
+                            Style::default()
+                                .fg(state.theme.text_muted)
+                                .add_modifier(Modifier::DIM)
+                        } else {
+                            Style::default().fg(state.theme.text)
+                        };
+
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("[{icon}]"),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(display_text, item_style),
+                    ]));
+                }
+
+                if total_todos > max_visible {
+                    let remaining = total_todos - max_visible;
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  ...{remaining} more"),
+                        Style::default().fg(state.theme.text_muted),
+                    )]));
+                }
+            }
+
+            lines.push(Line::from(""));
+        }
+
+        let mcp_total = state.mcp_panel.servers.len();
+        if mcp_total > 0 {
+            let mcp_connected = state
+                .mcp_panel
+                .servers
+                .iter()
+                .filter(|s| matches!(s.status, crate::tui::widgets::McpStatus::Connected))
+                .count();
+            let mcp_tools = state.mcp_panel.total_tools;
+
+            let mcp_header_icon = if state.mcp_panel.expanded {
+                "\u{25bc}"
+            } else {
+                "\u{25b6}"
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {mcp_header_icon} MCP "),
+                    Style::default()
+                        .fg(state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({mcp_connected}/{mcp_total}, {mcp_tools} tools)"),
+                    Style::default().fg(state.theme.text_muted),
+                ),
+            ]));
+
+            if state.mcp_panel.expanded {
+                let max_visible = 5;
+                let visible = if mcp_total > max_visible {
+                    &state.mcp_panel.servers[..max_visible]
+                } else {
+                    &state.mcp_panel.servers[..]
+                };
+
+                for server in visible {
+                    let (icon, color) = match server.status {
+                        crate::tui::widgets::McpStatus::Connected => {
+                            ("\u{2713}", state.theme.success)
+                        }
+                        crate::tui::widgets::McpStatus::Disconnected => {
+                            ("\u{25cb}", state.theme.text_muted)
+                        }
+                        crate::tui::widgets::McpStatus::Error => ("\u{2717}", state.theme.error),
+                    };
+
+                    let display_name = if server.name.len() > 25 {
+                        format!("{}...", &server.name[..22])
+                    } else {
+                        server.name.clone()
+                    };
+
+                    let name_style =
+                        if matches!(server.status, crate::tui::widgets::McpStatus::Disconnected) {
+                            Style::default()
+                                .fg(state.theme.text_muted)
+                                .add_modifier(Modifier::DIM)
+                        } else {
+                            Style::default().fg(state.theme.text)
+                        };
+
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("[{icon}]"),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(display_name, name_style),
+                        Span::styled(
+                            format!(" ({})", server.tool_count),
+                            Style::default().fg(state.theme.text_muted),
+                        ),
+                    ]));
+                }
+
+                if mcp_total > max_visible {
+                    let remaining = mcp_total - max_visible;
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  ...{remaining} more"),
+                        Style::default().fg(state.theme.text_muted),
+                    )]));
+                }
+            }
+
+            lines.push(Line::from(""));
+        }
+
+        let lsp_total = state.lsp_panel.servers.len();
+        if lsp_total > 0 {
+            let lsp_diag = state.lsp_panel.total_diagnostics;
+
+            let lsp_header_icon = if state.lsp_panel.expanded {
+                "\u{25bc}"
+            } else {
+                "\u{25b6}"
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {lsp_header_icon} LSP "),
+                    Style::default()
+                        .fg(state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "({lsp_total} server{pl}, {lsp_diag} diagnostic{dl})",
+                        pl = if lsp_total != 1 { "s" } else { "" },
+                        dl = if lsp_diag != 1 { "s" } else { "" },
+                    ),
+                    Style::default().fg(state.theme.text_muted),
+                ),
+            ]));
+
+            if state.lsp_panel.expanded {
+                let max_visible = 5;
+                let visible = if lsp_total > max_visible {
+                    &state.lsp_panel.servers[..max_visible]
+                } else {
+                    &state.lsp_panel.servers[..]
+                };
+
+                for server in visible {
+                    let (icon, color) = match server.status {
+                        crate::tui::widgets::LspStatus::Running => {
+                            ("\u{25cf}", state.theme.success)
+                        }
+                        crate::tui::widgets::LspStatus::Error => ("\u{25cf}", state.theme.error),
+                        crate::tui::widgets::LspStatus::Idle => ("\u{25cb}", state.theme.warning),
+                        crate::tui::widgets::LspStatus::Initializing => {
+                            ("\u{25d0}", state.theme.info)
+                        }
+                    };
+
+                    let diag_text = if server.diagnostics > 0 {
+                        format!(" ({})", server.diagnostics)
+                    } else {
+                        String::new()
+                    };
+
+                    let display_name = if server.name.len() > 25 {
+                        format!("{}...", &server.name[..22])
+                    } else {
+                        server.name.clone()
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("[{icon}]"),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(display_name, Style::default().fg(state.theme.text)),
+                        Span::styled(diag_text, Style::default().fg(state.theme.text_muted)),
+                    ]));
+                }
+
+                if lsp_total > max_visible {
+                    let remaining = lsp_total - max_visible;
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  ...{remaining} more"),
+                        Style::default().fg(state.theme.text_muted),
+                    )]));
+                }
+            }
+
+            lines.push(Line::from(""));
+        }
+
         lines.push(Line::from(vec![Span::styled(
             " Activity",
             Style::default()
@@ -105,14 +425,6 @@ impl Sidebar {
             Span::styled("  Turns    ", Style::default().fg(state.theme.text_muted)),
             Span::styled(
                 format!("{}", state.session.turns),
-                Style::default().fg(state.theme.text),
-            ),
-        ]));
-
-        lines.push(Line::from(vec![
-            Span::styled("  Messages ", Style::default().fg(state.theme.text_muted)),
-            Span::styled(
-                format!("{}", state.session.message_count),
                 Style::default().fg(state.theme.text),
             ),
         ]));

@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn echo_prevention_filters_own_instance() {
         #[allow(dead_code)]
-    struct OwnEchoTransport;
+        struct OwnEchoTransport;
         impl IpcTransport for OwnEchoTransport {
             fn send(&self, _envelope: &Envelope) -> Result<(), String> {
                 Ok(())

@@ -1,17 +1,13 @@
 pub mod agents;
 pub mod auth_store;
-pub mod device_code;
-pub mod permission_rules;
-pub mod skill_discovery;
-pub mod skill_index;
 mod bash;
 pub mod bash_validation;
 mod bootstrap;
 mod compact;
 mod config;
 mod conversation;
+pub mod device_code;
 mod event_bus;
-mod persistence;
 mod file_ops;
 pub mod green_contract;
 mod hooks;
@@ -26,7 +22,9 @@ mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod oauth;
 pub mod permission_enforcer;
+pub mod permission_rules;
 mod permissions;
+mod persistence;
 pub mod plugin_lifecycle;
 mod policy_engine;
 mod prompt;
@@ -36,6 +34,8 @@ mod remote;
 pub mod sandbox;
 mod session;
 pub mod session_control;
+pub mod skill_discovery;
+pub mod skill_index;
 pub mod sqlite_store;
 mod sse;
 pub mod stale_branch;
@@ -43,17 +43,13 @@ pub mod summary_compression;
 pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
-pub mod trust_resolver;
 mod truncation;
+pub mod trust_resolver;
 mod usage;
 pub mod worker_boot;
 
 pub use agents::{default_agents, AgentDefinition as AgentDefinitionType};
 pub use auth_store::{AuthStore, OAuthToken};
-pub use device_code::{DeviceCodeResponse, TokenResponse, initiate_device_flow, poll_for_token};
-pub use permission_rules::{PermissionAction, PermissionDuration, PermissionRule, PermissionRuleStore};
-pub use skill_discovery::{discover_skills, DiscoveredSkill, SkillSource};
-pub use skill_index::{SharedSkillIndex, SkillIndex};
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use compact::{
@@ -73,6 +69,8 @@ pub use conversation::{
     AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor,
     ToolError, ToolExecutor, TurnSummary,
 };
+pub use device_code::{initiate_device_flow, poll_for_token, DeviceCodeResponse, TokenResponse};
+pub use event_bus::{Event, EventBus};
 pub use file_ops::{
     edit_file, glob_search, grep_search, read_file, write_file, EditFileOutput, GlobSearchOutput,
     GrepSearchInput, GrepSearchOutput, ReadFileOutput, StructuredPatchHunk, TextFilePayload,
@@ -115,9 +113,17 @@ pub use oauth::{
     OAuthCallbackParams, OAuthRefreshRequest, OAuthTokenExchangeRequest, OAuthTokenSet,
     PkceChallengeMethod, PkceCodePair,
 };
+pub use permission_rules::{
+    PermissionAction, PermissionDuration, PermissionRule, PermissionRuleStore,
+};
 pub use permissions::{
     PermissionContext, PermissionMode, PermissionOutcome, PermissionOverride, PermissionPolicy,
     PermissionPromptDecision, PermissionPrompter, PermissionRequest, PermissionScope,
+};
+pub use persistence::{
+    CronRow, EventRow, LspDiagnosticRow, LspServerRow, McpResourceRow, McpServerRow, McpToolRow,
+    MessageRow, PersistenceError, SessionRow, SqliteStore, TaskMessageRow, TaskRow, TeamRow,
+    WorkerEventRow, WorkerRow,
 };
 pub use plugin_lifecycle::{
     DegradedMode, DiscoveryResult, PluginHealthcheck, PluginLifecycle, PluginLifecycleEvent,
@@ -151,6 +157,9 @@ pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
 };
+pub use skill_discovery::{discover_skills, DiscoveredSkill, SkillSource};
+pub use skill_index::{SharedSkillIndex, SkillIndex};
+pub use sqlite_store::{SessionRecord, SqliteStore as SqliteSessionStore};
 pub use sse::{IncrementalSseParser, SseEvent};
 pub use stale_branch::{
     apply_policy, check_freshness, BranchFreshness, StaleBranchAction, StaleBranchEvent,
@@ -160,18 +169,11 @@ pub use task_packet::{
     validate_packet, AcceptanceTest, BranchPolicy, CommitPolicy, RepoConfig, ReportingContract,
     TaskPacket, TaskPacketValidationError, TaskScope, ValidatedPacket,
 };
-pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
 pub use truncation::TruncationPolicy;
+pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
-pub use event_bus::{Event, EventBus};
-pub use persistence::{
-    CronRow, EventRow, LspDiagnosticRow, LspServerRow, McpResourceRow, McpServerRow,
-    McpToolRow, MessageRow, PersistenceError, SessionRow, SqliteStore,
-    TaskMessageRow, TaskRow, TeamRow, WorkerEventRow, WorkerRow,
-};
-pub use sqlite_store::{SessionRecord, SqliteStore as SqliteSessionStore};
 
 pub mod ipc_socket;
 pub use ipc_socket::{UnixSocketClient, UnixSocketServer};

@@ -1,8 +1,10 @@
 use crate::tui::app::AppState;
 use crate::tui::kv::KvStore;
 use crate::tui::theme::Theme;
+use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::text::Line;
 use ratatui::Frame;
 use std::collections::HashMap;
 
@@ -163,16 +165,32 @@ pub struct PluginCommand {
 /// Metadata about a registered plugin, returned by `PluginRuntime::list()`.
 #[derive(Debug, Clone)]
 pub struct PluginInfo {
-    /// Unique plugin identifier.
     pub id: String,
-    /// Display name.
     pub name: String,
-    /// Description of the plugin.
     pub description: String,
-    /// Whether the plugin is currently enabled.
     pub enabled: bool,
-    /// Number of commands this plugin provides.
     pub command_count: usize,
+}
+
+/// Events emitted by the TUI that plugins can observe and react to.
+#[derive(Debug, Clone)]
+pub enum PluginEvent {
+    MessageReceived { role: String, content: String },
+    ToolCalled { name: String, input: String },
+    ToolCompleted { name: String, output: String },
+    TurnStarted,
+    TurnCompleted { tokens: usize },
+    SessionChanged { id: String },
+}
+
+/// Actions a plugin can request in response to a key event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyAction {
+    Consume,
+    Propagate,
+    Quit,
+    OpenCommandPalette,
+    ToggleSidebar,
 }
 
 /// Trait that all TUI plugins must implement.
@@ -221,4 +239,31 @@ pub trait TuiPlugin: Send + Sync {
     /// Routes appear in the command palette and open full-screen views.
     /// The default implementation registers no routes.
     fn register_routes(&self, _api: &mut PluginApi<'_>) {}
+
+    /// Handle a TUI event (message, tool call, turn lifecycle, session change).
+    ///
+    /// Called by the runtime when significant events occur. Override to
+    /// react to conversation or session state changes.
+    /// The default implementation does nothing.
+    fn on_event(&self, _event: &PluginEvent, _api: &mut PluginApi<'_>) {}
+
+    /// Render custom content for a named slot.
+    ///
+    /// Called during each UI render cycle. Returns `Some(lines)` to inject
+    /// content, or `None` to skip. The default returns `None`.
+    fn render_slot(
+        &self,
+        _slot_id: &crate::tui::plugin_slots::SlotId,
+        _api: &PluginApi<'_>,
+    ) -> Option<Vec<Line<'static>>> {
+        None
+    }
+
+    /// Handle a key event before the app processes it.
+    ///
+    /// Returns `Some(action)` to intercept the key, or `None` to let it
+    /// propagate to the app. The default returns `None`.
+    fn handle_key(&self, _key: &KeyEvent, _api: &mut PluginApi<'_>) -> Option<KeyAction> {
+        None
+    }
 }

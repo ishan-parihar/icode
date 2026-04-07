@@ -3,9 +3,9 @@ use crate::providers::openai_compat::{expect_success, has_api_key as compat_has_
 use crate::providers::{Provider, ProviderFuture};
 use crate::types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
-    InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest, MessageResponse,
-    MessageStartEvent, MessageStopEvent, OutputContentBlock, StreamEvent, ToolChoice,
-    ToolDefinition, ToolResultContentBlock, Usage,
+    InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,
+    MessageResponse, MessageStartEvent, MessageStopEvent, OutputContentBlock, StreamEvent,
+    ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

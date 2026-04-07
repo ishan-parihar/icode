@@ -29,7 +29,11 @@ impl TuiPlugin for SidebarInfoPlugin {
                     "{} plugins · {} skills",
                     api.state.plugin_count, api.state.skill_count
                 ),
-                format!("{} LSP · {} MCP", api.state.lsp_count, api.state.mcp_count),
+                format!(
+                    "{} LSP · {} MCP",
+                    api.state.lsp_count,
+                    api.state.mcp_dialog.servers.len()
+                ),
             ],
             SlotStyle::Default,
         );
@@ -65,7 +69,8 @@ impl TuiPlugin for SidebarInfoPlugin {
                         Line::from(Span::styled(
                             format!(
                                 "LSP servers: {} · MCP servers: {}",
-                                state.lsp_count, state.mcp_count
+                                state.lsp_count,
+                                state.mcp_dialog.servers.len()
                             ),
                             Style::default().fg(theme.text),
                         )),
@@ -146,14 +151,14 @@ impl TuiPlugin for SidebarInfoPlugin {
                          Skills: {}\n\
                          Plugins: {}",
                         api.state.lsp_count,
-                        api.state.mcp_count,
+                        api.state.mcp_dialog.servers.len(),
                         api.state.skill_count,
                         api.state.plugin_count,
                     );
                     api.toast(format!(
                         "LSP:{} MCP:{} Skills:{} Plugins:{}",
                         api.state.lsp_count,
-                        api.state.mcp_count,
+                        api.state.mcp_dialog.servers.len(),
                         api.state.skill_count,
                         api.state.plugin_count,
                     ));

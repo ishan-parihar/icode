@@ -164,9 +164,7 @@ impl McpLifecycleState {
 
     #[must_use]
     pub fn errors_for_phase(&self, phase: McpLifecyclePhase) -> &[McpErrorSurface] {
-        self.phase_errors
-            .get(&phase)
-            .map_or(&[], Vec::as_slice)
+        self.phase_errors.get(&phase).map_or(&[], Vec::as_slice)
     }
 
     #[must_use]

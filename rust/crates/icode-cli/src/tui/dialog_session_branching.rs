@@ -34,6 +34,7 @@ pub struct BranchEntry {
     pub message_count: usize,
     pub modified: u128,
     pub is_current: bool,
+    pub sub_agent_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -100,15 +101,16 @@ impl SessionBranchingState {
                 .unwrap_or("unknown")
                 .to_string();
 
-            let (msg_count, parent_id, branch_name) = match runtime::Session::load_from_path(&path)
-            {
-                Ok(session) => (
-                    session.messages.len(),
-                    session.fork.as_ref().map(|f| f.parent_session_id.clone()),
-                    session.fork.as_ref().and_then(|f| f.branch_name.clone()),
-                ),
-                Err(_) => (0, None, None),
-            };
+            let (msg_count, parent_id, branch_name, sub_agent_count) =
+                match runtime::Session::load_from_path(&path) {
+                    Ok(session) => (
+                        session.messages.len(),
+                        session.fork.as_ref().map(|f| f.parent_session_id.clone()),
+                        session.fork.as_ref().and_then(|f| f.branch_name.clone()),
+                        0,
+                    ),
+                    Err(_) => (0, None, None, 0),
+                };
 
             let is_current = id == self.current_session_id;
 
@@ -120,6 +122,7 @@ impl SessionBranchingState {
                 message_count: msg_count,
                 modified,
                 is_current,
+                sub_agent_count,
             });
         }
 
@@ -332,9 +335,18 @@ pub fn render_session_branching(
                 format!("{}Press Ctrl+D again to delete {}", prefix, branch.id)
             } else {
                 let current_marker = if branch.is_current { " [current]" } else { "" };
+                let sub_agents_info = if branch.sub_agent_count > 0 {
+                    format!(
+                        " [{} agent{}]",
+                        branch.sub_agent_count,
+                        if branch.sub_agent_count == 1 { "" } else { "s" }
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{}{} ({} msgs){}",
-                    prefix, branch_label, branch.message_count, current_marker
+                    "{}{} ({} msgs){}{}",
+                    prefix, branch_label, branch.message_count, sub_agents_info, current_marker
                 )
             };
 

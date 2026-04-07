@@ -24,10 +24,7 @@ pub async fn initiate_device_flow(
     device_authorization_url: &str,
 ) -> Result<DeviceCodeResponse, reqwest::Error> {
     let client = reqwest::Client::new();
-    let params = [
-        ("client_id", client_id),
-        ("scope", scope),
-    ];
+    let params = [("client_id", client_id), ("scope", scope)];
     let resp = client
         .post(device_authorization_url)
         .form(&params)

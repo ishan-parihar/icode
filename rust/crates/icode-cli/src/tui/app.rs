@@ -3,18 +3,28 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::tui::command_palette::CommandPaletteState;
+use crate::tui::debug_panel::DebugPanelState;
 use crate::tui::dialog_context_viz::ContextVizDialogState;
+use crate::tui::dialog_export_options::ExportOptionsState;
 use crate::tui::dialog_help::HelpDialogState;
 use crate::tui::dialog_mcp::McpDialogState;
 use crate::tui::dialog_message_actions::MessageActionDialogState;
 use crate::tui::dialog_plugins::PluginsDialogState;
+use crate::tui::dialog_prompt_stash::PromptStashState;
+use crate::tui::dialog_providers::ProviderDialogState;
 use crate::tui::dialog_session_branching::SessionBranchingState;
 use crate::tui::dialog_sessions::SessionsDialogState;
 use crate::tui::dialog_skills::SkillsDialogState;
+use crate::tui::dialog_theme_list::ThemeListDialogState;
+use crate::tui::dialog_workspaces::WorkspaceDialogState;
 use crate::tui::input::InputState;
 use crate::tui::model_picker::ModelPickerState;
+use crate::tui::plugin::{PluginRoute, PluginSlot, SlotContent};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::{capabilities_for_model, DiffView, MessageList, PagerState, Sidebar};
+use crate::tui::widgets::{
+    capabilities_for_model, DiffView, FilesPanelState, LspPanelState, McpPanelState, MessageList,
+    PagerState, Sidebar, SubAgentInfo, TodoPanelState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppMode {
@@ -50,6 +60,7 @@ pub struct Message {
     pub is_streaming: bool,
     pub tool_timeline: Vec<(String, bool, u64)>,
     pub turn_duration_ms: u64,
+    pub sub_agents: Vec<SubAgentInfo>,
 }
 
 impl Message {
@@ -149,10 +160,13 @@ pub struct AppState {
     pub tools: Vec<ToolEvent>,
     pub sidebar_visible: bool,
     pub scroll_offset: usize,
+    pub auto_scroll: bool,
+    pub scroll_paused: bool,
     pub is_streaming: bool,
     pub connected: bool,
     pub lsp_count: usize,
-    pub mcp_count: usize,
+    pub lsp_panel: LspPanelState,
+    pub mcp_panel: McpPanelState,
     pub cwd: String,
     pub git_branch: Option<String>,
     pub git_dirty: bool,
@@ -160,12 +174,18 @@ pub struct AppState {
     pub command_palette: CommandPaletteState,
     pub mcp_dialog: McpDialogState,
     pub skills_dialog: SkillsDialogState,
+    pub theme_list_dialog: ThemeListDialogState,
     pub plugins_dialog: PluginsDialogState,
     pub sessions_dialog: SessionsDialogState,
     pub message_action_dialog: MessageActionDialogState,
     pub help_dialog: HelpDialogState,
     pub context_viz_dialog: ContextVizDialogState,
     pub branching_dialog: SessionBranchingState,
+    pub prompt_stash: PromptStashState,
+    pub export_options: ExportOptionsState,
+    pub debug_panel: DebugPanelState,
+    pub provider_dialog: ProviderDialogState,
+    pub workspace_dialog: WorkspaceDialogState,
     pub skill_count: usize,
     pub plugin_count: usize,
     pub revert: Option<RevertState>,
@@ -183,6 +203,10 @@ pub struct AppState {
     pub last_turn_duration: Option<std::time::Duration>,
     pub diff_view: Option<DiffView>,
     pub pager: PagerState,
+    pub files_panel: FilesPanelState,
+    pub todo_panel: TodoPanelState,
+    pub plugin_slots: std::collections::HashMap<PluginSlot, Vec<SlotContent>>,
+    pub plugin_routes: Vec<PluginRoute>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,7 +215,7 @@ pub struct RevertState {
     pub prompt_text: String,
 }
 
-fn icode_config_dir() -> PathBuf {
+pub fn icode_config_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("CLAW_CONFIG_HOME") {
         return PathBuf::from(path);
     }
@@ -208,14 +232,25 @@ fn load_theme() -> Theme {
     if let Ok(content) = fs::read_to_string(&path) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(name) = value.get("theme").and_then(|v| v.as_str()) {
-                return match name {
-                    "light" => Theme::light(),
-                    _ => Theme::dark(),
-                };
+                if let Some(theme) = Theme::from_name(name) {
+                    return theme;
+                }
             }
         }
     }
     Theme::dark()
+}
+
+fn load_theme_id() -> String {
+    let path = theme_config_path();
+    if let Ok(content) = fs::read_to_string(&path) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(name) = value.get("theme").and_then(|v| v.as_str()) {
+                return name.to_string();
+            }
+        }
+    }
+    "opencode".to_string()
 }
 
 fn save_theme(name: &str) {
@@ -257,10 +292,13 @@ impl AppState {
             tools: Vec::new(),
             sidebar_visible: true,
             scroll_offset: usize::MAX,
+            auto_scroll: true,
+            scroll_paused: false,
             is_streaming: false,
             connected: false,
             lsp_count: 0,
-            mcp_count: 0,
+            lsp_panel: LspPanelState::new(),
+            mcp_panel: McpPanelState::new(),
             cwd: cwd.into(),
             git_branch: None,
             git_dirty: false,
@@ -268,12 +306,18 @@ impl AppState {
             command_palette: CommandPaletteState::new(),
             mcp_dialog: McpDialogState::new(),
             skills_dialog: SkillsDialogState::new(),
+            theme_list_dialog: ThemeListDialogState::new(&load_theme_id()),
             plugins_dialog: PluginsDialogState::new(),
             sessions_dialog: SessionsDialogState::new(),
             message_action_dialog: MessageActionDialogState::new(),
             help_dialog: HelpDialogState::new(),
             context_viz_dialog: ContextVizDialogState::new(),
             branching_dialog: SessionBranchingState::new(),
+            prompt_stash: PromptStashState::new(),
+            export_options: ExportOptionsState::new(),
+            debug_panel: DebugPanelState::new(),
+            provider_dialog: ProviderDialogState::new(),
+            workspace_dialog: WorkspaceDialogState::new(),
             skill_count: 0,
             plugin_count: 0,
             revert: None,
@@ -291,22 +335,44 @@ impl AppState {
             last_turn_duration: None,
             diff_view: None,
             pager: PagerState::default(),
+            files_panel: FilesPanelState::new(),
+            todo_panel: TodoPanelState::new(),
+            plugin_slots: std::collections::HashMap::new(),
+            plugin_routes: Vec::new(),
         }
     }
 
     pub fn set_theme(&mut self, name: &str) {
-        self.theme = match name {
-            "light" => Theme::light(),
-            _ => Theme::dark(),
-        };
+        let theme = Theme::from_name(name).unwrap_or_default();
+        self.theme = theme;
         save_theme(name);
     }
 
+    /// Cycle to the next theme in the registry.
+    /// Returns the new theme's ID.
     pub fn toggle_theme(&mut self) -> &'static str {
-        let is_dark = self.theme.background == ratatui::style::Color::Rgb(10, 10, 10);
-        let new_name = if is_dark { "light" } else { "dark" };
-        self.set_theme(new_name);
-        new_name
+        use crate::tui::theme_loader::list_themes;
+        let all = list_themes();
+        // Find current theme ID by matching background color
+        let current_id = self.find_current_theme_id();
+        let current_idx = all
+            .iter()
+            .position(|&id| id == current_id.as_str())
+            .unwrap_or(0);
+        let next_idx = (current_idx + 1) % all.len();
+        let next_id = all[next_idx];
+        self.set_theme(next_id);
+        next_id
+    }
+
+    /// Identify the current theme's ID by comparing background colors.
+    fn find_current_theme_id(&self) -> String {
+        use crate::tui::theme_loader::THEMES;
+        THEMES
+            .iter()
+            .find(|entry| entry.theme.background == self.theme.background)
+            .map(|entry| entry.id.to_string())
+            .unwrap_or_else(|| "opencode".to_string())
     }
 
     pub fn add_user_message(&mut self, content: String) {
@@ -326,6 +392,7 @@ impl AppState {
             is_streaming: false,
             tool_timeline: Vec::new(),
             turn_duration_ms: 0,
+            sub_agents: Vec::new(),
         });
         self.scroll_to_bottom();
     }
@@ -346,6 +413,7 @@ impl AppState {
             is_streaming: true,
             tool_timeline: Vec::new(),
             turn_duration_ms: 0,
+            sub_agents: Vec::new(),
         });
         self.is_streaming = true;
         self.scroll_to_bottom();
@@ -453,6 +521,8 @@ impl AppState {
 
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = usize::MAX;
+        self.auto_scroll = true;
+        self.scroll_paused = false;
     }
 
     pub fn recalculate_scroll(&mut self) {
@@ -483,6 +553,7 @@ impl AppState {
             is_streaming: false,
             tool_timeline: Vec::new(),
             turn_duration_ms: 0,
+            sub_agents: Vec::new(),
         });
         self.scroll_to_bottom();
     }
@@ -667,5 +738,92 @@ impl AppState {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    pub fn add_sub_agent(&mut self, agent: SubAgentInfo) {
+        for msg in self.messages.iter_mut().rev() {
+            if matches!(msg.role, MessageRole::Assistant) && msg.is_streaming {
+                msg.sub_agents.push(agent);
+                return;
+            }
+        }
+    }
+
+    pub fn update_sub_agent_status(
+        &mut self,
+        name: &str,
+        status: crate::tui::widgets::SubAgentStatus,
+    ) {
+        for msg in self.messages.iter_mut().rev() {
+            if let Some(sa) = msg.sub_agents.iter_mut().find(|s| s.name == name) {
+                sa.status = status;
+                return;
+            }
+        }
+    }
+
+    pub fn toggle_sub_agent_expand(&mut self, msg_idx: usize, sa_idx: usize) {
+        if let Some(msg) = self.messages.get_mut(msg_idx) {
+            if let Some(sa) = msg.sub_agents.get_mut(sa_idx) {
+                sa.expanded = !sa.expanded;
+            }
+        }
+    }
+
+    pub fn turn_elapsed(&self) -> Option<String> {
+        self.turn_started_at.map(|started| {
+            let elapsed = started.elapsed();
+            let total_secs = elapsed.as_secs();
+            if total_secs >= 3600 {
+                let hours = total_secs / 3600;
+                let mins = (total_secs % 3600) / 60;
+                format!("{hours}h {mins}m")
+            } else if total_secs >= 60 {
+                let mins = total_secs / 60;
+                let secs = total_secs % 60;
+                format!("{mins}m {secs}s")
+            } else {
+                format!("{total_secs}s")
+            }
+        })
+    }
+
+    pub fn register_slot_content(
+        &mut self,
+        plugin_id: impl Into<String>,
+        slot: PluginSlot,
+        lines: Vec<String>,
+        style: crate::tui::plugin::SlotStyle,
+    ) {
+        let plugin_id = plugin_id.into();
+        let entries = self.plugin_slots.entry(slot).or_default();
+        entries.retain(|e| e.plugin_id != plugin_id);
+        entries.push(SlotContent {
+            plugin_id,
+            lines,
+            style,
+        });
+    }
+
+    pub fn remove_plugin_slot_content(&mut self, plugin_id: &str) {
+        for entries in self.plugin_slots.values_mut() {
+            entries.retain(|e| e.plugin_id != plugin_id);
+        }
+        self.plugin_slots.retain(|_, v| !v.is_empty());
+    }
+
+    pub fn get_slot_content(&self, slot: PluginSlot) -> Vec<&SlotContent> {
+        self.plugin_slots
+            .get(&slot)
+            .map_or(Vec::new(), |v| v.iter().collect())
+    }
+
+    pub fn register_plugin_route(&mut self, route: PluginRoute) {
+        self.plugin_routes.push(route);
+    }
+
+    pub fn remove_plugin_routes_by_plugin(&mut self, plugin_id: &str) {
+        self.plugin_routes
+            .retain(|r| !r.id.starts_with(&format!("{plugin_id}:")));
     }
 }

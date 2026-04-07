@@ -192,3 +192,24 @@ impl Default for Theme {
         Self::dark()
     }
 }
+
+impl Theme {
+    pub fn is_dark(&self) -> bool {
+        let Color::Rgb(r, g, b) = self.background else {
+            return true;
+        };
+        (r as u16 + g as u16 + b as u16) < 384
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        super::theme_loader::find_theme(name).copied()
+    }
+
+    pub fn display_name(name: &str) -> String {
+        super::theme_loader::THEMES
+            .iter()
+            .find(|e| e.id == name)
+            .map(|e| e.display_name.to_string())
+            .unwrap_or_else(|| name.to_string())
+    }
+}

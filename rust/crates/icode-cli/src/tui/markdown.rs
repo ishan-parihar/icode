@@ -2,10 +2,10 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthChar;
 
+use crate::tui::syntax_theme::build_syntect_theme;
 use crate::tui::theme::Theme;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -600,13 +600,9 @@ fn highlight_code_block(
         .or_else(|| syntax_set.find_syntax_by_token("text"))
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
 
-    let theme_set = ThemeSet::load_defaults();
-    let syntect_theme = theme_set
-        .themes
-        .get("base16-ocean.dark")
-        .unwrap_or_else(|| &theme_set.themes["InspiredGitHub"]);
+    let syntect_theme = build_syntect_theme(theme);
 
-    let mut highlighter = HighlightLines::new(syntax, syntect_theme);
+    let mut highlighter = HighlightLines::new(syntax, &syntect_theme);
     let mut result = Vec::new();
 
     for line_text in lines {
@@ -733,4 +729,71 @@ fn pad_right(s: &str, width: usize) -> String {
     let current_width: usize = s.chars().map(|c| c.width().unwrap_or(1)).sum();
     let padding = width.saturating_sub(current_width);
     format!("{}{}", s, " ".repeat(padding))
+}
+
+/// Render markdown incrementally during streaming.
+/// Handles incomplete code blocks, unclosed formatting, etc.
+pub fn render_markdown_streaming(
+    markdown: &str,
+    content_width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = render_markdown_to_lines(markdown, content_width, theme);
+
+    let is_incomplete = markdown_ends_incomplete(markdown);
+
+    if is_incomplete {
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(Span::styled(
+                " \u{2588}",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::RAPID_BLINK),
+            ));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "\u{2588}",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::RAPID_BLINK),
+            )]));
+        }
+    }
+
+    lines
+}
+
+/// Heuristic: does the markdown end in an incomplete state?
+fn markdown_ends_incomplete(markdown: &str) -> bool {
+    if markdown.is_empty() {
+        return false;
+    }
+
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        }
+    }
+    if in_fence {
+        return true;
+    }
+
+    let last_char = markdown.chars().last();
+    if let Some(ch) = last_char {
+        if ch.is_whitespace() {
+            return true;
+        }
+    }
+
+    let trimmed = markdown.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let last = trimmed.chars().last().unwrap_or(' ');
+    matches!(
+        last,
+        ',' | ':' | '-' | '(' | '[' | '{' | '`' | '*' | '_' | '~' | '|' | '<'
+    )
 }

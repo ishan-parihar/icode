@@ -59,9 +59,21 @@ use tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput};
 pub enum TurnEvent {
     ThinkingStarted,
     TokenDelta(String),
-    ToolCallStarted { name: String, input: String },
-    ToolCallCompleted { name: String, output: String, success: bool },
-    TurnCompleted { text: String, tool_calls: Vec<TurnToolCallInfo>, input_tokens: u32, output_tokens: u32 },
+    ToolCallStarted {
+        name: String,
+        input: String,
+    },
+    ToolCallCompleted {
+        name: String,
+        output: String,
+        success: bool,
+    },
+    TurnCompleted {
+        text: String,
+        tool_calls: Vec<TurnToolCallInfo>,
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     TurnError(String),
 }
 
@@ -1775,6 +1787,15 @@ fn run_repl(
                         tui.state_mut().sessions_dialog.open();
                         continue;
                     }
+                    "session.attach" => {
+                        tui.state_mut().sessions_dialog.load_sessions();
+                        tui.state_mut().sessions_dialog.open();
+                        continue;
+                    }
+                    "/editor" => {
+                        tui.open_external_editor();
+                        continue;
+                    }
                     _ if trimmed.starts_with("__session_switch__") => {
                         let path_str = trimmed.strip_prefix("__session_switch__").unwrap();
                         let switch_path = PathBuf::from(path_str);
@@ -1783,9 +1804,10 @@ fn run_repl(
                                 let session_ts = new_session.updated_at_ms / 1000;
                                 let saved_msgs = new_session.messages.clone();
                                 let msg_count = saved_msgs.len();
-                                let turns = saved_msgs.iter().filter(|m| {
-                                    matches!(m.role, runtime::MessageRole::Assistant)
-                                }).count() as u32;
+                                let turns = saved_msgs
+                                    .iter()
+                                    .filter(|m| matches!(m.role, runtime::MessageRole::Assistant))
+                                    .count() as u32;
                                 cli.persist_session()?;
                                 let session_id = new_session.session_id.clone();
                                 cli.runtime.set_session(new_session);
@@ -1820,8 +1842,8 @@ fn run_repl(
                                     st.session.input_tokens = 0;
                                     st.session.output_tokens = 0;
                                 }
-                    }
-                    Err(e) => {
+                            }
+                            Err(e) => {
                                 tui.state_mut()
                                     .show_error(format!("Failed to load session: {e}"));
                             }
@@ -1853,7 +1875,11 @@ fn run_repl(
                     }
                     "thinking.toggle" => {
                         let is_visible = tui.state_mut().toggle_thinking();
-                        let msg = if is_visible { "Showing thinking" } else { "Hiding thinking" };
+                        let msg = if is_visible {
+                            "Showing thinking"
+                        } else {
+                            "Hiding thinking"
+                        };
                         tui.state_mut().add_toast(msg, tui::ToastKind::Info);
                         continue;
                     }
@@ -1967,34 +1993,15 @@ fn run_repl(
                         continue;
                     }
                     "session.export" => {
-                        let export_path = format!(
-                            "{}/session-{}.txt",
-                            std::env::temp_dir().display(),
-                            cli.runtime.session().session_id
-                        );
-                        let mut content = String::new();
-                        for msg in cli.runtime.session().messages.iter() {
-                            let role = match msg.role {
-                                runtime::MessageRole::User => "user",
-                                runtime::MessageRole::Assistant => "assistant",
-                                runtime::MessageRole::System => "system",
-                                runtime::MessageRole::Tool => "tool",
-                            };
-                            for block in &msg.blocks {
-                                if let runtime::ContentBlock::Text { text } = block {
-                                    content.push_str(&format!("[{}] {}\n\n", role, text));
-                                }
-                            }
-                        }
-                        match std::fs::write(&export_path, &content) {
-                            Ok(()) => {
-                                tui.state_mut()
-                                    .show_error(format!("Exported to {export_path}"));
-                            }
-                            Err(e) => {
-                                tui.state_mut().show_error(format!("Export failed: {e}"));
-                            }
-                        }
+                        tui.state_mut().export_options.open();
+                        continue;
+                    }
+                    "providers.list" => {
+                        tui.state_mut().provider_dialog.open();
+                        continue;
+                    }
+                    "workspaces.list" => {
+                        tui.state_mut().workspace_dialog.open();
                         continue;
                     }
                     "app.exit" => {
@@ -2012,7 +2019,9 @@ fn run_repl(
                     }
                     "session.fork" => {
                         let last_msg_idx = tui.state().messages.len().saturating_sub(1);
-                        tui.state_mut().message_action_dialog.open(last_msg_idx, String::new());
+                        tui.state_mut()
+                            .message_action_dialog
+                            .open(last_msg_idx, String::new());
                         continue;
                     }
                     _ => {}
@@ -2704,7 +2713,11 @@ impl LiveCli {
             };
 
             let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
-            let result = runtime.run_turn(&input, Some(&mut permission_prompter), Some(&progress_callback));
+            let result = runtime.run_turn(
+                &input,
+                Some(&mut permission_prompter),
+                Some(&progress_callback),
+            );
             hook_abort_monitor.stop();
 
             if let Ok(ref summary) = result {
@@ -2718,12 +2731,17 @@ impl LiveCli {
                     .flat_map(|msg| msg.blocks.iter())
                     .filter_map(|block| match block {
                         ContentBlock::ToolUse { id, name, input } => {
-                            let output = summary.tool_results.iter()
+                            let output = summary
+                                .tool_results
+                                .iter()
                                 .flat_map(|rmsg| rmsg.blocks.iter())
                                 .find_map(|block| match block {
-                                    ContentBlock::ToolResult { tool_use_id, output, is_error, .. } if tool_use_id == id => {
-                                        Some((output.clone(), *is_error))
-                                    }
+                                    ContentBlock::ToolResult {
+                                        tool_use_id,
+                                        output,
+                                        is_error,
+                                        ..
+                                    } if tool_use_id == id => Some((output.clone(), *is_error)),
                                     _ => None,
                                 });
                             let (output, success) = output.unwrap_or_default();
@@ -2737,7 +2755,12 @@ impl LiveCli {
                         _ => None,
                     })
                     .collect();
-                let _ = tx.send(TurnEvent::TurnCompleted { text, tool_calls, input_tokens: summary.usage.input_tokens, output_tokens: summary.usage.output_tokens });
+                let _ = tx.send(TurnEvent::TurnCompleted {
+                    text,
+                    tool_calls,
+                    input_tokens: summary.usage.input_tokens,
+                    output_tokens: summary.usage.output_tokens,
+                });
             } else if let Err(ref e) = result {
                 if let Some(path) = runtime.session().persistence_path() {
                     let _ = runtime.session().save_to_path(path);
@@ -5044,7 +5067,11 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
 
 impl ApiClient for AnthropicRuntimeClient {
     #[allow(clippy::too_many_lines)]
-    fn stream(&mut self, request: ApiRequest, progress: Option<&dyn Fn(runtime::AssistantEvent)>) -> Result<Vec<runtime::AssistantEvent>, RuntimeError> {
+    fn stream(
+        &mut self,
+        request: ApiRequest,
+        progress: Option<&dyn Fn(runtime::AssistantEvent)>,
+    ) -> Result<Vec<runtime::AssistantEvent>, RuntimeError> {
         if let Some(progress_reporter) = &self.progress_reporter {
             progress_reporter.mark_model_phase();
         }
@@ -5136,7 +5163,11 @@ impl ApiClient for AnthropicRuntimeClient {
                                 progress_reporter.mark_tool_phase(&name, &input);
                             }
                             if let Some(cb) = &progress {
-                                cb(runtime::AssistantEvent::ToolUse { id: id.clone(), name: name.clone(), input: input.clone() });
+                                cb(runtime::AssistantEvent::ToolUse {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                });
                             }
                             // Display tool call now that input is fully accumulated
                             writeln!(out, "\n{}", format_tool_call_start(&name, &input))
@@ -6045,7 +6076,9 @@ fn convert_runtime_messages_to_tui(
     messages: &[ConversationMessage],
     timestamp_secs: u64,
 ) -> Vec<tui::app::Message> {
-    use crate::tui::app::{Message as TuiMessage, MessagePart, MessageRole as TuiMessageRole, ToolStatus};
+    use crate::tui::app::{
+        Message as TuiMessage, MessagePart, MessageRole as TuiMessageRole, ToolStatus,
+    };
 
     let mut result: Vec<TuiMessage> = Vec::new();
 
@@ -6075,6 +6108,7 @@ fn convert_runtime_messages_to_tui(
                         is_streaming: false,
                         tool_timeline: Vec::new(),
                         turn_duration_ms: 0,
+                        sub_agents: Vec::new(),
                     });
                 }
             }
@@ -6118,6 +6152,7 @@ fn convert_runtime_messages_to_tui(
                         is_streaming: false,
                         tool_timeline: Vec::new(),
                         turn_duration_ms: 0,
+                        sub_agents: Vec::new(),
                     });
                 }
             }

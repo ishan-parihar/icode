@@ -254,8 +254,8 @@ impl LspRegistry {
         character: Option<u32>,
         _query: Option<&str>,
     ) -> Result<serde_json::Value, String> {
-        let lsp_action =
-            LspAction::try_from_str(action).ok_or_else(|| format!("unknown LSP action: {action}"))?;
+        let lsp_action = LspAction::try_from_str(action)
+            .ok_or_else(|| format!("unknown LSP action: {action}"))?;
 
         // For diagnostics, we can check existing cached diagnostics
         if lsp_action == LspAction::Diagnostics {
