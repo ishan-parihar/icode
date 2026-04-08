@@ -14,19 +14,19 @@ use crate::tui::dialog_sessions::render_sessions_dialog;
 use crate::tui::dialog_skills::render_skills_dialog;
 use crate::tui::dialog_theme_list::render_theme_list_dialog;
 use crate::tui::dialog_workspaces::render_workspace_dialog;
+use crate::tui::home_screen::render_home_content;
 use crate::tui::model_picker::render_model_picker;
+use crate::tui::prompt_bar::{PromptBar, PromptBarMode};
 use crate::tui::widgets::{render_pager, DiffView, MessageList, Sidebar};
-use crate::tui::InputWidget;
 use crate::tui::Theme;
 use api::capabilities_for_model;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{StatefulWidget, Widget};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 use runtime::{format_usd, pricing_for_model};
-use std::time::Instant;
 
 pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     let area = frame.area();
@@ -42,15 +42,11 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     let prompt_height = (prompt_lines as u16) + 3;
 
     let is_welcome = state.messages.is_empty();
-    let constraints = if is_welcome {
-        vec![Constraint::Min(1), Constraint::Length(1)]
-    } else {
-        vec![
-            Constraint::Min(1),
-            Constraint::Length(prompt_height),
-            Constraint::Length(1),
-        ]
-    };
+    let constraints = vec![
+        Constraint::Min(1),
+        Constraint::Length(prompt_height),
+        Constraint::Length(1),
+    ];
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -58,11 +54,7 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
         .split(area);
 
     let main_area = chunks[0];
-    let (prompt_area, footer_area) = if is_welcome {
-        (None, chunks[1])
-    } else {
-        (Some(chunks[1]), chunks[2])
-    };
+    let (prompt_area, footer_area) = (Some(chunks[1]), chunks[2]);
 
     if has_sidebar {
         let main_chunks = Layout::default()
@@ -88,14 +80,31 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
                 }
             }
         }
+    } else if is_welcome {
+        render_home_content(frame, main_area, &state.home_screen, theme);
     } else {
         render_messages_panel(frame, state, main_area, theme);
     }
 
     if let Some(pa) = prompt_area {
-        render_prompt(frame, state, pa, theme);
-        if state.prompt.show_slash_autocomplete && !state.prompt.slash_completions.is_empty() {
-            render_slash_autocomplete(frame.buffer_mut(), &state.prompt, pa, theme);
+        if is_welcome {
+            PromptBar::new(PromptBarMode::Home, theme).render(frame, state, pa);
+            if state.prompt.show_slash_autocomplete && !state.prompt.slash_completions.is_empty() {
+                render_slash_autocomplete(frame.buffer_mut(), &state.prompt, pa, theme);
+            }
+        } else {
+            PromptBar::new(
+                PromptBarMode::Active {
+                    is_streaming: state.is_streaming,
+                    leader_active: state.leader_active,
+                    interrupt_count: state.interrupt_count,
+                },
+                theme,
+            )
+            .render(frame, state, pa);
+            if state.prompt.show_slash_autocomplete && !state.prompt.slash_completions.is_empty() {
+                render_slash_autocomplete(frame.buffer_mut(), &state.prompt, pa, theme);
+            }
         }
     }
     render_footer(frame, state, footer_area);
@@ -214,7 +223,7 @@ fn render_messages_panel(frame: &mut Frame, state: &mut AppState, area: Rect, th
             Paragraph::new("").style(Style::default().bg(state.theme.background)),
             inner,
         );
-        render_welcome_screen(frame, state, inner, theme);
+        PromptBar::new(PromptBarMode::Welcome, theme).render(frame, state, inner);
         return;
     }
 
@@ -236,240 +245,6 @@ fn render_messages_panel(frame: &mut Frame, state: &mut AppState, area: Rect, th
     if let AppMode::Error(msg) = &state.mode {
         render_error_block(frame, state, msg, inner);
     }
-}
-
-fn render_welcome_screen(frame: &mut Frame, state: &mut AppState, area: Rect, theme: Theme) {
-    if area.width < 40 || area.height < 10 {
-        let minimal = Paragraph::new(Line::from(Span::styled(
-            "icode",
-            Style::default()
-                .fg(state.theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .style(Style::default().bg(state.theme.background));
-        frame.render_widget(minimal, area);
-        return;
-    }
-
-    let logo_lines = build_logo_lines(state);
-    let logo_height = logo_lines.len() as u16;
-
-    let prompt_preview_width = area.width.min(75);
-    let prompt_height = 4u16;
-    let tips_height = 3u16;
-
-    let total_content = 4 + logo_height + 1 + prompt_height + tips_height;
-    let top_spacer = if area.height > total_content + 2 {
-        (area.height - total_content) / 2
-    } else {
-        1
-    };
-
-    let logo_start_y = area.top() + top_spacer + 4;
-    let prompt_y = logo_start_y + logo_height + 1;
-    let tips_y = prompt_y + prompt_height + 1;
-
-    for (i, line) in logo_lines.iter().enumerate() {
-        let line_width = line.width() as u16;
-        let x = area.x + (area.width.saturating_sub(line_width)) / 2;
-        frame.render_widget(
-            Paragraph::new(line.clone()).style(Style::default().bg(state.theme.background)),
-            Rect {
-                x,
-                y: logo_start_y + i as u16,
-                width: line_width,
-                height: 1,
-            },
-        );
-    }
-
-    let prompt_area = Rect {
-        x: area.x + (area.width.saturating_sub(prompt_preview_width)) / 2,
-        y: prompt_y,
-        width: prompt_preview_width,
-        height: prompt_height,
-    };
-    render_welcome_prompt_box(frame, state, prompt_area, theme);
-
-    let tips_area = Rect {
-        x: area.x + (area.width.saturating_sub(prompt_preview_width)) / 2,
-        y: tips_y,
-        width: prompt_preview_width,
-        height: tips_height,
-    };
-    render_welcome_tips(frame, state, tips_area);
-}
-
-fn tint_color(base: Color, into: Color, factor: f32) -> Color {
-    let (br, bg, bb) = match base {
-        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
-        _ => return base,
-    };
-    let (ir, ig, ib) = match into {
-        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
-        _ => return into,
-    };
-    let r = (br + (ir - br) * factor).round() as u8;
-    let g = (bg + (ig - bg) * factor).round() as u8;
-    let b = (bb + (ib - bb) * factor).round() as u8;
-    Color::Rgb(r, g, b)
-}
-
-fn build_logo_lines(state: &AppState) -> Vec<Line<'static>> {
-    let rows = [
-        "__   ______                   __           ",
-        "|  \\ /      \\                 |  \\          ",
-        " \\$$|  $$$$$$\\  ______    ____| $$  ______  ",
-        "| $$| $$   \\$$ /      \\  /      $$ /      \\ ",
-        "| $$| $$      |  $$$$$$\\|  $$$$$$$|  $$$$$$\\",
-        "| $$| $$   __ | $$  | $$| $$  | $$| $$    $$",
-        "| $$| $$__/  \\| $$__/ $$| $$__| $$| $$$$$$$$",
-        "| $$ \\$$    $$ \\$$    $$ \\$$    $$ \\$$     \\",
-        " \\$$  \\$$$$$$   \\$$$$$$   \\$$$$$$$  \\$$$$$$$ ",
-    ];
-
-    let fg = state.theme.text;
-    let shadow = tint_color(state.theme.background, fg, 0.25);
-
-    let mut lines = Vec::new();
-    for row_text in &rows {
-        let mut row_spans = Vec::new();
-        let mut current_text = String::new();
-        for ch in row_text.chars() {
-            if ch == '$' {
-                if !current_text.is_empty() {
-                    row_spans.push(Span::styled(
-                        std::mem::take(&mut current_text),
-                        Style::default().fg(state.theme.text_muted),
-                    ));
-                }
-                row_spans.push(Span::styled(ch.to_string(), Style::default().fg(fg)));
-            } else {
-                current_text.push(ch);
-            }
-        }
-        if !current_text.is_empty() {
-            row_spans.push(Span::styled(
-                current_text,
-                Style::default().fg(state.theme.text_muted),
-            ));
-        }
-        lines.push(Line::from(row_spans));
-    }
-
-    lines
-}
-
-fn render_welcome_prompt_box(frame: &mut Frame, state: &mut AppState, area: Rect, theme: Theme) {
-    let agent_color = state.theme.agent_color("build");
-
-    let border_block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(Style::default().fg(agent_color))
-        .style(Style::default().bg(state.theme.background));
-
-    let inner = border_block.inner(area);
-    frame.render_widget(border_block.clone(), area);
-
-    if inner.width > 0 && inner.height > 0 {
-        InputWidget::new(theme).render(inner, frame.buffer_mut(), &mut state.prompt);
-    }
-
-    let info_y = area.bottom().saturating_sub(1);
-    let info_area = Rect {
-        x: area.x,
-        y: info_y,
-        width: area.width,
-        height: 1,
-    };
-
-    let left_spans = vec![
-        Span::styled(
-            format!("{} ", state.session.permission_mode),
-            Style::default()
-                .fg(agent_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(&state.session.model, Style::default().fg(state.theme.text)),
-        Span::styled(
-            " \u{00b7} anthropic",
-            Style::default().fg(state.theme.text_muted),
-        ),
-    ];
-
-    let right_spans = vec![Span::styled(
-        "Ctrl+P commands",
-        Style::default().fg(state.theme.text_muted),
-    )];
-
-    let left_width: usize = left_spans.iter().map(|s| s.content.chars().count()).sum();
-    let right_width: usize = right_spans.iter().map(|s| s.content.chars().count()).sum();
-    let gap = info_area
-        .width
-        .saturating_sub(left_width as u16 + right_width as u16 + 1)
-        .max(1);
-
-    let mut all_spans = left_spans;
-    all_spans.push(Span::raw(" ".repeat(gap as usize)));
-    all_spans.extend(right_spans);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(all_spans)).style(Style::default().bg(state.theme.background)),
-        info_area,
-    );
-}
-
-fn render_welcome_tips(frame: &mut Frame, state: &AppState, area: Rect) {
-    let tips = [
-        ("Use ", "Ctrl+P", " to open the command palette"),
-        ("Press ", "Ctrl+M", " to switch models"),
-        ("Type ", "/help", " to see all available commands"),
-        ("Use ", "Alt+S", " to toggle the sidebar"),
-    ];
-    let tip = tips[state.session.turns as usize % tips.len()];
-
-    let line = Line::from(vec![
-        Span::styled(
-            "\u{25cf} Tip ",
-            Style::default()
-                .fg(state.theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(tip.0, Style::default().fg(state.theme.text_muted)),
-        Span::styled(
-            tip.1,
-            Style::default()
-                .fg(state.theme.text)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(tip.2, Style::default().fg(state.theme.text_muted)),
-    ]);
-
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(state.theme.background)),
-        area,
-    );
-}
-
-fn render_keycap_row(state: &AppState) -> Vec<Span<'static>> {
-    let bg = state.theme.background_element;
-
-    fn kbd(label: &str, action: &str, bg: Color, text_color: Color) -> Vec<Span<'static>> {
-        vec![
-            Span::styled(
-                format!("\u{250c}\u{2500}{label}\u{2500}\u{2510}"),
-                Style::default().fg(text_color).bg(bg),
-            ),
-            Span::styled(format!(" {action}  "), Style::default().fg(text_color)),
-        ]
-    }
-
-    let mut spans = Vec::new();
-    spans.extend(kbd("Ctrl+P", "commands", bg, state.theme.text_muted));
-    spans.extend(kbd("Ctrl+M", "models", bg, state.theme.text_muted));
-    spans.extend(kbd("Alt+S", "sidebar", bg, state.theme.text_muted));
-    spans.extend(kbd("Enter", "send", bg, state.theme.text_muted));
-    spans
 }
 
 fn render_error_block(frame: &mut Frame, state: &AppState, msg: &str, area: Rect) {
@@ -518,127 +293,6 @@ fn render_error_block(frame: &mut Frame, state: &AppState, msg: &str, area: Rect
     let error_para =
         Paragraph::new(error_lines).style(Style::default().bg(state.theme.background_element));
     frame.render_widget(error_para, inner);
-}
-
-fn render_prompt(frame: &mut Frame, state: &mut AppState, area: Rect, theme: Theme) {
-    let is_streaming = state.is_streaming;
-
-    let prompt_border_color = if is_streaming {
-        state.theme.warning
-    } else {
-        state.theme.border_active
-    };
-
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(state.theme.background)),
-        area,
-    );
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(prompt_border_color))
-        .border_type(BorderType::Rounded)
-        .padding(Padding::horizontal(1))
-        .style(Style::default().bg(state.theme.background));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 2 || inner.width < 10 {
-        return;
-    }
-
-    let input_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: inner.height.saturating_sub(1),
-    };
-    let bar_area = Rect {
-        x: inner.x,
-        y: inner.bottom().saturating_sub(1),
-        width: inner.width,
-        height: 1,
-    };
-
-    if input_area.width > 0 && input_area.height > 0 {
-        InputWidget::new(theme).render(input_area, frame.buffer_mut(), &mut state.prompt);
-    }
-
-    render_prompt_info_bar(frame, state, bar_area);
-}
-
-fn render_prompt_info_bar(frame: &mut Frame, state: &AppState, area: Rect) {
-    let agent_color = state.theme.agent_color("build");
-
-    let left_spans = vec![
-        Span::styled(
-            format!("{} ", state.session.permission_mode),
-            Style::default()
-                .fg(agent_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(&state.session.model, Style::default().fg(state.theme.text)),
-    ];
-
-    let total_tokens = state.session.input_tokens + state.session.output_tokens;
-    let caps = capabilities_for_model(&state.session.model);
-    let usage_pct = if caps.context_window > 0 {
-        (total_tokens as f64 / caps.context_window as f64 * 100.0).round() as u32
-    } else {
-        0
-    };
-
-    let right_spans = if total_tokens > 0 {
-        let usage_color = if usage_pct < 50 {
-            state.theme.success
-        } else if usage_pct < 80 {
-            state.theme.warning
-        } else {
-            state.theme.error
-        };
-        vec![
-            Span::styled(
-                " \u{00b7} anthropic",
-                Style::default().fg(state.theme.text_muted),
-            ),
-            Span::styled(format!(" ({usage_pct}%)"), Style::default().fg(usage_color)),
-        ]
-    } else if state.leader_active {
-        vec![Span::styled(
-            "u:undo  r:redo  m:model  n:new",
-            Style::default().fg(state.theme.primary),
-        )]
-    } else if state.interrupt_count > 0 {
-        vec![Span::styled(
-            "Esc again to cancel",
-            Style::default()
-                .fg(state.theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )]
-    } else if !state.command_palette.open {
-        vec![Span::styled(
-            "Ctrl+P commands",
-            Style::default().fg(state.theme.text_muted),
-        )]
-    } else {
-        vec![]
-    };
-
-    let left_width: usize = left_spans.iter().map(|s| s.content.chars().count()).sum();
-    let right_width: usize = right_spans.iter().map(|s| s.content.chars().count()).sum();
-    let gap = area
-        .width
-        .saturating_sub(left_width as u16 + right_width as u16 + 1)
-        .max(1);
-
-    let mut all_spans = left_spans;
-    all_spans.push(Span::raw(" ".repeat(gap as usize)));
-    all_spans.extend(right_spans);
-
-    let bar =
-        Paragraph::new(Line::from(all_spans)).style(Style::default().bg(state.theme.background));
-    frame.render_widget(bar, area);
 }
 
 fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {

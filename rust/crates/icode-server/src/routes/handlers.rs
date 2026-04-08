@@ -244,8 +244,8 @@ fn run_conversation_turn(
         .map_err(|e: String| e)?;
 
     let auth_source = resolve_auth_source().map_err(|e: api::ApiError| e.to_string())?;
-    let api_client =
-        ServerApiClient::new(handle.clone(), model.to_string(), auth_source).map_err(|e: api::ApiError| e.to_string())?;
+    let api_client = ServerApiClient::new(handle.clone(), model.to_string(), auth_source)
+        .map_err(|e: api::ApiError| e.to_string())?;
 
     let tool_executor = ServerToolExecutor;
 
@@ -409,17 +409,17 @@ impl RuntimeApiClient for ServerApiClient {
                             cb(runtime::AssistantEvent::MessageStop);
                         }
                     }
-                     #[allow(clippy::match_wildcard_for_single_variants)]
-                     ApiStreamEvent::MessageDelta(delta) => {
-                         if let Some(cb) = &progress {
-                             cb(runtime::AssistantEvent::Usage(delta.usage.token_usage()));
-                         }
-                     }
-                     ApiStreamEvent::MessageStart(_) => {}
-                 }
-             }
+                    #[allow(clippy::match_wildcard_for_single_variants)]
+                    ApiStreamEvent::MessageDelta(delta) => {
+                        if let Some(cb) = &progress {
+                            cb(runtime::AssistantEvent::Usage(delta.usage.token_usage()));
+                        }
+                    }
+                    ApiStreamEvent::MessageStart(_) => {}
+                }
+            }
 
-             Ok(events)
+            Ok(events)
         })
     }
 }

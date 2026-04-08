@@ -88,7 +88,8 @@ fn current_theme_id(api: &PluginApi<'_>) -> String {
     use crate::tui::theme_loader::THEMES;
     THEMES
         .iter()
-        .find(|entry| entry.theme.background == api.state.theme.background).map_or_else(|| "opencode".to_string(), |entry| entry.id.to_string())
+        .find(|entry| entry.theme.background == api.state.theme.background)
+        .map_or_else(|| "opencode".to_string(), |entry| entry.id.to_string())
 }
 
 fn update_slot(api: &mut PluginApi<'_>, theme_id: &str) {

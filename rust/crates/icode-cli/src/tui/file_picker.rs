@@ -187,7 +187,7 @@ pub fn read_file_content(path: &str) -> String {
                 content
             }
         }
-        Err(e) => format!("[Error reading file: {}]", e),
+        Err(e) => format!("[Error reading file: {e}]"),
     }
 }
 
@@ -213,7 +213,9 @@ pub fn parse_file_references(text: &str, cwd: &str) -> (String, Vec<ParsedFileRe
                 }
                 path.push(chars.next().unwrap_or(' '));
             }
-            if !path.is_empty() {
+            if path.is_empty() {
+                result.push('@');
+            } else {
                 let full_path = if std::path::Path::new(&path).exists() {
                     path.clone()
                 } else {
@@ -221,8 +223,6 @@ pub fn parse_file_references(text: &str, cwd: &str) -> (String, Vec<ParsedFileRe
                 };
                 let content = read_file_content(&full_path);
                 refs.push(ParsedFileRef { path, content });
-            } else {
-                result.push('@');
             }
         } else {
             result.push(ch);
@@ -296,12 +296,12 @@ impl FilePickerState {
     }
 
     pub fn selected(&self) -> Option<&str> {
-        self.matches.get(self.idx).map(|s| s.as_str())
+        self.matches.get(self.idx).map(String::as_str)
     }
 
     /// Format the selected file as an @reference.
     pub fn selected_reference(&self) -> Option<String> {
-        self.selected().map(|p| format!("@{}", p))
+        self.selected().map(|p| format!("@{p}"))
     }
 
     fn ensure_visible(&mut self) {

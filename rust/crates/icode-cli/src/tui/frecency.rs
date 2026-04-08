@@ -162,6 +162,12 @@ impl FrecencyStore {
             .collect()
     }
 
+    /// Get the frecency score for a specific text entry.
+    /// Returns 0.0 if the entry is not found.
+    pub fn get_score(&self, text: &str) -> f64 {
+        self.entries.get(text).map_or(0.0, FrecencyEntry::score)
+    }
+
     /// Check if there are unsaved changes.
     pub fn is_dirty(&self) -> bool {
         self.dirty

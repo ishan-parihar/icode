@@ -406,10 +406,9 @@ impl InputState {
         let mut char_offset = 0usize;
 
         for ch in self.value.chars() {
-            if row == target_row
-                && col >= target_col {
-                    return char_offset;
-                }
+            if row == target_row && col >= target_col {
+                return char_offset;
+            }
             if ch == '\n' {
                 if row == target_row {
                     return char_offset;
@@ -501,7 +500,8 @@ impl InputState {
             self.history
                 .iter()
                 .filter(|h| h.to_lowercase().starts_with(&prefix_lower))
-                .take(limit).cloned()
+                .take(limit)
+                .cloned()
                 .collect()
         }
     }
@@ -549,7 +549,8 @@ impl InputState {
             self.available_models
                 .iter()
                 .filter(|m| m.starts_with(partial))
-                .take(20).cloned()
+                .take(20)
+                .cloned()
                 .collect()
         } else if let Some(partial) = value.get(16..).filter(|_| {
             (value.starts_with("/session switch ") || value.starts_with("/session switch\t"))
@@ -558,7 +559,8 @@ impl InputState {
             self.available_sessions
                 .iter()
                 .filter(|s| s.starts_with(partial))
-                .take(20).cloned()
+                .take(20)
+                .cloned()
                 .collect()
         } else {
             return false;

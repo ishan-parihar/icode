@@ -69,7 +69,6 @@ impl PagerState {
     }
 }
 
-
 pub fn render_pager(
     frame: &mut Frame,
     state: &PagerState,

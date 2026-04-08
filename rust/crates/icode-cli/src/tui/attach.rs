@@ -210,7 +210,7 @@ pub fn attach_session(session_path: &Path) -> Result<AppState, String> {
         .unwrap_or_else(|| ".".to_string());
 
     // Build AppState from session data
-    let mut state = AppState::new("unknown", "workspace-write", &cwd);
+    let mut state = AppState::new("unknown", "workspace-write", &cwd, None);
 
     // Convert runtime messages to TUI messages
     state.messages.clear();

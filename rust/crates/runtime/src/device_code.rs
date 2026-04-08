@@ -23,7 +23,10 @@ pub async fn initiate_device_flow(
     scope: &str,
     device_authorization_url: &str,
 ) -> Result<DeviceCodeResponse, reqwest::Error> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("failed to build HTTP client");
     let params = [("client_id", client_id), ("scope", scope)];
     let resp = client
         .post(device_authorization_url)
@@ -42,7 +45,10 @@ pub async fn poll_for_token(
     interval_secs: u64,
     max_attempts: u32,
 ) -> Result<TokenResponse, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("failed to build HTTP client");
     let params = [
         ("client_id", client_id),
         ("device_code", device_code),

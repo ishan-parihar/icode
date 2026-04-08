@@ -3,8 +3,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
+use std::sync::Arc;
 
 use crate::tui::theme::Theme;
+use runtime::skill_manager::{SkillInfo, SkillManager, SkillSource};
 
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 16;
@@ -37,11 +39,12 @@ pub struct SkillsDialogState {
     pub search: String,
     pub filtered: Vec<usize>,
     pub section_offsets: Vec<(String, usize)>,
+    pub skill_manager: Option<Arc<SkillManager>>,
 }
 
 impl SkillsDialogState {
-    pub fn new() -> Self {
-        let skills = discover_skills();
+    pub fn new(skill_manager: Option<Arc<SkillManager>>) -> Self {
+        let skills = discover_skills(skill_manager.as_ref());
         Self {
             open: false,
             skills,
@@ -49,11 +52,12 @@ impl SkillsDialogState {
             search: String::new(),
             filtered: Vec::new(),
             section_offsets: Vec::new(),
+            skill_manager,
         }
     }
 
     pub fn open(&mut self) {
-        self.skills = discover_skills();
+        self.skills = discover_skills(self.skill_manager.as_ref());
         self.open = true;
         self.search.clear();
         self.cursor = 0;
@@ -104,50 +108,50 @@ impl SkillsDialogState {
                 || s.source.to_lowercase().contains(&query)
         };
 
-        let is_project = |s: &SkillEntry| -> bool { s.source.starts_with("project") };
-        let is_user = |s: &SkillEntry| -> bool { s.source.starts_with("user") };
-        let is_global = |s: &SkillEntry| -> bool { s.source.starts_with("global") };
+        let is_local = |s: &SkillEntry| -> bool { s.source == "local" };
+        let is_remote = |s: &SkillEntry| -> bool { s.source == "remote" };
+        let is_bundled = |s: &SkillEntry| -> bool { s.source == "bundled" };
 
-        let project_skills: Vec<usize> = self
+        let local_skills: Vec<usize> = self
             .skills
             .iter()
             .enumerate()
-            .filter(|(_, s)| is_project(s) && matches_query(s))
+            .filter(|(_, s)| is_local(s) && matches_query(s))
             .map(|(i, _)| i)
             .collect();
 
-        let user_skills: Vec<usize> = self
+        let remote_skills: Vec<usize> = self
             .skills
             .iter()
             .enumerate()
-            .filter(|(_, s)| is_user(s) && matches_query(s))
+            .filter(|(_, s)| is_remote(s) && matches_query(s))
             .map(|(i, _)| i)
             .collect();
 
-        let global_skills: Vec<usize> = self
+        let bundled_skills: Vec<usize> = self
             .skills
             .iter()
             .enumerate()
-            .filter(|(_, s)| is_global(s) && matches_query(s))
+            .filter(|(_, s)| is_bundled(s) && matches_query(s))
             .map(|(i, _)| i)
             .collect();
 
-        if !project_skills.is_empty() {
+        if !local_skills.is_empty() {
             self.section_offsets
-                .push(("Project Skills".to_string(), self.filtered.len()));
-            self.filtered.extend(project_skills);
+                .push(("Local Skills".to_string(), self.filtered.len()));
+            self.filtered.extend(local_skills);
         }
 
-        if !user_skills.is_empty() {
+        if !remote_skills.is_empty() {
             self.section_offsets
-                .push(("User Skills".to_string(), self.filtered.len()));
-            self.filtered.extend(user_skills);
+                .push(("Remote Skills".to_string(), self.filtered.len()));
+            self.filtered.extend(remote_skills);
         }
 
-        if !global_skills.is_empty() {
+        if !bundled_skills.is_empty() {
             self.section_offsets
-                .push(("Global Skills".to_string(), self.filtered.len()));
-            self.filtered.extend(global_skills);
+                .push(("Bundled Skills".to_string(), self.filtered.len()));
+            self.filtered.extend(bundled_skills);
         }
 
         if self.cursor >= self.filtered.len() {
@@ -170,24 +174,45 @@ impl Default for SkillsDialogState {
     }
 }
 
-fn discover_skills() -> Vec<SkillEntry> {
+fn discover_skills(manager: Option<&SkillManager>) -> Vec<SkillEntry> {
+    if let Some(manager) = manager {
+        manager
+            .all()
+            .into_iter()
+            .map(|info| SkillEntry {
+                name: info.name.clone(),
+                description: Some(info.description.clone()).filter(|d| !d.is_empty()),
+                source: match info.source {
+                    SkillSource::Local => "local".to_string(),
+                    SkillSource::Remote => "remote".to_string(),
+                    SkillSource::Bundled => "bundled".to_string(),
+                },
+                shadowed_by: info.shadowed_by.clone(),
+            })
+            .collect()
+    } else {
+        discover_skills_fallback()
+    }
+}
+
+fn discover_skills_fallback() -> Vec<SkillEntry> {
     let mut all: Vec<(String, SkillEntry)> = Vec::new();
     let mut dirs: Vec<(String, std::path::PathBuf)> = Vec::new();
 
     if let Ok(cwd) = std::env::current_dir() {
         let codex_skills = cwd.join(".codex").join("skills");
         if codex_skills.is_dir() {
-            dirs.push(("project".to_string(), codex_skills));
+            dirs.push(("local".to_string(), codex_skills));
         }
         let claude_skills = cwd.join(".claude").join("skills");
         if claude_skills.is_dir() {
-            dirs.push(("project".to_string(), claude_skills));
+            dirs.push(("local".to_string(), claude_skills));
         }
     }
     if let Ok(codex_home) = std::env::var("CODEX_HOME") {
         let p = std::path::PathBuf::from(&codex_home).join("skills");
         if p.is_dir() {
-            dirs.push(("project".to_string(), p));
+            dirs.push(("local".to_string(), p));
         }
     }
 
@@ -195,7 +220,7 @@ fn discover_skills() -> Vec<SkillEntry> {
         let home = std::path::PathBuf::from(home);
         let agents_skills = home.join(".agents").join("skills");
         if agents_skills.is_dir() {
-            dirs.push(("user".to_string(), agents_skills));
+            dirs.push(("local".to_string(), agents_skills));
         }
     }
 

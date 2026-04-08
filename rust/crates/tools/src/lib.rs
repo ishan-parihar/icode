@@ -42,8 +42,8 @@ use runtime::{
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
     ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock, ConversationMessage,
     ConversationRuntime, GrepSearchInput, LaneEvent, LaneEventBlocker, LaneFailureClass,
-    ListDirectoryInput, MessageRole, PermissionMode, PermissionPolicy,
-    PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor, TruncationPolicy,
+    ListDirectoryInput, MessageRole, PermissionMode, PermissionPolicy, PromptCacheEvent,
+    RuntimeError, Session, ToolError, ToolExecutor, TruncationPolicy,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

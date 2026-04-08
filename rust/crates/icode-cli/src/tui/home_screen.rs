@@ -1,12 +1,11 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::tui::theme::Theme;
 use crate::tui::theme::Theme;
 
 #[derive(Debug, Clone)]
@@ -162,23 +161,7 @@ impl Default for HomeScreenState {
     }
 }
 
-pub fn render_home_screen(frame: &mut Frame, area: Rect, state: &HomeScreenState, theme: Theme) {
-    frame.render_widget(
-        ratatui::widgets::Block::default().style(Style::default().bg(theme.background)),
-        area,
-    );
-
-    if area.width < 40 || area.height < 10 {
-        let minimal = Paragraph::new(Line::from(Span::styled(
-            "icode",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        frame.render_widget(minimal, area);
-        return;
-    }
-
+pub fn render_home_content(frame: &mut Frame, area: Rect, state: &HomeScreenState, theme: Theme) {
     let logo_height = state.logo_lines.len() as u16;
     let session_rows = state.sessions.len().min(10);
     let session_list_height = if session_rows > 0 {
@@ -318,22 +301,21 @@ pub fn render_home_screen(frame: &mut Frame, area: Rect, state: &HomeScreenState
             );
         }
     }
+}
 
-    let hints = build_key_hints(theme);
-    let hints_y = area.bottom().saturating_sub(1);
-    let hints_width = hints
-        .iter()
-        .map(|s| s.content.chars().count())
-        .sum::<usize>() as u16;
-    frame.render_widget(
-        Paragraph::new(Line::from(hints)).style(Style::default().bg(theme.background)),
-        Rect {
-            x: area.x + (area.width.saturating_sub(hints_width)) / 2,
-            y: hints_y,
-            width: hints_width.min(area.width),
-            height: 1,
-        },
-    );
+fn tint_color(base: Color, into: Color, factor: f32) -> Color {
+    let (br, bg, bb) = match base {
+        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
+        _ => return base,
+    };
+    let (ir, ig, ib) = match into {
+        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
+        _ => return into,
+    };
+    let r = (br + (ir - br) * factor).round() as u8;
+    let g = (bg + (ig - bg) * factor).round() as u8;
+    let b = (bb + (ib - bb) * factor).round() as u8;
+    Color::Rgb(r, g, b)
 }
 
 fn build_logo_spans(line: &str, theme: Theme) -> Vec<Span<'static>> {
@@ -368,31 +350,6 @@ fn build_logo_spans(line: &str, theme: Theme) -> Vec<Span<'static>> {
     if !current_i.is_empty() {
         spans.push(Span::styled(current_i, Style::default().fg(i_color)));
     }
-    spans
-}
-
-fn build_key_hints(theme: Theme) -> Vec<Span<'static>> {
-    let bg = theme.background_element;
-    fn kbd(
-        label: &str,
-        action: &str,
-        bg: ratatui::style::Color,
-        text_color: ratatui::style::Color,
-    ) -> Vec<Span<'static>> {
-        vec![
-            Span::styled(
-                format!("\u{250c}\u{2500}{label}\u{2500}\u{2510}"),
-                Style::default().fg(text_color).bg(bg),
-            ),
-            Span::styled(format!(" {action}  "), Style::default().fg(text_color)),
-        ]
-    }
-
-    let mut spans = Vec::new();
-    spans.extend(kbd("\u{2191}/\u{2193}", "navigate", bg, theme.text_muted));
-    spans.extend(kbd("Enter", "open", bg, theme.text_muted));
-    spans.extend(kbd("n", "new", bg, theme.text_muted));
-    spans.extend(kbd("q", "quit", bg, theme.text_muted));
     spans
 }
 

@@ -559,14 +559,14 @@ fn parse_todos_from_input(input_json: &str) -> Vec<TodoItemData> {
     arr.iter()
         .filter_map(|t| {
             let content = t.get("content").and_then(|v| v.as_str())?.to_string();
-            let status = t
-                .get("status")
-                .and_then(|v| v.as_str())
-                .map_or(TodoStatus::Pending, |s| match s {
-                    "completed" => TodoStatus::Completed,
-                    "in_progress" => TodoStatus::InProgress,
-                    _ => TodoStatus::Pending,
-                });
+            let status =
+                t.get("status")
+                    .and_then(|v| v.as_str())
+                    .map_or(TodoStatus::Pending, |s| match s {
+                        "completed" => TodoStatus::Completed,
+                        "in_progress" => TodoStatus::InProgress,
+                        _ => TodoStatus::Pending,
+                    });
             Some(TodoItemData { content, status })
         })
         .collect()
@@ -752,7 +752,10 @@ impl MessageList {
                                     duration_ms: 0,
                                 };
                                 let has_output = data.output.is_some()
-                                    && !data.output.as_ref().is_none_or(std::string::String::is_empty);
+                                    && !data
+                                        .output
+                                        .as_ref()
+                                        .is_none_or(std::string::String::is_empty);
                                 match data.status {
                                     ToolStatus::Pending | ToolStatus::Running => {
                                         items.push(RenderItem::ToolCallInline(data));
@@ -947,7 +950,8 @@ impl MessageList {
                     frame.render_widget(Paragraph::new(Line::from(spans.clone())), item_area);
                 }
                 RenderItem::TextLines(ls) => {
-                    let visible: Vec<Line<'_>> = ls[visible_start..visible_end.min(ls.len())].to_vec();
+                    let visible: Vec<Line<'_>> =
+                        ls[visible_start..visible_end.min(ls.len())].to_vec();
                     frame.render_widget(Paragraph::new(visible), item_area);
                 }
                 RenderItem::ToolCallInline(data) => {
@@ -982,7 +986,8 @@ impl MessageList {
                     );
                 }
                 RenderItem::Thinking(lines) => {
-                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())].to_vec();
+                    let visible: Vec<Line<'_>> =
+                        lines[visible_start..visible_end.min(lines.len())].to_vec();
                     let block = Block::new()
                         .borders(Borders::LEFT)
                         .border_type(BorderType::Double)
@@ -1054,7 +1059,8 @@ impl MessageList {
                     } else {
                         render_subagent_footer_collapsed(agents, &state.theme)
                     };
-                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())].to_vec();
+                    let visible: Vec<Line<'_>> =
+                        lines[visible_start..visible_end.min(lines.len())].to_vec();
                     frame.render_widget(Paragraph::new(visible), item_area);
                 }
             }

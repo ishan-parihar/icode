@@ -1,6 +1,7 @@
 use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
 use crate::tui::event::{Event, EventLoop, ParsedKey};
 use crate::tui::frecency::FrecencyStore;
+use crate::tui::home_screen::{HomeAction, HomeKeyResult};
 use crate::tui::input::InputState;
 use crate::tui::kitty::KittyKeyboard;
 use crate::tui::layout::render_ui;
@@ -15,9 +16,11 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use runtime::skill_manager::SkillManager;
 use std::io;
 use std::io::Write;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct Tui {
@@ -26,6 +29,7 @@ pub struct Tui {
     state: AppState,
     theme: Theme,
     turn_rx: Option<Receiver<TurnEvent>>,
+    skill_manager: Arc<SkillManager>,
 }
 
 impl Tui {
@@ -37,7 +41,19 @@ impl Tui {
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         let event_loop = EventLoop::new(250);
-        let mut state = AppState::new(model, permission_mode, cwd);
+
+        let cwd_path = std::path::PathBuf::from(cwd);
+        let local_roots = vec![
+            cwd_path.join(".claude").join("skills"),
+            cwd_path.join(".agents").join("skills"),
+        ];
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join("icode")
+            .join("skills");
+        let skill_manager = Arc::new(SkillManager::new(&local_roots, cache_dir));
+
+        let mut state = AppState::new(model, permission_mode, cwd, Some(skill_manager.clone()));
         let theme = Theme::default();
 
         let models: Vec<String> = state
@@ -68,6 +84,7 @@ impl Tui {
             state,
             theme,
             turn_rx: None,
+            skill_manager,
         })
     }
 
@@ -269,6 +286,68 @@ impl Tui {
 
         if self.state.pager.open {
             return self.handle_pager_key(key);
+        }
+
+        // Home screen mode: when messages are empty, let home screen handle input
+        if self.state.messages.is_empty() {
+            match key.code {
+                KeyCode::Enter => {
+                    let action = self.state.home_screen.handle_key(key.code);
+                    match action {
+                        HomeKeyResult::Action(HomeAction::OpenSession(session_id)) => {
+                            return Some(format!("__session_open__{}", session_id));
+                        }
+                        HomeKeyResult::Action(HomeAction::NewSession) => {
+                            return Some("__new_session__".to_string());
+                        }
+                        HomeKeyResult::Action(HomeAction::Quit) => {
+                            return Some(String::new());
+                        }
+                        HomeKeyResult::None => {
+                            return None;
+                        }
+                        HomeKeyResult::TypeChar(c) => {
+                            self.state.prompt.insert_char(c);
+                            return None;
+                        }
+                    }
+                }
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('n') | KeyCode::Char('q') => {
+                    self.state.home_screen.handle_key(key.code);
+                    return None;
+                }
+                KeyCode::Char(c) => {
+                    self.state.prompt.insert_char(c);
+                    return None;
+                }
+                KeyCode::Backspace => {
+                    self.state.prompt.backspace();
+                    return None;
+                }
+                KeyCode::Delete => {
+                    self.state.prompt.delete();
+                    return None;
+                }
+                KeyCode::Left => {
+                    self.state.prompt.move_left();
+                    return None;
+                }
+                KeyCode::Right => {
+                    self.state.prompt.move_right();
+                    return None;
+                }
+                KeyCode::Home => {
+                    self.state.prompt.move_home();
+                    return None;
+                }
+                KeyCode::End => {
+                    self.state.prompt.move_end();
+                    return None;
+                }
+                _ => {
+                    // Let normal handling proceed
+                }
+            }
         }
 
         if self.state.diff_view.is_some() {
@@ -2044,9 +2123,9 @@ impl Tui {
                                     TS::Pending | TS::Running => {
                                         let cmd = if input_summary.is_empty() {
                                             String::new()
-                                        } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(
-                                            input_summary,
-                                        ) {
+                                        } else if let Ok(val) =
+                                            serde_json::from_str::<serde_json::Value>(input_summary)
+                                        {
                                             val.get("command")
                                                 .or_else(|| val.get("cmd"))
                                                 .and_then(|v| v.as_str())
@@ -2110,8 +2189,7 @@ impl Tui {
                         content_lines.push(String::new());
                     }
                     let tool = self.state.tools.iter().rev().find(|t| &t.name == name);
-                    let status = tool
-                        .map_or(crate::tui::app::ToolStatus::Completed, |t| t.status);
+                    let status = tool.map_or(crate::tui::app::ToolStatus::Completed, |t| t.status);
                     let icon = match status {
                         crate::tui::app::ToolStatus::Pending
                         | crate::tui::app::ToolStatus::Running => "○",

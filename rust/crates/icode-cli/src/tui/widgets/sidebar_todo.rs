@@ -296,7 +296,7 @@ mod tests {
             model_picker: crate::tui::model_picker::ModelPickerState::new(),
             command_palette: crate::tui::command_palette::CommandPaletteState::new(),
             mcp_dialog: crate::tui::dialog_mcp::McpDialogState::new(),
-            skills_dialog: crate::tui::dialog_skills::SkillsDialogState::new(),
+            skills_dialog: crate::tui::dialog_skills::SkillsDialogState::new(None),
             theme_list_dialog: crate::tui::dialog_theme_list::ThemeListDialogState::new("opencode"),
             plugins_dialog: crate::tui::dialog_plugins::PluginsDialogState::new(),
             sessions_dialog: crate::tui::dialog_sessions::SessionsDialogState::new(),

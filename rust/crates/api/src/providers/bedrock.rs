@@ -33,7 +33,10 @@ impl BedrockClient {
         region: impl Into<String>,
     ) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("failed to build HTTP client"),
             access_key_id: access_key_id.into(),
             secret_access_key: secret_access_key.into(),
             region: region.into(),

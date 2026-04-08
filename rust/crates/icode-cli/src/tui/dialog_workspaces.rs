@@ -171,9 +171,9 @@ impl WorkspaceDialogState {
         if !sessions_dir.is_dir() {
             return 0;
         }
-        std::fs::read_dir(&sessions_dir)
-            .ok()
-            .map_or(0, |entries| entries.filter_map(std::result::Result::ok).count())
+        std::fs::read_dir(&sessions_dir).ok().map_or(0, |entries| {
+            entries.filter_map(std::result::Result::ok).count()
+        })
     }
 
     fn last_active(marker_dir: &PathBuf) -> u128 {

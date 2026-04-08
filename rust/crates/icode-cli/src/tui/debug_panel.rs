@@ -314,10 +314,11 @@ fn render_app_state_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &AppSt
             Span::styled("Sidebar:  ", Style::default().fg(theme.text_muted)),
             Span::styled(
                 (if app.sidebar_visible {
-                        "visible"
-                    } else {
-                        "hidden"
-                    }).to_string(),
+                    "visible"
+                } else {
+                    "hidden"
+                })
+                .to_string(),
                 Style::default().fg(theme.text),
             ),
         ]),
@@ -380,10 +381,7 @@ fn render_event_log_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &AppSt
                 crate::tui::app::ToolStatus::Pending => theme.text_muted,
             };
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{status_icon} "),
-                    Style::default().fg(status_color),
-                ),
+                Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
                 Span::styled(&tool.name, Style::default().fg(theme.text)),
                 Span::styled(": ", Style::default().fg(theme.text_muted)),
                 Span::styled(&tool.input_summary, Style::default().fg(theme.text_muted)),
@@ -416,10 +414,7 @@ fn render_memory_tab(frame: &mut Frame, area: Rect, theme: Theme) {
                                 format!("{key:<8}"),
                                 Style::default().fg(theme.text_muted),
                             ),
-                            Span::styled(
-                                format!("{val} {unit}"),
-                                Style::default().fg(theme.text),
-                            ),
+                            Span::styled(format!("{val} {unit}"), Style::default().fg(theme.text)),
                         ]));
                     }
                 }

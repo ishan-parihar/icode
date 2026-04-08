@@ -254,12 +254,12 @@ fn handle_session_message(
     params: Option<&serde_json::Value>,
 ) -> JsonRpcResponse {
     let Some(params) = params else {
-            return JsonRpcResponse::error(
-                id.cloned(),
-                -32602,
-                "Missing params: requires { session_id, message }",
-            );
-        };
+        return JsonRpcResponse::error(
+            id.cloned(),
+            -32602,
+            "Missing params: requires { session_id, message }",
+        );
+    };
 
     let message = match params.get("message").and_then(|v| v.as_str()) {
         Some(m) => m.to_string(),
@@ -395,7 +395,7 @@ impl AcpApiClient {
 }
 
 impl runtime::ApiClient for AcpApiClient {
-#[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     fn stream(
         &mut self,
         request: runtime::ApiRequest,
@@ -538,7 +538,7 @@ impl runtime::ApiClient for AcpApiClient {
                         if let Some((id, name, input)) = pending_tool.take() {
                             if let Some(cb) = &progress {
                                 cb(runtime::AssistantEvent::ToolUse {
-                                id: id.clone(),
+                                    id: id.clone(),
                                     name: name.clone(),
                                     input: input.clone(),
                                 });
@@ -617,12 +617,10 @@ fn build_system_prompt(cwd: &PathBuf) -> anyhow::Result<Vec<String>> {
 fn os_release() -> String {
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string("/proc/version")
-            .ok()
-            .map_or_else(
-                || "linux".to_string(),
-                |v| v.split_whitespace().take(3).collect::<Vec<_>>().join(" "),
-            )
+        std::fs::read_to_string("/proc/version").ok().map_or_else(
+            || "linux".to_string(),
+            |v| v.split_whitespace().take(3).collect::<Vec<_>>().join(" "),
+        )
     }
     #[cfg(not(target_os = "linux"))]
     {

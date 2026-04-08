@@ -94,9 +94,10 @@ impl PluginWatcher {
             let path = entry.path();
 
             if path.is_dir() {
-                if path.file_name().is_some_and(|n| {
-                    n == "target" || n.to_string_lossy().starts_with('.')
-                }) {
+                if path
+                    .file_name()
+                    .is_some_and(|n| n == "target" || n.to_string_lossy().starts_with('.'))
+                {
                     continue;
                 }
                 let _ = self.scan_dir(&path, files);

@@ -213,7 +213,8 @@ impl Completer for SlashCommandHelper {
                     .available_models
                     .iter()
                     .filter(|m| m.starts_with(&partial))
-                    .take(20).cloned()
+                    .take(20)
+                    .cloned()
                     .collect();
                 (start, comps)
             }
@@ -224,7 +225,8 @@ impl Completer for SlashCommandHelper {
                     .available_sessions
                     .iter()
                     .filter(|s| s.starts_with(&partial))
-                    .take(20).cloned()
+                    .take(20)
+                    .cloned()
                     .collect();
                 (start, comps)
             }

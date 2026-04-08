@@ -81,6 +81,7 @@ impl SkillRegistry {
         &self.skills
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&SkillEntry> {
         self.skills
@@ -89,6 +90,7 @@ impl SkillRegistry {
             .map(|idx| &self.skills[idx])
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub fn format_for_system_prompt(&self) -> String {
         if self.skills.is_empty() {
@@ -110,11 +112,13 @@ impl SkillRegistry {
         xml
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub fn len(&self) -> usize {
         self.skills.len()
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
@@ -133,6 +137,7 @@ fn parse_skill_description(content: &str) -> String {
     String::new()
 }
 
+#[allow(dead_code)]
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -141,6 +146,7 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+#[allow(dead_code)]
 #[must_use]
 pub fn default_skill_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();

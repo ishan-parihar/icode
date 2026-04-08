@@ -2155,7 +2155,7 @@ pub fn list_themes() -> Vec<&'static str> {
 
 /// List themes grouped by category.
 pub fn list_themes_by_category() -> Vec<(ThemeCategory, Vec<&'static ThemeEntry>)> {
-    use ThemeCategory::{Default, Popular, Dark, Light, AMOLED, Colorful};
+    use ThemeCategory::{Colorful, Dark, Default, Light, Popular, AMOLED};
     let order = [Default, Popular, Dark, Light, AMOLED, Colorful];
     order
         .into_iter()

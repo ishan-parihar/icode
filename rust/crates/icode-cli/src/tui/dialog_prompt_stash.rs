@@ -232,16 +232,18 @@ impl PromptStashState {
 
             (_, KeyCode::Up) => {
                 if matches!(self.mode, StashMode::Browsing | StashMode::SearchInput)
-                    && self.selected > 0 {
-                        self.selected -= 1;
-                    }
+                    && self.selected > 0
+                {
+                    self.selected -= 1;
+                }
                 StashAction::None
             }
             (_, KeyCode::Down) => {
                 if matches!(self.mode, StashMode::Browsing | StashMode::SearchInput)
-                    && self.selected < self.filtered.len().saturating_sub(1) {
-                        self.selected += 1;
-                    }
+                    && self.selected < self.filtered.len().saturating_sub(1)
+                {
+                    self.selected += 1;
+                }
                 StashAction::None
             }
             (_, KeyCode::PageUp) => {

@@ -18,6 +18,8 @@ pub mod lsp_client;
 mod mcp;
 mod mcp_client;
 pub mod mcp_lifecycle_hardened;
+mod mcp_oauth_flow;
+pub mod mcp_oauth_store;
 mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod oauth;
@@ -36,6 +38,8 @@ mod session;
 pub mod session_control;
 pub mod skill_discovery;
 pub mod skill_index;
+pub mod skill_manager;
+mod skill_registry;
 pub mod sqlite_store;
 mod sse;
 pub mod stale_branch;
@@ -96,6 +100,10 @@ pub use mcp_client::{
 pub use mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase, McpLifecycleState,
     McpLifecycleValidator, McpPhaseResult,
+};
+pub use mcp_oauth_flow::{
+    build_registration_body, build_token_exchange_form, CallbackHandle, ClientRegistration,
+    McpOAuthError, McpOAuthFlow, McpOAuthStore, McpServerCredentials, OAuthMetadata,
 };
 pub use mcp_stdio::{
     spawn_mcp_stdio_process, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse,

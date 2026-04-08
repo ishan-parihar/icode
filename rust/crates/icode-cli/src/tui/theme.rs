@@ -208,6 +208,7 @@ impl Theme {
     pub fn display_name(name: &str) -> String {
         super::theme_loader::THEMES
             .iter()
-            .find(|e| e.id == name).map_or_else(|| name.to_string(), |e| e.display_name.to_string())
+            .find(|e| e.id == name)
+            .map_or_else(|| name.to_string(), |e| e.display_name.to_string())
     }
 }

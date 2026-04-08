@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::tui::command_palette::CommandPaletteState;
@@ -17,6 +18,7 @@ use crate::tui::dialog_sessions::SessionsDialogState;
 use crate::tui::dialog_skills::SkillsDialogState;
 use crate::tui::dialog_theme_list::ThemeListDialogState;
 use crate::tui::dialog_workspaces::WorkspaceDialogState;
+use crate::tui::home_screen::HomeScreenState;
 use crate::tui::input::InputState;
 use crate::tui::model_picker::ModelPickerState;
 use crate::tui::plugin::{PluginRoute, PluginSlot, SlotContent};
@@ -184,6 +186,7 @@ pub struct AppState {
     pub prompt_stash: PromptStashState,
     pub export_options: ExportOptionsState,
     pub debug_panel: DebugPanelState,
+    pub home_screen: HomeScreenState,
     pub provider_dialog: ProviderDialogState,
     pub workspace_dialog: WorkspaceDialogState,
     pub skill_count: usize,
@@ -263,7 +266,12 @@ fn save_theme(name: &str) {
 }
 
 impl AppState {
-    pub fn new(model: &str, permission_mode: &str, cwd: &str) -> Self {
+    pub fn new(
+        model: &str,
+        permission_mode: &str,
+        cwd: &str,
+        skill_manager: Option<Arc<runtime::skill_manager::SkillManager>>,
+    ) -> Self {
         let caps = capabilities_for_model(model);
         let theme = load_theme();
         Self {
@@ -305,7 +313,7 @@ impl AppState {
             model_picker: ModelPickerState::new(),
             command_palette: CommandPaletteState::new(),
             mcp_dialog: McpDialogState::new(),
-            skills_dialog: SkillsDialogState::new(),
+            skills_dialog: SkillsDialogState::new(skill_manager),
             theme_list_dialog: ThemeListDialogState::new(&load_theme_id()),
             plugins_dialog: PluginsDialogState::new(),
             sessions_dialog: SessionsDialogState::new(),
@@ -316,6 +324,7 @@ impl AppState {
             prompt_stash: PromptStashState::new(),
             export_options: ExportOptionsState::new(),
             debug_panel: DebugPanelState::new(),
+            home_screen: HomeScreenState::new(),
             provider_dialog: ProviderDialogState::new(),
             workspace_dialog: WorkspaceDialogState::new(),
             skill_count: 0,
@@ -370,7 +379,8 @@ impl AppState {
         use crate::tui::theme_loader::THEMES;
         THEMES
             .iter()
-            .find(|entry| entry.theme.background == self.theme.background).map_or_else(|| "opencode".to_string(), |entry| entry.id.to_string())
+            .find(|entry| entry.theme.background == self.theme.background)
+            .map_or_else(|| "opencode".to_string(), |entry| entry.id.to_string())
     }
 
     pub fn add_user_message(&mut self, content: String) {
@@ -452,7 +462,9 @@ impl AppState {
     pub fn append_thinking(&mut self, delta: &str) {
         if let Some(msg) = self.messages.last_mut() {
             if msg.is_streaming {
-                if let Some(MessagePart::Thinking { content }) = msg.parts.last_mut() { content.push_str(delta) }
+                if let Some(MessagePart::Thinking { content }) = msg.parts.last_mut() {
+                    content.push_str(delta)
+                }
             }
         }
     }
@@ -723,14 +735,12 @@ impl AppState {
     }
 
     pub fn tool_count_for_message(&self, msg_idx: usize) -> usize {
-        self.messages
-            .get(msg_idx)
-            .map_or(0, |m| {
-                m.parts
-                    .iter()
-                    .filter(|p| matches!(p, MessagePart::ToolCall { .. }))
-                    .count()
-            })
+        self.messages.get(msg_idx).map_or(0, |m| {
+            m.parts
+                .iter()
+                .filter(|p| matches!(p, MessagePart::ToolCall { .. }))
+                .count()
+        })
     }
 
     pub fn add_sub_agent(&mut self, agent: SubAgentInfo) {

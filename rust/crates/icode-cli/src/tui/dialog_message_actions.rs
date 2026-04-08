@@ -1,8 +1,9 @@
+use crate::tui::popup_utils;
 use crate::tui::theme::Theme;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,12 +13,20 @@ pub enum MessageAction {
     Fork,
 }
 
+/// A single option in the message action dialog, matching DialogSelect styling.
+pub struct DialogSelectOption {
+    pub title: String,
+    pub value: MessageAction,
+    pub description: String,
+}
+
 pub struct MessageActionDialogState {
     pub open: bool,
     pub message_id: usize,
     pub message_content: String,
     pub selected: usize,
-    pub options: Vec<(MessageAction, &'static str, &'static str)>,
+    pub filter: String,
+    options: Vec<DialogSelectOption>,
 }
 
 impl MessageActionDialogState {
@@ -27,19 +36,39 @@ impl MessageActionDialogState {
             message_id: 0,
             message_content: String::new(),
             selected: 0,
+            filter: String::new(),
             options: vec![
-                (
-                    MessageAction::Revert,
-                    "Revert",
-                    "undo messages and file changes",
-                ),
-                (MessageAction::Copy, "Copy", "message text to clipboard"),
-                (
-                    MessageAction::Fork,
-                    "Fork",
-                    "create a new session from here",
-                ),
+                DialogSelectOption {
+                    title: "Revert".to_string(),
+                    value: MessageAction::Revert,
+                    description: "undo messages and file changes".to_string(),
+                },
+                DialogSelectOption {
+                    title: "Copy".to_string(),
+                    value: MessageAction::Copy,
+                    description: "message text to clipboard".to_string(),
+                },
+                DialogSelectOption {
+                    title: "Fork".to_string(),
+                    value: MessageAction::Fork,
+                    description: "create a new session from here".to_string(),
+                },
             ],
+        }
+    }
+
+    fn filtered_options(&self) -> Vec<&DialogSelectOption> {
+        if self.filter.is_empty() {
+            self.options.iter().collect()
+        } else {
+            let lower = self.filter.to_lowercase();
+            self.options
+                .iter()
+                .filter(|o| {
+                    o.title.to_lowercase().contains(&lower)
+                        || o.description.to_lowercase().contains(&lower)
+                })
+                .collect()
         }
     }
 
@@ -48,6 +77,7 @@ impl MessageActionDialogState {
         self.message_id = message_id;
         self.message_content = content;
         self.selected = 0;
+        self.filter.clear();
     }
 
     pub fn close(&mut self) {
@@ -68,15 +98,21 @@ impl MessageActionDialogState {
                 None
             }
             KeyCode::Down => {
-                if self.selected < self.options.len().saturating_sub(1) {
+                let filtered = self.filtered_options();
+                if self.selected < filtered.len().saturating_sub(1) {
                     self.selected += 1;
                 }
                 None
             }
             KeyCode::Enter => {
-                let action = self.options[self.selected].0.clone();
-                self.close();
-                Some(action)
+                let filtered = self.filtered_options();
+                if let Some(opt) = filtered.get(self.selected) {
+                    let action = opt.value.clone();
+                    self.close();
+                    Some(action)
+                } else {
+                    None
+                }
             }
             KeyCode::Char('1') => {
                 self.close();
@@ -90,18 +126,19 @@ impl MessageActionDialogState {
                 self.close();
                 Some(MessageAction::Fork)
             }
+            KeyCode::Backspace => {
+                self.filter.pop();
+                self.selected = 0;
+                None
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                self.filter.push(c);
+                self.selected = 0;
+                None
+            }
             _ => None,
         }
     }
-}
-
-fn dialog_width(screen_width: u16) -> u16 {
-    let w = (screen_width as f32 * 0.5) as u16;
-    w.clamp(30, 60)
-}
-
-fn dialog_height(_screen_height: u16) -> u16 {
-    12
 }
 
 pub fn render_message_action_dialog(
@@ -114,25 +151,20 @@ pub fn render_message_action_dialog(
         return;
     }
 
-    let width = dialog_width(area.width).min(area.width.saturating_sub(4));
-    let height = dialog_height(area.height).min(area.height.saturating_sub(4));
-    let x = area.x + (area.width - width) / 2;
-    let y = area.y + (area.height - height) / 2;
-    let dialog_area = Rect::new(x, y, width, height);
+    let filtered = state.filtered_options();
+    let option_count = filtered.len() as u16;
+    let content_height = 2 + option_count * 2;
+
+    let dialog_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border_active))
-        .border_type(BorderType::Rounded)
-        .title(Span::styled(
-            " Message Actions ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(Alignment::Center);
+    let block = popup_utils::left_border_block(
+        theme,
+        theme.warning,
+        "Message Actions",
+        Some(theme.background_panel),
+    );
 
     frame.render_widget(block.clone(), dialog_area);
 
@@ -141,88 +173,244 @@ pub fn render_message_action_dialog(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Min(1),
+            Constraint::Min(option_count * 2),
             Constraint::Length(1),
         ])
         .split(inner);
 
-    let preview = if state.message_content.len() > (width as usize).saturating_sub(6) {
-        format!(
-            "  \"{}...\"",
-            &state.message_content[..(width as usize).saturating_sub(10)]
-        )
-    } else {
-        format!("  \"{}\"", state.message_content)
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            preview,
-            Style::default()
-                .fg(theme.text_muted)
-                .add_modifier(Modifier::ITALIC),
-        )),
-        chunks[0],
-    );
+    let title_spans = vec![
+        Span::styled(
+            "Message Actions",
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled("esc", Style::default().fg(theme.text_muted)),
+    ];
+    frame.render_widget(Paragraph::new(Line::from(title_spans)), chunks[0]);
 
-    let option_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(
-            state
-                .options
-                .iter()
-                .map(|_| Constraint::Length(1))
-                .collect::<Vec<_>>(),
-        )
-        .split(chunks[1]);
+    if option_count > 0 {
+        let option_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(
+                (0..option_count)
+                    .map(|_| Constraint::Length(2))
+                    .collect::<Vec<_>>(),
+            )
+            .split(chunks[1]);
 
-    for (i, (action, label, desc)) in state.options.iter().enumerate() {
-        let _ = action;
-        let is_selected = i == state.selected;
-        let num = i + 1;
-        let line = if is_selected {
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!("{num}. "),
-                    Style::default()
-                        .fg(theme.primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    label.to_string(),
-                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!(" - {desc}"), Style::default().fg(theme.text_muted)),
-            ])
-        } else {
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(format!("{num}. "), Style::default().fg(theme.text_muted)),
-                Span::styled(label.to_string(), Style::default().fg(theme.text)),
-                Span::styled(format!(" - {desc}"), Style::default().fg(theme.text_muted)),
-            ])
-        };
-        let line_area = Rect {
-            x: option_chunks[i].x,
-            y: option_chunks[i].y,
-            width: option_chunks[i].width,
-            height: 1,
-        };
-        if is_selected {
-            frame.render_widget(
-                Paragraph::new(line).style(Style::default().bg(theme.background_element)),
-                line_area,
-            );
-        } else {
-            frame.render_widget(Paragraph::new(line), line_area);
+        for (i, opt) in filtered.iter().enumerate() {
+            let is_selected = i == state.selected;
+
+            let bullet_style = if is_selected {
+                Style::default().fg(theme.primary)
+            } else {
+                Style::default().fg(theme.text_muted)
+            };
+
+            let title_style = if is_selected {
+                Style::default()
+                    .fg(theme.text_inverse)
+                    .bg(theme.primary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+            };
+
+            let desc_style = if is_selected {
+                Style::default().fg(theme.text_inverse).bg(theme.primary)
+            } else {
+                Style::default().fg(theme.text_muted)
+            };
+
+            let line = Line::from(vec![
+                Span::styled("● ", bullet_style),
+                Span::styled(opt.title.clone(), title_style),
+                Span::raw(" "),
+                Span::styled(opt.description.clone(), desc_style),
+            ]);
+
+            frame.render_widget(Paragraph::new(line), option_chunks[i]);
         }
     }
 
-    let hint = Span::styled(
-        "1/2/3: select  •  Enter: confirm  •  Esc: close",
-        Style::default()
-            .fg(theme.text_muted)
-            .add_modifier(Modifier::ITALIC),
+    // Hint bar
+    popup_utils::render_hint_bar(
+        frame,
+        chunks[2],
+        &[("1/2/3", "select"), ("enter", "confirm"), ("esc", "close")],
+        theme,
     );
-    frame.render_widget(Paragraph::new(hint), chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_initial_state() {
+        let state = MessageActionDialogState::new();
+        assert!(!state.open);
+        assert_eq!(state.selected, 0);
+        assert!(state.filter.is_empty());
+        assert_eq!(state.options.len(), 3);
+    }
+
+    #[test]
+    fn test_open_and_close() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test content".to_string());
+        assert!(state.open);
+        assert_eq!(state.message_id, 1);
+        assert_eq!(state.message_content, "test content");
+
+        state.close();
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn test_enter_selects_current() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        let result = state.handle_key(crossterm::event::KeyCode::Down);
+        assert!(result.is_none());
+
+        let result = state.handle_key(crossterm::event::KeyCode::Enter);
+        assert_eq!(result, Some(MessageAction::Copy));
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn test_numeric_shortcut_revert() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        let result = state.handle_key(crossterm::event::KeyCode::Char('1'));
+        assert_eq!(result, Some(MessageAction::Revert));
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn test_numeric_shortcut_copy() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        let result = state.handle_key(crossterm::event::KeyCode::Char('2'));
+        assert_eq!(result, Some(MessageAction::Copy));
+    }
+
+    #[test]
+    fn test_numeric_shortcut_fork() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        let result = state.handle_key(crossterm::event::KeyCode::Char('3'));
+        assert_eq!(result, Some(MessageAction::Fork));
+    }
+
+    #[test]
+    fn test_esc_closes() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        let result = state.handle_key(crossterm::event::KeyCode::Esc);
+        assert!(result.is_none());
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn test_filter_reduces_options() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        state.handle_key(crossterm::event::KeyCode::Char('c'));
+        assert_eq!(state.filter, "c");
+
+        let filtered = state.filtered_options();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].value, MessageAction::Copy);
+    }
+
+    #[test]
+    fn test_filter_resets_selection() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        state.handle_key(crossterm::event::KeyCode::Down);
+        state.handle_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.selected, 2);
+
+        // Filtering should reset selection
+        state.handle_key(crossterm::event::KeyCode::Char('c'));
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn test_backspace_removes_filter() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        state.handle_key(crossterm::event::KeyCode::Char('c'));
+        assert_eq!(state.filter, "c");
+
+        state.handle_key(crossterm::event::KeyCode::Backspace);
+        assert_eq!(state.filter, "");
+        assert_eq!(state.filtered_options().len(), 3);
+    }
+
+    #[test]
+    fn test_filter_case_insensitive() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        state.handle_key(crossterm::event::KeyCode::Char('R'));
+        let filtered = state.filtered_options();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].value, MessageAction::Revert);
+    }
+
+    #[test]
+    fn test_up_down_navigation_with_filter() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        // Navigate normally
+        state.handle_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.selected, 1);
+        state.handle_key(crossterm::event::KeyCode::Up);
+        assert_eq!(state.selected, 0);
+
+        // Up at top stays at top
+        state.handle_key(crossterm::event::KeyCode::Up);
+        assert_eq!(state.selected, 0);
+
+        // Down at bottom stays at bottom
+        state.handle_key(crossterm::event::KeyCode::Down);
+        state.handle_key(crossterm::event::KeyCode::Down);
+        state.handle_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.selected, 2);
+    }
+
+    #[test]
+    fn test_control_chars_ignored() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        // Control characters should be ignored (not added to filter)
+        state.handle_key(crossterm::event::KeyCode::Tab);
+        assert!(state.filter.is_empty());
+    }
+
+    #[test]
+    fn test_filter_by_description() {
+        let mut state = MessageActionDialogState::new();
+        state.open(1, "test".to_string());
+
+        // "clipboard" appears in Copy's description
+        let lower = "clipboard".to_string();
+        state.filter = lower;
+        let filtered = state.filtered_options();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].value, MessageAction::Copy);
+    }
 }

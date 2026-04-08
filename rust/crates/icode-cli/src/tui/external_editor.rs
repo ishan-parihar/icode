@@ -56,7 +56,8 @@ fn run_editor(editor: &str, path: &PathBuf) -> Result<(), String> {
             "Editor '{}' exited with status: {}",
             editor,
             status
-                .code().map_or_else(|| "unknown".to_string(), |c| c.to_string())
+                .code()
+                .map_or_else(|| "unknown".to_string(), |c| c.to_string())
         ));
     }
 
@@ -146,9 +147,7 @@ mod tests {
         let temp_path = create_temp_file(content).expect("should create temp file");
 
         let read_content = read_temp_file(&temp_path).expect("should read content");
-        let stripped = read_content
-            .trim_end_matches(['\n', '\r'])
-            .to_string();
+        let stripped = read_content.trim_end_matches(['\n', '\r']).to_string();
         assert_eq!(stripped, "hello");
 
         let _ = fs::remove_file(&temp_path);
@@ -160,9 +159,7 @@ mod tests {
         let temp_path = create_temp_file(content).expect("should create temp file");
 
         let read_content = read_temp_file(&temp_path).expect("should read content");
-        let stripped = read_content
-            .trim_end_matches(['\n', '\r'])
-            .to_string();
+        let stripped = read_content.trim_end_matches(['\n', '\r']).to_string();
         assert_eq!(stripped, "test");
 
         let _ = fs::remove_file(&temp_path);
@@ -174,9 +171,7 @@ mod tests {
         let temp_path = create_temp_file(content).expect("should create temp file");
 
         let read_content = read_temp_file(&temp_path).expect("should read content");
-        let stripped = read_content
-            .trim_end_matches(['\n', '\r'])
-            .to_string();
+        let stripped = read_content.trim_end_matches(['\n', '\r']).to_string();
         assert_eq!(stripped, "line1\nline2\nline3");
 
         let _ = fs::remove_file(&temp_path);

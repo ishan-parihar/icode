@@ -136,7 +136,8 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
                             if let Ok(parsed) =
                                 serde_json::from_str::<serde_json::Value>(input_summary)
                             {
-                                let _ = write!(output,
+                                let _ = write!(
+                                    output,
                                     "```json\n{}\n```\n\n",
                                     serde_json::to_string_pretty(&parsed)
                                         .unwrap_or_else(|_| input_summary.clone())
@@ -150,7 +151,8 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
                                 if out.lines().count() > 20 {
                                     let preview: String =
                                         out.lines().take(20).collect::<Vec<_>>().join("\n");
-                                    let _ = write!(output,
+                                    let _ = write!(
+                                        output,
                                         "```\n{}\n...\n(+ {} more lines)\n```\n\n",
                                         preview,
                                         out.lines().count() - 20
@@ -182,18 +184,13 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
     output.push_str("---\n\n");
     output.push_str("## Session Stats\n\n");
     let _ = writeln!(output, "- **Turns**: {}", state.session.turns);
-    let _ = writeln!(output, 
-        "- **Input tokens**: {}",
-        state.session.input_tokens
-    );
-    let _ = writeln!(output, 
+    let _ = writeln!(output, "- **Input tokens**: {}", state.session.input_tokens);
+    let _ = writeln!(
+        output,
         "- **Output tokens**: {}",
         state.session.output_tokens
     );
-    let _ = writeln!(output, 
-        "- **Cost**: ${:.4}",
-        state.session.cumulative_cost
-    );
+    let _ = writeln!(output, "- **Cost**: ${:.4}", state.session.cumulative_cost);
 
     Ok(output)
 }
@@ -303,7 +300,7 @@ mod tests {
     use super::*;
 
     fn test_state() -> AppState {
-        let mut state = AppState::new("sonnet", "workspace-write", "/tmp");
+        let mut state = AppState::new("sonnet", "workspace-write", "/tmp", None);
         state.session.id = "test-123".to_string();
         state
     }
