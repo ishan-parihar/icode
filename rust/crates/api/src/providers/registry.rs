@@ -17,6 +17,7 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             providers: HashMap::new(),
@@ -25,12 +26,14 @@ impl ProviderRegistry {
     pub fn register(&mut self, name: String, provider: RegisteredProvider) {
         self.providers.insert(name, provider);
     }
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&RegisteredProvider> {
         self.providers.get(name)
     }
     pub fn list(&self) -> impl Iterator<Item = (&String, &RegisteredProvider)> {
         self.providers.iter()
     }
+    #[must_use]
     pub fn has_provider(&self, name: &str) -> bool {
         self.providers.contains_key(name)
     }

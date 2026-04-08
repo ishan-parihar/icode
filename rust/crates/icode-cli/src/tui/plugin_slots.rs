@@ -161,7 +161,7 @@ impl SlotRegistry {
 
     /// Check if a slot has any content.
     pub fn has_content(&self, slot: &SlotId) -> bool {
-        self.slots.get(slot).map_or(false, |v| !v.is_empty())
+        self.slots.get(slot).is_some_and(|v| !v.is_empty())
     }
 
     /// Get the total number of registered slot entries across all slots.

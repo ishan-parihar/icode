@@ -47,7 +47,7 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     } else {
         vec![
             Constraint::Min(1),
-            Constraint::Length(prompt_height as u16),
+            Constraint::Length(prompt_height),
             Constraint::Length(1),
         ]
     };
@@ -75,13 +75,16 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
 
         let divider_x = main_chunks[0].width.saturating_sub(1);
         if divider_x > 0 {
-            for y in main_area.top()..main_area.bottom() {
-                if let Some(cell) = frame
-                    .buffer_mut()
-                    .cell_mut((main_chunks[0].x + divider_x, y))
-                {
-                    cell.set_char('\u{2502}')
-                        .set_style(Style::default().fg(state.theme.border));
+            let buf_area = frame.area();
+            let col = main_chunks[0].x + divider_x;
+            if col < buf_area.width {
+                for y in main_area.top()..main_area.bottom() {
+                    if y < buf_area.height {
+                        if let Some(cell) = frame.buffer_mut().cell_mut((col, y)) {
+                            cell.set_char('\u{2502}')
+                                .set_style(Style::default().fg(state.theme.border));
+                        }
+                    }
                 }
             }
         }
@@ -107,11 +110,11 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     }
 
     if state.mcp_dialog.open {
-        render_mcp_dialog(frame, &mut state.mcp_dialog, area, state.theme);
+        render_mcp_dialog(frame, &state.mcp_dialog, area, state.theme);
     }
 
     if state.skills_dialog.open {
-        render_skills_dialog(frame, &mut state.skills_dialog, area, theme);
+        render_skills_dialog(frame, &state.skills_dialog, area, theme);
     }
 
     render_theme_list_dialog(frame, &state.theme_list_dialog, area, state.theme);
@@ -687,7 +690,7 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
         right_spans.push(Span::raw("  "));
     }
 
-    if state.mcp_dialog.servers.len() > 0 {
+    if !state.mcp_dialog.servers.is_empty() {
         right_spans.push(Span::styled(
             "\u{2299}",
             Style::default().fg(state.theme.success),
@@ -712,7 +715,7 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
 
     if !turn_duration_str.is_empty() {
         right_spans.push(Span::styled(
-            format!("\u{23f1} {} ", turn_duration_str),
+            format!("\u{23f1} {turn_duration_str} "),
             Style::default().fg(state.theme.info),
         ));
     }
@@ -818,7 +821,7 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
 fn format_duration(d: std::time::Duration) -> String {
     let total_secs = d.as_secs();
     if total_secs < 60 {
-        format!("0:{:02}", total_secs)
+        format!("0:{total_secs:02}")
     } else {
         let mins = total_secs / 60;
         let secs = total_secs % 60;

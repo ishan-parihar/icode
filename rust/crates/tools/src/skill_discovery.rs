@@ -66,17 +66,24 @@ pub struct SkillDiscovery {
 
 impl SkillDiscovery {
     /// Create a new `SkillDiscovery` with the given cache directory and TTL.
+    #[must_use]
     pub fn new(cache_dir: PathBuf, ttl: Duration) -> Self {
         Self { cache_dir, ttl }
     }
 
     /// Create with the default 24-hour TTL.
+    #[must_use]
     pub fn with_default_ttl(cache_dir: PathBuf) -> Self {
         Self::new(cache_dir, DEFAULT_TTL)
     }
 
     /// Fetch a remote `index.json` and return parsed skill entries.
     pub fn fetch_index(&self, url: &str) -> Result<Vec<SkillIndexEntry>, SkillDiscoveryError> {
+        #[derive(Deserialize)]
+        struct IndexWrapper {
+            skills: Vec<SkillIndexEntry>,
+        }
+
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -103,11 +110,6 @@ impl SkillDiscovery {
 
         if let Ok(entries) = serde_json::from_str::<Vec<SkillIndexEntry>>(&body) {
             return Ok(entries);
-        }
-
-        #[derive(Deserialize)]
-        struct IndexWrapper {
-            skills: Vec<SkillIndexEntry>,
         }
 
         if let Ok(wrapper) = serde_json::from_str::<IndexWrapper>(&body) {
@@ -183,6 +185,7 @@ impl SkillDiscovery {
     }
 
     /// Check if a cached skill at `skill_path` exists and is not expired.
+    #[must_use]
     pub fn resolve_skill_cached(&self, name: &str) -> Option<PathBuf> {
         let skill_path = self.cache_dir.join(name).join("SKILL.md");
         if !skill_path.exists() {
@@ -213,6 +216,7 @@ impl SkillDiscovery {
     }
 
     /// List all cached skills with their metadata.
+    #[must_use]
     pub fn list_cached_skills(&self) -> Vec<(String, PathBuf, String)> {
         let mut result = Vec::new();
 
@@ -318,6 +322,7 @@ fn is_cache_expired_for_ttl(skill_path: &Path, ttl: Duration) -> bool {
 }
 
 /// Public helper: check if a cached skill at `skill_path` is expired (uses 24h default TTL).
+#[must_use]
 pub fn is_cache_expired(skill_path: &Path) -> bool {
     is_cache_expired_for_ttl(skill_path, DEFAULT_TTL)
 }

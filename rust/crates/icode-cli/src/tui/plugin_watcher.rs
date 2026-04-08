@@ -94,7 +94,7 @@ impl PluginWatcher {
             let path = entry.path();
 
             if path.is_dir() {
-                if path.file_name().map_or(false, |n| {
+                if path.file_name().is_some_and(|n| {
                     n == "target" || n.to_string_lossy().starts_with('.')
                 }) {
                     continue;
@@ -102,7 +102,7 @@ impl PluginWatcher {
                 let _ = self.scan_dir(&path, files);
             } else if path
                 .extension()
-                .map_or(false, |ext| ext == "rs" || ext == "toml")
+                .is_some_and(|ext| ext == "rs" || ext == "toml")
             {
                 if let Ok(metadata) = fs::metadata(&path) {
                     if let Ok(mtime) = metadata.modified() {

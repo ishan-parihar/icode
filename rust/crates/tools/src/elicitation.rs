@@ -18,6 +18,7 @@ pub struct ElicitationField {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ElicitationInput {
     pub title: String,
+    #[allow(dead_code)]
     pub description: Option<String>,
     pub fields: Vec<ElicitationField>,
 }
@@ -84,7 +85,7 @@ pub fn execute_elicitation(input: ElicitationInput) -> Result<ElicitationOutput,
             let type_info = match f.field_type.as_str() {
                 "select" => {
                     let opts = f.options.as_ref().map(|o| o.join(", ")).unwrap_or_default();
-                    format!("select [{}]", opts)
+                    format!("select [{opts}]")
                 }
                 other => other.to_string(),
             };

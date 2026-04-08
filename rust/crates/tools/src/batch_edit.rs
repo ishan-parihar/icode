@@ -1,13 +1,12 @@
-//! BatchEdit tool — atomic multi-file edits in a single tool call.
+//! `BatchEdit` tool — atomic multi-file edits in a single tool call.
 //!
 //! Validates all edits upfront, then applies them in-memory before writing
 //! back. If any write fails, reports partial success/failure per file.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
-/// Input for the batch_edit tool.
+/// Input for the `batch_edit` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BatchEditInput {
     pub edits: Vec<FileEdit>,
@@ -23,7 +22,7 @@ pub struct FileEdit {
     pub replace_all: Option<bool>,
 }
 
-/// Output from the batch_edit tool.
+/// Output from the `batch_edit` tool.
 #[derive(Debug, Serialize)]
 pub struct BatchEditOutput {
     pub success: bool,
@@ -75,8 +74,8 @@ fn validate_edits(edits: &[FileEdit], validate_read_first: bool) -> Vec<(usize, 
 
 /// Count the difference in newline count between two strings.
 fn count_line_diff(old_content: &str, new_content: &str) -> isize {
-    let old_lines = old_content.matches('\n').count() as isize;
-    let new_lines = new_content.matches('\n').count() as isize;
+    let old_lines = old_content.matches('\n').count().cast_signed();
+    let new_lines = new_content.matches('\n').count().cast_signed();
     new_lines - old_lines
 }
 
@@ -89,7 +88,7 @@ fn count_line_diff(old_content: &str, new_content: &str) -> isize {
 /// Application phase reads each file, applies the edit in memory, then writes
 /// it back. If a write fails mid-batch, previously written files remain changed
 /// and the output reports which succeeded vs failed.
-pub fn execute_batch_edit(input: BatchEditInput) -> Result<BatchEditOutput, String> {
+pub fn execute_batch_edit(input: &BatchEditInput) -> Result<BatchEditOutput, String> {
     let validate_read_first = input.validate_read_first.unwrap_or(true);
 
     if input.edits.is_empty() {
@@ -185,7 +184,7 @@ fn apply_single_edit(edit: &FileEdit) -> EditResult {
     }
 }
 
-/// Return the JSON Schema tool spec for the batch_edit tool.
+/// Return the JSON Schema tool spec for the `batch_edit` tool.
 #[must_use]
 pub fn batch_edit_tool_spec() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(BatchEditInput)).unwrap()
@@ -243,7 +242,7 @@ mod tests {
             validate_read_first: Some(true),
         };
 
-        let output = execute_batch_edit(input).expect("batch edit should succeed");
+        let output = execute_batch_edit(&input).expect("batch edit should succeed");
 
         assert!(output.success);
         assert_eq!(output.edits_applied, 2);
@@ -292,7 +291,7 @@ mod tests {
             validate_read_first: Some(true),
         };
 
-        let result = execute_batch_edit(input);
+        let result = execute_batch_edit(&input);
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -322,7 +321,7 @@ mod tests {
             validate_read_first: Some(true),
         };
 
-        let result = execute_batch_edit(input);
+        let result = execute_batch_edit(&input);
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -347,7 +346,7 @@ mod tests {
             validate_read_first: Some(true),
         };
 
-        let output = execute_batch_edit(input).expect("batch edit should succeed");
+        let output = execute_batch_edit(&input).expect("batch edit should succeed");
 
         assert!(output.success);
         assert_eq!(output.results[0].lines_changed, Some(0));
@@ -367,7 +366,7 @@ mod tests {
             validate_read_first: None,
         };
 
-        let result = execute_batch_edit(input);
+        let result = execute_batch_edit(&input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "edits must not be empty");
     }
@@ -388,7 +387,7 @@ mod tests {
             validate_read_first: Some(false),
         };
 
-        let output = execute_batch_edit(input).expect("should not reject during validation");
+        let output = execute_batch_edit(&input).expect("should not reject during validation");
         // The edit itself fails during application, but the batch is not rejected upfront
         assert!(!output.success);
         assert_eq!(output.edits_failed, 1);
@@ -413,7 +412,7 @@ mod tests {
             validate_read_first: Some(true),
         };
 
-        let output = execute_batch_edit(input).expect("batch edit should succeed");
+        let output = execute_batch_edit(&input).expect("batch edit should succeed");
 
         // old: 1 newline, new: 3 newlines => +2
         assert_eq!(output.results[0].lines_changed, Some(2));

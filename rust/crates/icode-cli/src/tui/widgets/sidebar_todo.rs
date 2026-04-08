@@ -114,7 +114,7 @@ fn extract_todos_from_json(output: &str) -> Option<Vec<TodoItem>> {
     }
 }
 
-/// Fall back: parse pending/completed counts from input_summary.
+/// Fall back: parse pending/completed counts from `input_summary`.
 /// Format: "todos: 3 pending, 2 completed"
 fn extract_todos_from_summary(input_summary: &str) -> Option<Vec<TodoItem>> {
     let trimmed = input_summary.trim();

@@ -1,4 +1,4 @@
-//! PtyBash tool — persistent PTY-backed bash shell with cwd/env state across calls.
+//! `PtyBash` tool — persistent PTY-backed bash shell with cwd/env state across calls.
 //!
 //! On Unix, uses `portable_pty` to open a real PTY and spawn `bash -c <script>`,
 //! persisting working directory and environment variables between invocations.
@@ -6,9 +6,9 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{Read, Write as IoWrite};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -48,6 +48,7 @@ static BG_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PtyBashInput {
     pub command: String,
+    #[allow(dead_code)]
     pub description: Option<String>,
     pub timeout: Option<u64>,
     pub run_in_background: Option<bool>,
@@ -142,8 +143,11 @@ fn escape_single_quote(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
+use std::fmt::Write;
+
 #[cfg(unix)]
-fn execute_pty_bash_unix(input: PtyBashInput) -> Result<PtyBashOutput, String> {
+#[allow(clippy::too_many_lines)]
+fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> {
     use portable_pty::{CommandBuilder, PtySize};
 
     let timeout_secs = input.timeout.unwrap_or(300);
@@ -164,17 +168,17 @@ fn execute_pty_bash_unix(input: PtyBashInput) -> Result<PtyBashOutput, String> {
 
     let mut exports = String::new();
     for (k, v) in &guard.env_vars {
-        exports.push_str(&format!(
+        let _ = write!(
+            exports,
             "export '{}'='{}';",
             escape_single_quote(k),
             escape_single_quote(v)
-        ));
+        );
     }
     drop(guard);
 
     let script = format!(
-        "cd '{}'; {} {} exit_code=$?; printf '\\n{}\\n'; pwd; env; exit $exit_code",
-        cwd_str, exports, user_cmd, SENTINEL
+        "cd '{cwd_str}'; {exports} {user_cmd} exit_code=$?; printf '\\n{SENTINEL}\\n'; pwd; env; exit $exit_code"
     );
 
     let pty_system = portable_pty::native_pty_system();
@@ -216,7 +220,7 @@ fn execute_pty_bash_unix(input: PtyBashInput) -> Result<PtyBashOutput, String> {
         let mut buf = vec![0u8; 8192];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let s = String::from_utf8_lossy(&buf[..n]);
                     stdout.push_str(&s);
@@ -225,7 +229,6 @@ fn execute_pty_bash_unix(input: PtyBashInput) -> Result<PtyBashOutput, String> {
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
         let exit_status = child.wait();
@@ -246,7 +249,7 @@ fn execute_pty_bash_unix(input: PtyBashInput) -> Result<PtyBashOutput, String> {
     let interrupted = exit_result.is_err();
 
     let exit_code = match &exit_result {
-        Ok(st) => st.exit_code() as i32,
+        Ok(st) => st.exit_code().cast_signed(),
         Err(_) => -1,
     };
 
@@ -297,7 +300,7 @@ fn execute_pty_bash_unix(input: PtyBashInput) -> Result<PtyBashOutput, String> {
 }
 
 #[cfg(windows)]
-fn execute_pty_bash_windows(input: PtyBashInput) -> Result<PtyBashOutput, String> {
+fn execute_pty_bash_windows(input: &PtyBashInput) -> Result<PtyBashOutput, String> {
     use std::process::Command;
 
     let timeout_secs = input.timeout.unwrap_or(300);
@@ -368,12 +371,12 @@ fn execute_pty_bash_windows(input: PtyBashInput) -> Result<PtyBashOutput, String
 }
 
 #[cfg(unix)]
-pub fn execute_pty_bash(input: PtyBashInput) -> Result<PtyBashOutput, String> {
+pub fn execute_pty_bash(input: &PtyBashInput) -> Result<PtyBashOutput, String> {
     execute_pty_bash_unix(input)
 }
 
 #[cfg(windows)]
-pub fn execute_pty_bash(input: PtyBashInput) -> Result<PtyBashOutput, String> {
+pub fn execute_pty_bash(input: &PtyBashInput) -> Result<PtyBashOutput, String> {
     execute_pty_bash_windows(input)
 }
 

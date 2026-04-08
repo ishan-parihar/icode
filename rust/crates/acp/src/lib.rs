@@ -56,12 +56,12 @@ impl JsonRpcResponse {
 
 fn dispatch_request(req: &JsonRpcRequest) -> JsonRpcResponse {
     match req.method.as_str() {
-        "initialize" => handle_initialize(&req.id),
-        "tool/list" => handle_tool_list(&req.id),
-        "session/create" => handle_session_create(&req.id),
-        "session/list" => handle_session_list(&req.id),
-        "model/list" => handle_model_list(&req.id),
-        "session/message" => handle_session_message(&req.id, &req.params),
+        "initialize" => handle_initialize(req.id.as_ref()),
+        "tool/list" => handle_tool_list(req.id.as_ref()),
+        "session/create" => handle_session_create(req.id.as_ref()),
+        "session/list" => handle_session_list(req.id.as_ref()),
+        "model/list" => handle_model_list(req.id.as_ref()),
+        "session/message" => handle_session_message(req.id.as_ref(), req.params.as_ref()),
         _ => JsonRpcResponse::error(
             req.id.clone(),
             -32601,
@@ -70,7 +70,7 @@ fn dispatch_request(req: &JsonRpcRequest) -> JsonRpcResponse {
     }
 }
 
-fn handle_initialize(id: &Option<serde_json::Value>) -> JsonRpcResponse {
+fn handle_initialize(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     let result = serde_json::json!({
         "serverInfo": {
             "name": "icode",
@@ -89,10 +89,10 @@ fn handle_initialize(id: &Option<serde_json::Value>) -> JsonRpcResponse {
             }
         }
     });
-    JsonRpcResponse::result(id.clone(), result)
+    JsonRpcResponse::result(id.cloned(), result)
 }
 
-fn handle_tool_list(id: &Option<serde_json::Value>) -> JsonRpcResponse {
+fn handle_tool_list(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     let tools = [
         "Bash",
         "Read",
@@ -113,40 +113,40 @@ fn handle_tool_list(id: &Option<serde_json::Value>) -> JsonRpcResponse {
             .map(|name| serde_json::json!({ "name": name }))
             .collect(),
     );
-    JsonRpcResponse::result(id.clone(), result)
+    JsonRpcResponse::result(id.cloned(), result)
 }
 
-fn handle_session_create(id: &Option<serde_json::Value>) -> JsonRpcResponse {
+fn handle_session_create(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     let now = chrono::Utc::now().timestamp_millis();
     let result = serde_json::json!({
         "session_id": format!("acp-{now}"),
         "status": "created"
     });
-    JsonRpcResponse::result(id.clone(), result)
+    JsonRpcResponse::result(id.cloned(), result)
 }
 
-fn handle_session_list(id: &Option<serde_json::Value>) -> JsonRpcResponse {
-    let sessions = list_sessions().unwrap_or_default();
+fn handle_session_list(id: Option<&serde_json::Value>) -> JsonRpcResponse {
+    let sessions = list_sessions();
     let result = serde_json::Value::Array(sessions);
-    JsonRpcResponse::result(id.clone(), result)
+    JsonRpcResponse::result(id.cloned(), result)
 }
 
-fn list_sessions() -> anyhow::Result<Vec<serde_json::Value>> {
+fn list_sessions() -> Vec<serde_json::Value> {
     let session_dir = session_dir();
     if !session_dir.exists() {
-        return Ok(vec![]);
+        return vec![];
     }
 
     let mut entries: Vec<_> = match std::fs::read_dir(&session_dir) {
         Ok(iter) => iter
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 e.path()
                     .extension()
                     .is_some_and(|ext| ext == "json" || ext == "jsonl")
             })
             .collect(),
-        Err(_) => return Ok(vec![]),
+        Err(_) => return vec![],
     };
 
     // Sort by modification time, most recent first
@@ -177,7 +177,7 @@ fn list_sessions() -> anyhow::Result<Vec<serde_json::Value>> {
         })
         .collect();
 
-    Ok(sessions)
+    sessions
 }
 
 fn session_dir() -> std::path::PathBuf {
@@ -200,7 +200,7 @@ fn dirs_like_home() -> Option<std::path::PathBuf> {
     std::env::var("HOME").ok().map(std::path::PathBuf::from)
 }
 
-fn handle_model_list(id: &Option<serde_json::Value>) -> JsonRpcResponse {
+fn handle_model_list(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     let mut models: Vec<_> = api::list_all_models()
         .map(|entry| {
             let provider = provider_kind_to_string(entry.provider);
@@ -230,7 +230,7 @@ fn handle_model_list(id: &Option<serde_json::Value>) -> JsonRpcResponse {
         a_canonical.cmp(b_canonical)
     });
 
-    JsonRpcResponse::result(id.clone(), serde_json::Value::Array(models))
+    JsonRpcResponse::result(id.cloned(), serde_json::Value::Array(models))
 }
 
 fn provider_kind_to_string(kind: api::ProviderKind) -> &'static str {
@@ -248,26 +248,24 @@ fn provider_kind_to_string(kind: api::ProviderKind) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_session_message(
-    id: &Option<serde_json::Value>,
-    params: &Option<serde_json::Value>,
+    id: Option<&serde_json::Value>,
+    params: Option<&serde_json::Value>,
 ) -> JsonRpcResponse {
-    let params = match params {
-        Some(p) => p,
-        None => {
+    let Some(params) = params else {
             return JsonRpcResponse::error(
-                id.clone(),
+                id.cloned(),
                 -32602,
                 "Missing params: requires { session_id, message }",
             );
-        }
-    };
+        };
 
     let message = match params.get("message").and_then(|v| v.as_str()) {
         Some(m) => m.to_string(),
         None => {
             return JsonRpcResponse::error(
-                id.clone(),
+                id.cloned(),
                 -32602,
                 "Missing or invalid 'message' field (string required)",
             );
@@ -293,7 +291,9 @@ fn handle_session_message(
     let permission_mode = match permission_mode_str {
         "read-only" => runtime::PermissionMode::ReadOnly,
         "workspace-write" => runtime::PermissionMode::WorkspaceWrite,
-        "danger-full-access" | _ => runtime::PermissionMode::DangerFullAccess,
+        #[allow(clippy::match_same_arms)]
+        "danger-full-access" => runtime::PermissionMode::DangerFullAccess,
+        _ => runtime::PermissionMode::DangerFullAccess,
     };
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -327,7 +327,7 @@ fn handle_session_message(
         Ok(c) => c,
         Err(e) => {
             return JsonRpcResponse::error(
-                id.clone(),
+                id.cloned(),
                 -1,
                 format!("Failed to initialize API client: {e}"),
             );
@@ -366,9 +366,9 @@ fn handle_session_message(
                 },
                 "tool_uses": collect_tool_uses(&summary),
             });
-            JsonRpcResponse::result(id.clone(), result)
+            JsonRpcResponse::result(id.cloned(), result)
         }
-        Err(e) => JsonRpcResponse::error(id.clone(), -1, format!("Conversation error: {e}")),
+        Err(e) => JsonRpcResponse::error(id.cloned(), -1, format!("Conversation error: {e}")),
     }
 }
 
@@ -395,6 +395,7 @@ impl AcpApiClient {
 }
 
 impl runtime::ApiClient for AcpApiClient {
+#[allow(clippy::too_many_lines)]
     fn stream(
         &mut self,
         request: runtime::ApiRequest,
@@ -537,7 +538,7 @@ impl runtime::ApiClient for AcpApiClient {
                         if let Some((id, name, input)) = pending_tool.take() {
                             if let Some(cb) = &progress {
                                 cb(runtime::AssistantEvent::ToolUse {
-                                    id: id.clone(),
+                                id: id.clone(),
                                     name: name.clone(),
                                     input: input.clone(),
                                 });
@@ -618,8 +619,10 @@ fn os_release() -> String {
     {
         std::fs::read_to_string("/proc/version")
             .ok()
-            .map(|v| v.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
-            .unwrap_or_else(|| "linux".to_string())
+            .map_or_else(
+                || "linux".to_string(),
+                |v| v.split_whitespace().take(3).collect::<Vec<_>>().join(" "),
+            )
     }
     #[cfg(not(target_os = "linux"))]
     {

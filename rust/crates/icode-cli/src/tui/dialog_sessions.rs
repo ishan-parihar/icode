@@ -79,7 +79,7 @@ impl SessionsDialogState {
                 .ok()
                 .into_iter()
                 .flatten()
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .collect();
             let usage_budget = 5usize;
             for (idx, entry) in entries.iter().enumerate() {
@@ -143,8 +143,7 @@ impl SessionsDialogState {
                     s.id.to_lowercase().contains(&q)
                         || s.branch_name
                             .as_ref()
-                            .map(|b| b.to_lowercase().contains(&q))
-                            .unwrap_or(false)
+                            .is_some_and(|b| b.to_lowercase().contains(&q))
                 })
                 .cloned()
                 .collect();
@@ -340,7 +339,7 @@ fn category_label(epoch_millis: u128) -> String {
     } else if days == 1 {
         "Yesterday".to_string()
     } else if days < 7 {
-        format!("{} days ago", days)
+        format!("{days} days ago")
     } else {
         format!("{} weeks ago", days / 7)
     }
@@ -495,7 +494,7 @@ pub fn render_sessions_dialog(
                 }
                 if let Some(ref usage) = session.usage_summary {
                     title_spans.push(Span::styled(
-                        format!("[{}] ", usage),
+                        format!("[{usage}] "),
                         Style::default().fg(if is_selected {
                             theme.background
                         } else {

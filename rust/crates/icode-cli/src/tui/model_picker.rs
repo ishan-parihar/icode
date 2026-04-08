@@ -234,8 +234,7 @@ impl ModelPickerState {
             .iter()
             .rev()
             .find(|(_, offset)| self.cursor >= *offset)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("All Models")
+            .map_or("All Models", |(name, _)| name.as_str())
     }
 }
 
@@ -312,8 +311,7 @@ pub fn render_model_picker(
             .iter()
             .rev()
             .find(|(_, offset)| pos >= *offset)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("All Models");
+            .map_or("All Models", |(name, _)| name.as_str());
 
         if section != current_section {
             current_section = section.to_string();

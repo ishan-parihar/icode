@@ -106,7 +106,7 @@ fn search_empty_content() {
         pattern: "foo".to_string(),
         language: "javascript".to_string(),
         file_path: None,
-        content: Some("".to_string()),
+        content: Some(String::new()),
         context_lines: None,
     });
     assert!(result.is_ok() || result.is_err());
@@ -284,7 +284,7 @@ fn roundtrip_replace_request() {
     };
     let json = serde_json::to_string(&req).unwrap();
     let back: AstGrepReplaceRequest = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.dry_run, true);
+    assert!(back.dry_run);
     assert_eq!(back.rewrite, "let $A");
 }
 

@@ -105,8 +105,8 @@ pub fn render_lsp_panel(frame: &mut Frame, state: &AppState, area: Rect, theme: 
         Span::styled(
             format!(
                 "({total} server{pl}, {diag} diagnostic{dl})",
-                pl = if total != 1 { "s" } else { "" },
-                dl = if diag != 1 { "s" } else { "" },
+                pl = if total == 1 { "" } else { "s" },
+                dl = if diag == 1 { "" } else { "s" },
             ),
             Style::default().fg(theme.text_muted),
         ),

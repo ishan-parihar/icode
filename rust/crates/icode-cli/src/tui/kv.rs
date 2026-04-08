@@ -163,7 +163,7 @@ mod tests {
         store.set("a", 1);
         store.set("b", 2);
         let mut keys = store.keys();
-        keys.sort();
+        keys.sort_unstable();
         assert_eq!(keys, vec!["a", "b"]);
     }
 

@@ -34,7 +34,7 @@ impl TuiPlugin for ThemeSwitcherPlugin {
     fn register_slots(&self, api: &mut PluginApi<'_>) {
         let theme_id = current_theme_id(api);
         let display = Theme::display_name(&theme_id);
-        let icon = if Theme::from_name(&theme_id).map_or(true, |t| t.is_dark()) {
+        let icon = if Theme::from_name(&theme_id).is_none_or(|t| t.is_dark()) {
             "\u{25cf}"
         } else {
             "\u{25cb}"
@@ -88,14 +88,12 @@ fn current_theme_id(api: &PluginApi<'_>) -> String {
     use crate::tui::theme_loader::THEMES;
     THEMES
         .iter()
-        .find(|entry| entry.theme.background == api.state.theme.background)
-        .map(|entry| entry.id.to_string())
-        .unwrap_or_else(|| "opencode".to_string())
+        .find(|entry| entry.theme.background == api.state.theme.background).map_or_else(|| "opencode".to_string(), |entry| entry.id.to_string())
 }
 
 fn update_slot(api: &mut PluginApi<'_>, theme_id: &str) {
     let display = Theme::display_name(theme_id);
-    let icon = if Theme::from_name(theme_id).map_or(true, |t| t.is_dark()) {
+    let icon = if Theme::from_name(theme_id).is_none_or(|t| t.is_dark()) {
         "\u{25cf}"
     } else {
         "\u{25cb}"

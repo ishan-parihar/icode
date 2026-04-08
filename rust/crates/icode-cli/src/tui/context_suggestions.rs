@@ -89,13 +89,13 @@ pub fn generate_suggestions(data: &ContextVizData) -> Vec<ContextSuggestion> {
     let usage_pct = data.usage_pct();
     if usage_pct > 95.0 {
         suggestions.push(ContextSuggestion {
-            message: format!("Critical context usage ({usage_pct:.0}%)").into(),
+            message: format!("Critical context usage ({usage_pct:.0}%)"),
             severity: SuggestionSeverity::Critical,
             action: Some("Run /compact immediately".into()),
         });
     } else if usage_pct > 80.0 {
         suggestions.push(ContextSuggestion {
-            message: format!("Near context limit ({usage_pct:.0}%)").into(),
+            message: format!("Near context limit ({usage_pct:.0}%)"),
             severity: SuggestionSeverity::Warning,
             action: Some("Run /compact soon".into()),
         });
@@ -132,7 +132,7 @@ pub fn generate_suggestions(data: &ContextVizData) -> Vec<ContextSuggestion> {
     if let (Some(max), Some(remaining)) = (data.budget_max, data.budget_remaining) {
         if max > 0.0 && remaining / max < 0.2 {
             suggestions.push(ContextSuggestion {
-                message: format!("Budget running low (${:.2} / ${:.2})", remaining, max),
+                message: format!("Budget running low (${remaining:.2} / ${max:.2})"),
                 severity: SuggestionSeverity::Critical,
                 action: Some("Switch model or end session".into()),
             });

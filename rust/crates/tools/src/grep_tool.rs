@@ -2,11 +2,10 @@ use glob::Pattern;
 use regex::RegexBuilder;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 use walkdir::WalkDir;
-
-use runtime::PermissionMode;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GrepToolInput {
@@ -20,16 +19,7 @@ pub struct GrepToolInput {
     pub case_insensitive: bool,
 }
 
-pub fn create_grep_tool() -> (String, &'static str, serde_json::Value, PermissionMode) {
-    (
-        "GrepTool".to_string(),
-        "Search file contents using regex. Supports file glob filtering and case sensitivity options.",
-        serde_json::to_value(schemars::schema_for!(GrepToolInput)).unwrap(),
-        PermissionMode::ReadOnly,
-    )
-}
-
-pub fn execute_grep_tool(input: GrepToolInput, cwd: &PathBuf) -> Result<String, String> {
+pub fn execute_grep_tool(input: &GrepToolInput, cwd: &PathBuf) -> Result<String, String> {
     let re = if input.case_insensitive {
         RegexBuilder::new(&input.pattern)
             .case_insensitive(true)
@@ -47,7 +37,10 @@ pub fn execute_grep_tool(input: GrepToolInput, cwd: &PathBuf) -> Result<String, 
         .map_err(|e| format!("Invalid glob pattern: {e}"))?;
 
     let mut results: Vec<String> = Vec::new();
-    for entry in WalkDir::new(cwd).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(cwd)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -58,9 +51,8 @@ pub fn execute_grep_tool(input: GrepToolInput, cwd: &PathBuf) -> Result<String, 
                 continue;
             }
         }
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
         };
         for (line_num, line) in content.lines().enumerate() {
             if re.is_match(line) {
@@ -86,7 +78,7 @@ pub fn execute_grep_tool(input: GrepToolInput, cwd: &PathBuf) -> Result<String, 
         count, input.pattern, output
     );
     if count > 100 {
-        text.push_str(&format!("\n\n... and {} more matches", count - 100));
+        let _ = write!(text, "\n\n... and {} more matches", count - 100);
     }
 
     Ok(text)

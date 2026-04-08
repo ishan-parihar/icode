@@ -1,4 +1,4 @@
-//! ApplyPatch tool — applies unified diff patches to workspace files.
+//! `ApplyPatch` tool — applies unified diff patches to workspace files.
 //!
 //! Parses unified diff format (`--- a/path`, `+++ b/path`, `@@ ... @@` hunks)
 //! and applies changes to target files without shelling out to `patch`.
@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Input for the ApplyPatch tool.
+/// Input for the `ApplyPatch` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ApplyPatchInput {
     /// The unified diff patch content.
@@ -20,7 +20,7 @@ pub struct ApplyPatchInput {
     pub cwd: Option<String>,
 }
 
-/// Output from the ApplyPatch tool.
+/// Output from the `ApplyPatch` tool.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApplyPatchOutput {
     /// Whether all hunks were applied successfully.
@@ -38,8 +38,10 @@ pub struct ApplyPatchOutput {
 #[derive(Debug, Clone)]
 struct Hunk {
     old_start: usize,
+    #[allow(dead_code)]
     old_count: usize,
     _new_start: usize,
+    #[allow(dead_code)]
     new_count: usize,
     lines: Vec<HunkLine>,
 }
@@ -59,11 +61,11 @@ struct FileTarget {
     hunks: Vec<Hunk>,
 }
 
-/// Execute the ApplyPatch tool.
+/// Execute the `ApplyPatch` tool.
 ///
 /// Parses the unified diff, applies each hunk to the target file, and returns
 /// a summary of applied changes.
-pub fn execute_apply_patch(input: ApplyPatchInput) -> Result<ApplyPatchOutput, String> {
+pub fn execute_apply_patch(input: &ApplyPatchInput) -> Result<ApplyPatchOutput, String> {
     let dry_run = input.dry_run.unwrap_or(false);
     let strip = input.strip.unwrap_or(1);
 
@@ -106,7 +108,7 @@ pub fn execute_apply_patch(input: ApplyPatchInput) -> Result<ApplyPatchOutput, S
                 .map_err(|e| format!("Cannot read {}: {e}", resolved_path.display()))?
         };
 
-        let (new_content, applied, failed) = apply_hunks_to_content(&old_content, &target.hunks)?;
+        let (new_content, applied, failed) = apply_hunks_to_content(&old_content, &target.hunks);
 
         hunks_applied += applied;
         hunks_failed += failed;
@@ -173,7 +175,7 @@ pub fn execute_apply_patch(input: ApplyPatchInput) -> Result<ApplyPatchOutput, S
     })
 }
 
-/// Returns the tool spec for the ApplyPatch tool as a JSON value.
+/// Returns the tool spec for the `ApplyPatch` tool as a JSON value.
 pub fn apply_patch_tool_spec() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(ApplyPatchInput)).unwrap()
 }
@@ -250,12 +252,12 @@ fn parse_hunk(lines: &[&str], start: usize) -> Result<(Hunk, usize), String> {
             continue;
         }
 
-        if line.starts_with(' ') {
-            hunk_lines.push(HunkLine::Context(line[1..].to_string()));
-        } else if line.starts_with('-') {
-            hunk_lines.push(HunkLine::Remove(line[1..].to_string()));
-        } else if line.starts_with('+') {
-            hunk_lines.push(HunkLine::Add(line[1..].to_string()));
+        if let Some(stripped) = line.strip_prefix(' ') {
+            hunk_lines.push(HunkLine::Context(stripped.to_string()));
+        } else if let Some(stripped) = line.strip_prefix('-') {
+            hunk_lines.push(HunkLine::Remove(stripped.to_string()));
+        } else if let Some(stripped) = line.strip_prefix('+') {
+            hunk_lines.push(HunkLine::Add(stripped.to_string()));
         } else if line.is_empty() {
             hunk_lines.push(HunkLine::Context(String::new()));
         } else {
@@ -282,16 +284,13 @@ fn parse_hunk_header(header: &str) -> Result<(usize, usize, usize, usize), Strin
         .strip_prefix("@@")
         .ok_or_else(|| format!("Invalid hunk header: {header}"))?;
 
-    let end_idx = content
-        .rfind("@@")
-        .map(|idx| {
-            if idx > 0 && content.as_bytes().get(idx - 1) == Some(&b' ') {
-                idx - 1
-            } else {
-                idx
-            }
-        })
-        .unwrap_or(content.len());
+    let end_idx = content.rfind("@@").map_or(content.len(), |idx| {
+        if idx > 0 && content.as_bytes().get(idx - 1) == Some(&b' ') {
+            idx - 1
+        } else {
+            idx
+        }
+    });
 
     let range_spec = content[..end_idx].trim();
 
@@ -330,7 +329,7 @@ fn parse_range(range: &str) -> Result<(usize, usize), String> {
     }
 }
 
-fn apply_hunks_to_content(content: &str, hunks: &[Hunk]) -> Result<(String, usize, usize), String> {
+fn apply_hunks_to_content(content: &str, hunks: &[Hunk]) -> (String, usize, usize) {
     let mut lines: Vec<String> = if content.is_empty() {
         Vec::new()
     } else {
@@ -347,7 +346,7 @@ fn apply_hunks_to_content(content: &str, hunks: &[Hunk]) -> Result<(String, usiz
         let adjusted_start = if hunk.old_start == 0 {
             0
         } else {
-            ((hunk.old_start as isize - 1 + offset).max(0)) as usize
+            ((hunk.old_start.cast_signed() - 1 + offset).max(0)).cast_unsigned()
         };
 
         match apply_single_hunk(&mut lines, hunk, adjusted_start) {
@@ -366,7 +365,7 @@ fn apply_hunks_to_content(content: &str, hunks: &[Hunk]) -> Result<(String, usiz
         result.push('\n');
     }
 
-    Ok((result, applied, failed))
+    (result, applied, failed)
 }
 
 fn apply_single_hunk(lines: &mut Vec<String>, hunk: &Hunk, start: usize) -> Result<isize, String> {
@@ -457,7 +456,7 @@ fn apply_single_hunk(lines: &mut Vec<String>, hunk: &Hunk, start: usize) -> Resu
     let remove_end = (pos + old_line_count).min(lines.len());
     lines.splice(pos..remove_end, new_hunk_lines);
 
-    Ok(new_line_count as isize - old_line_count as isize)
+    Ok(new_line_count.cast_signed() - old_line_count.cast_signed())
 }
 
 fn resolve_path(raw_path: &str, strip: u32, base_dir: &Path) -> Result<PathBuf, String> {
@@ -540,6 +539,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::used_underscore_binding)]
     fn parse_single_file_patch() {
         let patch = "\
 --- a/hello.txt
@@ -641,8 +641,7 @@ mod tests {
     fn apply_single_file_patch() {
         let (path, _guard) = make_temp_file("Hello\nWorld\nOld line\nGoodbye\n");
 
-        let patch = format!(
-            "\
+        let patch_content = "\
 --- a/test.txt
 +++ b/test.txt
 @@ -1,4 +1,4 @@
@@ -653,10 +652,10 @@ mod tests {
 +New line
  Goodbye
 "
-        );
+        .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(false),
             cwd: Some(
@@ -667,7 +666,7 @@ mod tests {
             ),
         };
 
-        let result = execute_apply_patch(input).expect("apply failed");
+        let result = execute_apply_patch(&input).expect("apply failed");
         assert!(result.success);
         assert_eq!(result.hunks_applied, 1);
         assert_eq!(result.hunks_failed, 0);
@@ -684,8 +683,7 @@ mod tests {
         let (path, _guard) = make_temp_file("Hello\nWorld\n");
         let original_content = fs::read_to_string(&path).expect("should read original");
 
-        let patch = format!(
-            "\
+        let patch_content = "\
 --- a/test.txt
 +++ b/test.txt
 @@ -1,2 +1,2 @@
@@ -693,10 +691,10 @@ mod tests {
 -World
 +Changed
 "
-        );
+        .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(true),
             cwd: Some(
@@ -707,7 +705,7 @@ mod tests {
             ),
         };
 
-        let result = execute_apply_patch(input).expect("dry_run should not error");
+        let result = execute_apply_patch(&input).expect("dry_run should not error");
         assert!(result.success);
         assert_eq!(result.hunks_applied, 1);
         assert_eq!(result.files_modified.len(), 1);
@@ -731,7 +729,7 @@ mod tests {
         fs::write(&path2, "context1\nold2\n").expect("write file2");
         let dir_str = dir.to_string_lossy().to_string();
 
-        let patch = "\
+        let patch_content = "\
 --- a/file1.txt
 +++ b/file1.txt
 @@ -1 +1 @@
@@ -747,13 +745,13 @@ mod tests {
         .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(false),
             cwd: Some(dir_str.clone()),
         };
 
-        let result = execute_apply_patch(input).expect("apply failed");
+        let result = execute_apply_patch(&input).expect("apply failed");
         assert!(result.success);
         assert_eq!(result.hunks_applied, 2);
         assert_eq!(result.hunks_failed, 0);
@@ -776,7 +774,7 @@ mod tests {
         fs::create_dir_all(&dir).expect("create dir");
         let dir_str = dir.to_string_lossy().to_string();
 
-        let patch = "\
+        let patch_content = "\
 --- /dev/null
 +++ b/created.txt
 @@ -0,0 +1,3 @@
@@ -787,13 +785,13 @@ mod tests {
         .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(false),
             cwd: Some(dir_str.clone()),
         };
 
-        let result = execute_apply_patch(input).expect("apply failed");
+        let result = execute_apply_patch(&input).expect("apply failed");
         assert!(result.success);
         assert_eq!(result.hunks_applied, 1);
 
@@ -818,7 +816,7 @@ mod tests {
         fs::create_dir_all(&dir).expect("create dir");
         let dir_str = dir.to_string_lossy().to_string();
 
-        let patch = "\
+        let patch_content = "\
 --- a/nonexistent.txt
 +++ b/nonexistent.txt
 @@ -1 +1 @@
@@ -828,13 +826,13 @@ mod tests {
         .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(false),
             cwd: Some(dir_str),
         };
 
-        let result = execute_apply_patch(input).expect("should not error");
+        let result = execute_apply_patch(&input).expect("should not error");
         assert!(!result.success);
         assert_eq!(result.hunks_failed, 1);
         assert!(result.output.contains("file not found"));
@@ -844,14 +842,14 @@ mod tests {
 
     #[test]
     fn strip_path_components() {
-        let patch = "\
+        let patch_content = "\
 --- a/src/utils/helper.rs
 +++ b/src/utils/helper.rs
 @@ -1 +1 @@
 -old
 +new
 ";
-        let targets = parse_patch(patch).expect("parse failed");
+        let targets = parse_patch(patch_content).expect("parse failed");
         assert_eq!(targets.len(), 1);
 
         let base = PathBuf::from("/some/base");
@@ -888,8 +886,7 @@ mod tests {
     fn apply_patch_with_no_trailing_newline() {
         let (path, _guard) = make_temp_file("Hello\nWorld");
 
-        let patch = format!(
-            "\
+        let patch_content = "\
 --- a/test.txt
 +++ b/test.txt
 @@ -1,2 +1,2 @@
@@ -897,10 +894,10 @@ mod tests {
 -World
 +World!
 "
-        );
+        .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(false),
             cwd: Some(
@@ -911,7 +908,7 @@ mod tests {
             ),
         };
 
-        let result = execute_apply_patch(input).expect("apply failed");
+        let result = execute_apply_patch(&input).expect("apply failed");
         assert!(result.success);
 
         let content = fs::read_to_string(&path).expect("read file");
@@ -923,8 +920,7 @@ mod tests {
     fn apply_hunk_with_context_only() {
         let (path, _guard) = make_temp_file("line1\nline2\nline3\n");
 
-        let patch = format!(
-            "\
+        let patch_content = "\
 --- a/test.txt
 +++ b/test.txt
 @@ -1,3 +1,2 @@
@@ -932,10 +928,10 @@ mod tests {
 -line2
  line3
 "
-        );
+        .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(false),
             cwd: Some(
@@ -946,7 +942,7 @@ mod tests {
             ),
         };
 
-        let result = execute_apply_patch(input).expect("apply failed");
+        let result = execute_apply_patch(&input).expect("apply failed");
         assert!(result.success);
         assert_eq!(result.hunks_applied, 1);
 
@@ -960,8 +956,7 @@ mod tests {
     fn apply_hunk_with_addition_only() {
         let (path, _guard) = make_temp_file("line1\nline3\n");
 
-        let patch = format!(
-            "\
+        let patch_content = "\
 --- a/test.txt
 +++ b/test.txt
 @@ -1,2 +1,3 @@
@@ -969,10 +964,10 @@ mod tests {
 +line2
  line3
 "
-        );
+        .to_string();
 
         let input = ApplyPatchInput {
-            patch,
+            patch: patch_content,
             strip: Some(1),
             dry_run: Some(false),
             cwd: Some(
@@ -983,7 +978,7 @@ mod tests {
             ),
         };
 
-        let result = execute_apply_patch(input).expect("apply failed");
+        let result = execute_apply_patch(&input).expect("apply failed");
         assert!(result.success);
 
         let content = fs::read_to_string(&path).expect("read file");

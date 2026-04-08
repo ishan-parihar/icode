@@ -287,7 +287,7 @@ fn render_app_state_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &AppSt
         Line::from(vec![
             Span::styled("Streaming:", Style::default().fg(theme.text_muted)),
             Span::styled(
-                format!("{}", if app.is_streaming { "yes" } else { "no" }),
+                (if app.is_streaming { "yes" } else { "no" }).to_string(),
                 Style::default().fg(if app.is_streaming {
                     theme.warning
                 } else {
@@ -298,7 +298,7 @@ fn render_app_state_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &AppSt
         Line::from(vec![
             Span::styled("Thinking: ", Style::default().fg(theme.text_muted)),
             Span::styled(
-                format!("{}", if app.is_thinking { "yes" } else { "no" }),
+                (if app.is_thinking { "yes" } else { "no" }).to_string(),
                 Style::default().fg(if app.is_thinking {
                     theme.warning
                 } else {
@@ -313,14 +313,11 @@ fn render_app_state_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &AppSt
         Line::from(vec![
             Span::styled("Sidebar:  ", Style::default().fg(theme.text_muted)),
             Span::styled(
-                format!(
-                    "{}",
-                    if app.sidebar_visible {
+                (if app.sidebar_visible {
                         "visible"
                     } else {
                         "hidden"
-                    }
-                ),
+                    }).to_string(),
                 Style::default().fg(theme.text),
             ),
         ]),
@@ -384,7 +381,7 @@ fn render_event_log_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &AppSt
             };
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("{} ", status_icon),
+                    format!("{status_icon} "),
                     Style::default().fg(status_color),
                 ),
                 Span::styled(&tool.name, Style::default().fg(theme.text)),
@@ -416,11 +413,11 @@ fn render_memory_tab(frame: &mut Frame, area: Rect, theme: Theme) {
                         let unit = parts[2];
                         lines.push(Line::from(vec![
                             Span::styled(
-                                format!("{:<8}", key),
+                                format!("{key:<8}"),
                                 Style::default().fg(theme.text_muted),
                             ),
                             Span::styled(
-                                format!("{} {}", val, unit),
+                                format!("{val} {unit}"),
                                 Style::default().fg(theme.text),
                             ),
                         ]));
@@ -509,7 +506,7 @@ fn render_performance_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &App
     let total_tokens = app.session.input_tokens + app.session.output_tokens;
     lines.push(Line::from(vec![
         Span::styled("Total tok: ", Style::default().fg(theme.text_muted)),
-        Span::styled(format!("{}", total_tokens), Style::default().fg(theme.text)),
+        Span::styled(format!("{total_tokens}"), Style::default().fg(theme.text)),
     ]));
 
     // Turn count

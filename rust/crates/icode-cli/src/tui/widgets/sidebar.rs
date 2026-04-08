@@ -75,7 +75,7 @@ impl Sidebar {
             cap_badges.push_str("\u{1f527} ");
         }
         if caps.supports_images {
-            cap_badges.push_str("\u{1f4f7}");
+            cap_badges.push('\u{1f4f7}');
         }
         if !cap_badges.is_empty() {
             lines.push(Line::from(vec![
@@ -350,8 +350,8 @@ impl Sidebar {
                 Span::styled(
                     format!(
                         "({lsp_total} server{pl}, {lsp_diag} diagnostic{dl})",
-                        pl = if lsp_total != 1 { "s" } else { "" },
-                        dl = if lsp_diag != 1 { "s" } else { "" },
+                        pl = if lsp_total == 1 { "" } else { "s" },
+                        dl = if lsp_diag == 1 { "" } else { "s" },
                     ),
                     Style::default().fg(state.theme.text_muted),
                 ),

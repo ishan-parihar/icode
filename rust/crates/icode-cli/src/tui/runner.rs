@@ -1,7 +1,8 @@
 use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
-use crate::tui::event::{Event, EventLoop};
+use crate::tui::event::{Event, EventLoop, ParsedKey};
 use crate::tui::frecency::FrecencyStore;
 use crate::tui::input::InputState;
+use crate::tui::kitty::KittyKeyboard;
 use crate::tui::layout::render_ui;
 use crate::tui::Theme;
 use crate::TurnEvent;
@@ -32,6 +33,7 @@ impl Tui {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let _ = KittyKeyboard::enable();
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         let event_loop = EventLoop::new(250);
@@ -296,11 +298,10 @@ impl Tui {
                     self.state.interrupt_count = 0;
                     self.state.interrupt_timestamp = None;
                     return None;
-                } else {
-                    self.state.interrupt_count = 1;
-                    self.state.interrupt_timestamp = Some(std::time::Instant::now());
-                    return None;
                 }
+                self.state.interrupt_count = 1;
+                self.state.interrupt_timestamp = Some(std::time::Instant::now());
+                return None;
             }
             if self.state.selection.is_some() {
                 self.state.selection = None;
@@ -595,11 +596,11 @@ impl Tui {
                 self.state.prompt.delete_word_right();
                 None
             }
-            (KeyModifiers::CONTROL, KeyCode::Left) | (KeyModifiers::ALT, KeyCode::Left) => {
+            (KeyModifiers::CONTROL | KeyModifiers::ALT, KeyCode::Left) => {
                 self.state.prompt.move_word_left();
                 None
             }
-            (KeyModifiers::CONTROL, KeyCode::Right) | (KeyModifiers::ALT, KeyCode::Right) => {
+            (KeyModifiers::CONTROL | KeyModifiers::ALT, KeyCode::Right) => {
                 self.state.prompt.move_word_right();
                 None
             }
@@ -943,7 +944,7 @@ impl Tui {
 
     fn handle_help_key(&mut self, key: KeyEvent) -> Option<String> {
         match (key.modifiers, key.code) {
-            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
                 self.state.help_dialog.close();
                 None
             }
@@ -953,7 +954,7 @@ impl Tui {
 
     fn handle_context_viz_key(&mut self, key: KeyEvent) -> Option<String> {
         match (key.modifiers, key.code) {
-            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
                 self.state.context_viz_dialog.close();
                 None
             }
@@ -992,7 +993,7 @@ impl Tui {
                 }
                 self.state.prompt_stash.save_new(&name, &prompt_text);
                 self.state
-                    .add_toast(format!("Prompt stashed as '{}'", name), ToastKind::Success);
+                    .add_toast(format!("Prompt stashed as '{name}'"), ToastKind::Success);
                 self.state.prompt_stash.close();
                 None
             }
@@ -1047,18 +1048,18 @@ impl Tui {
             Ok(c) => c,
             Err(e) => {
                 self.state
-                    .add_toast(format!("Export failed: {}", e), ToastKind::Error);
+                    .add_toast(format!("Export failed: {e}"), ToastKind::Error);
                 return;
             }
         };
 
         let export_path = std::env::current_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join(&filename);
+            .join(filename);
 
         if let Err(e) = std::fs::write(&export_path, &content) {
             self.state
-                .add_toast(format!("Export failed: {}", e), ToastKind::Error);
+                .add_toast(format!("Export failed: {e}"), ToastKind::Error);
         } else {
             self.state.add_toast(
                 format!("Exported to {}", export_path.display()),
@@ -1081,7 +1082,7 @@ impl Tui {
                     .map(|p| p.name.clone())
                     .unwrap_or_default();
                 self.state
-                    .add_toast(format!("Provider {} toggled", name), ToastKind::Info);
+                    .add_toast(format!("Provider {name} toggled"), ToastKind::Info);
                 None
             }
             ProviderAction::ViewDocs(idx) => {
@@ -1093,7 +1094,7 @@ impl Tui {
                     .map(|p| p.name.clone())
                     .unwrap_or_default();
                 self.state.add_toast(
-                    format!("Docs for {}: visit provider website", name),
+                    format!("Docs for {name}: visit provider website"),
                     ToastKind::Info,
                 );
                 None
@@ -1106,8 +1107,22 @@ impl Tui {
         match self.state.workspace_dialog.handle_key(key) {
             WorkspaceAction::None => None,
             WorkspaceAction::Close => None,
-            WorkspaceAction::Switch(path) => Some(format!("__workspace_switch__{}", path)),
+            WorkspaceAction::Switch(path) => Some(format!("__workspace_switch__{path}")),
             WorkspaceAction::StartSearch => None,
+            WorkspaceAction::Delete(path) => {
+                self.state
+                    .add_toast(format!("Delete workspace: {path}"), ToastKind::Info);
+                self.state.workspace_dialog.scan_workspaces();
+                self.state.workspace_dialog.apply_filter();
+                None
+            }
+            WorkspaceAction::Create(path) => {
+                self.state
+                    .add_toast(format!("Create workspace: {path}"), ToastKind::Info);
+                self.state.workspace_dialog.scan_workspaces();
+                self.state.workspace_dialog.apply_filter();
+                None
+            }
         }
     }
 
@@ -1117,21 +1132,19 @@ impl Tui {
             .size()
             .map(|s| s.height as usize)
             .unwrap_or(24);
-        if self.state.diff_view.is_none() {
-            return None;
-        }
+        self.state.diff_view.as_ref()?;
         let diff_view = self.state.diff_view.as_mut().unwrap();
 
         match (key.modifiers, key.code) {
-            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
                 self.state.diff_view = None;
                 None
             }
-            (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+            (_, KeyCode::Char('j') | KeyCode::Down) => {
                 diff_view.scroll_down();
                 None
             }
-            (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+            (_, KeyCode::Char('k') | KeyCode::Up) => {
                 diff_view.scroll_up();
                 None
             }
@@ -1164,15 +1177,15 @@ impl Tui {
         let visible_lines = height.saturating_sub(8);
 
         match (key.modifiers, key.code) {
-            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
                 self.state.pager.close();
                 None
             }
-            (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+            (_, KeyCode::Char('j') | KeyCode::Down) => {
                 self.state.pager.scroll_down();
                 None
             }
-            (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+            (_, KeyCode::Char('k') | KeyCode::Up) => {
                 self.state.pager.scroll_up();
                 None
             }
@@ -1206,7 +1219,7 @@ impl Tui {
             }
             Err(e) => {
                 self.state
-                    .add_toast(format!("Diff error: {}", e), ToastKind::Error);
+                    .add_toast(format!("Diff error: {e}"), ToastKind::Error);
             }
         }
     }
@@ -1286,7 +1299,7 @@ impl Tui {
             }
             Err(e) => {
                 self.state
-                    .add_toast(format!("Editor error: {}", e), ToastKind::Error);
+                    .add_toast(format!("Editor error: {e}"), ToastKind::Error);
             }
         }
         None
@@ -1296,15 +1309,15 @@ impl Tui {
     where
         F: FnOnce(&mut Self) -> Result<T, String>,
     {
-        disable_raw_mode().map_err(|e| format!("Failed to disable raw mode: {}", e))?;
+        disable_raw_mode().map_err(|e| format!("Failed to disable raw mode: {e}"))?;
         execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
-            .map_err(|e| format!("Failed to leave alternate screen: {}", e))?;
+            .map_err(|e| format!("Failed to leave alternate screen: {e}"))?;
 
         let result = f(self);
 
         execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
-            .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
-        enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
+            .map_err(|e| format!("Failed to enter alternate screen: {e}"))?;
+        enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {e}"))?;
 
         result
     }
@@ -1331,7 +1344,7 @@ impl Tui {
         commands
             .iter()
             .filter(|cmd| cmd.starts_with(input))
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     }
 
@@ -1452,7 +1465,7 @@ impl Tui {
             } => {
                 self.state.end_thinking();
                 let turn_dur = self.state.turn_started_at.take().map(|s| s.elapsed());
-                let dur_ms = turn_dur.map(|d| d.as_millis() as u64).unwrap_or(0);
+                let dur_ms = turn_dur.map_or(0, |d| d.as_millis() as u64);
                 let timeline: Vec<(String, bool, u64)> = tool_calls
                     .iter()
                     .map(|tc| (tc.name.clone(), tc.success, 0u64))
@@ -2029,29 +2042,27 @@ impl Tui {
                                 use crate::tui::app::ToolStatus as TS;
                                 let label = match status {
                                     TS::Pending | TS::Running => {
-                                        let cmd = if !input_summary.is_empty() {
-                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(
-                                                input_summary,
-                                            ) {
-                                                val.get("command")
-                                                    .or_else(|| val.get("cmd"))
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("")
-                                                    .to_string()
-                                            } else {
-                                                String::new()
-                                            }
+                                        let cmd = if input_summary.is_empty() {
+                                            String::new()
+                                        } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(
+                                            input_summary,
+                                        ) {
+                                            val.get("command")
+                                                .or_else(|| val.get("cmd"))
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string()
                                         } else {
                                             String::new()
                                         };
                                         if cmd.is_empty() {
-                                            format!("⏳ {}...", name)
+                                            format!("⏳ {name}...")
                                         } else {
-                                            format!("⏳ {}", cmd)
+                                            format!("⏳ {cmd}")
                                         }
                                     }
-                                    TS::Completed => format!("✓ {}", name),
-                                    TS::Failed => format!("✗ {}", name),
+                                    TS::Completed => format!("✓ {name}"),
+                                    TS::Failed => format!("✗ {name}"),
                                 };
                                 content_lines.push(label);
                                 if *expanded {
@@ -2100,15 +2111,14 @@ impl Tui {
                     }
                     let tool = self.state.tools.iter().rev().find(|t| &t.name == name);
                     let status = tool
-                        .map(|t| t.status)
-                        .unwrap_or(crate::tui::app::ToolStatus::Completed);
+                        .map_or(crate::tui::app::ToolStatus::Completed, |t| t.status);
                     let icon = match status {
                         crate::tui::app::ToolStatus::Pending
                         | crate::tui::app::ToolStatus::Running => "○",
                         crate::tui::app::ToolStatus::Completed => "✓",
                         crate::tui::app::ToolStatus::Failed => "✗",
                     };
-                    content_lines.push(format!("  {} {}", icon, name));
+                    content_lines.push(format!("  {icon} {name}"));
                     if let Some(t) = tool {
                         if !t.input_summary.is_empty() {
                             let summary = crate::tui::widgets::message_list::wrap_text(
@@ -2116,7 +2126,7 @@ impl Tui {
                                 content_width.saturating_sub(6),
                             );
                             for s in summary {
-                                content_lines.push(format!("     {}", s));
+                                content_lines.push(format!("     {s}"));
                             }
                         }
                     }
@@ -2161,17 +2171,14 @@ impl Tui {
 
 fn copy_to_clipboard(text: &str) {
     // Primary: system clipboard via arboard (works on X11, Wayland, macOS, Windows)
-    match arboard::Clipboard::new() {
-        Ok(mut clipboard) => {
-            let _ = clipboard.set_text(text);
-        }
-        Err(_) => {
-            // Fallback: OSC52 escape sequence for terminals that support it
-            let encoded = encode_base64(text.as_bytes());
-            let osc = format!("\x1b]52;c;{}\x1b\\", encoded);
-            print!("{}", osc);
-            let _ = std::io::stdout().flush();
-        }
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text);
+    } else {
+        // Fallback: OSC52 escape sequence for terminals that support it
+        let encoded = encode_base64(text.as_bytes());
+        let osc = format!("\x1b]52;c;{encoded}\x1b\\");
+        print!("{osc}");
+        let _ = std::io::stdout().flush();
     }
 }
 
@@ -2206,6 +2213,7 @@ impl Drop for Tui {
                 let _ = store.save();
             }
         }
+        let _ = KittyKeyboard::disable();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
     }

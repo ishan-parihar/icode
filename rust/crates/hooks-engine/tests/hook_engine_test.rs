@@ -396,7 +396,7 @@ async fn session_recovery_handles_empty() {
     let mut ctx = HookContext::new();
     let mut msg = Message {
         role: "user".into(),
-        content: "".into(),
+        content: String::new(),
     };
     hook.on_message(&mut ctx, &mut msg).await.unwrap();
     assert_eq!(ctx.injected_messages.len(), 1);
@@ -475,7 +475,7 @@ async fn truncator_truncates_large_output() {
     };
     hook.on_post_tool_use(&mut ctx, &mut output).await.unwrap();
     assert!(output.result.contains("(truncated)"));
-    assert!(ctx.warnings.len() > 0);
+    assert!(!ctx.warnings.is_empty());
 }
 
 // RalphLoop tests
@@ -556,7 +556,7 @@ fn all_hook_names_are_unique() {
         &StartWork,
     ];
     let mut names: Vec<&str> = hooks.iter().map(|h| h.name()).collect();
-    names.sort();
+    names.sort_unstable();
     let mut unique: Vec<&str> = names.clone();
     unique.dedup();
     assert_eq!(names.len(), unique.len(), "Duplicate hook names detected");

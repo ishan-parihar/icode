@@ -1,4 +1,4 @@
-//! Theme loader embedding all 37 OpenCode themes as compile-time constants.
+//! Theme loader embedding all 37 `OpenCode` themes as compile-time constants.
 //!
 //! Themes are organized by category and accessible via name lookup.
 
@@ -2155,7 +2155,7 @@ pub fn list_themes() -> Vec<&'static str> {
 
 /// List themes grouped by category.
 pub fn list_themes_by_category() -> Vec<(ThemeCategory, Vec<&'static ThemeEntry>)> {
-    use ThemeCategory::*;
+    use ThemeCategory::{Default, Popular, Dark, Light, AMOLED, Colorful};
     let order = [Default, Popular, Dark, Light, AMOLED, Colorful];
     order
         .into_iter()
@@ -2240,7 +2240,7 @@ mod tests {
 
     #[test]
     fn all_themes_have_valid_colors() {
-        for entry in THEMES.iter() {
+        for entry in THEMES {
             let theme = entry.theme;
             assert!(
                 matches!(theme.background, ratatui::style::Color::Rgb(_, _, _)),
@@ -2259,7 +2259,7 @@ mod tests {
     fn theme_ids_are_unique() {
         let ids: Vec<_> = THEMES.iter().map(|e| e.id).collect();
         let mut unique_ids = ids.clone();
-        unique_ids.sort();
+        unique_ids.sort_unstable();
         unique_ids.dedup();
         assert_eq!(ids.len(), unique_ids.len(), "Duplicate theme IDs found");
     }
@@ -2268,7 +2268,7 @@ mod tests {
     fn theme_display_names_are_unique() {
         let names: Vec<_> = THEMES.iter().map(|e| e.display_name).collect();
         let mut unique_names = names.clone();
-        unique_names.sort();
+        unique_names.sort_unstable();
         unique_names.dedup();
         assert_eq!(
             names.len(),

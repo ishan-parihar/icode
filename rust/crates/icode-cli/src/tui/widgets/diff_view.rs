@@ -31,7 +31,7 @@ pub struct DiffView {
 }
 
 impl DiffView {
-    /// Create a new empty DiffView.
+    /// Create a new empty `DiffView`.
     pub fn new() -> Self {
         Self {
             lines: Vec::new(),
@@ -40,7 +40,7 @@ impl DiffView {
         }
     }
 
-    /// Parse unified git diff output into a vector of DiffLine.
+    /// Parse unified git diff output into a vector of `DiffLine`.
     pub fn parse(diff: &str) -> Vec<DiffLine> {
         let mut result = Vec::new();
 
@@ -82,7 +82,7 @@ impl DiffView {
         result
     }
 
-    /// Parse diff output and create a DiffView with auto-populated lines.
+    /// Parse diff output and create a `DiffView` with auto-populated lines.
     pub fn from_diff(diff: &str, title: &str) -> Self {
         Self {
             lines: Self::parse(diff),
@@ -205,23 +205,24 @@ impl Default for DiffView {
 
 /// Render colored diff output for REPL mode using ANSI escape codes.
 pub fn render_colored_diff(diff: &str) -> String {
+    use std::fmt::Write;
     let mut output = String::new();
 
     for line in diff.lines() {
         if line.starts_with("diff --git") {
-            output.push_str(&format!("\x1b[1;35m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[1;35m{line}\x1b[0m");
         } else if line.starts_with("+++") {
-            output.push_str(&format!("\x1b[1;32m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[1;32m{line}\x1b[0m");
         } else if line.starts_with("---") {
-            output.push_str(&format!("\x1b[1;31m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[1;31m{line}\x1b[0m");
         } else if line.starts_with("@@") {
-            output.push_str(&format!("\x1b[36m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[36m{line}\x1b[0m");
         } else if line.starts_with('+') {
-            output.push_str(&format!("\x1b[32m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[32m{line}\x1b[0m");
         } else if line.starts_with('-') {
-            output.push_str(&format!("\x1b[31m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[31m{line}\x1b[0m");
         } else if line.starts_with(' ') {
-            output.push_str(&format!("\x1b[0m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[0m{line}\x1b[0m");
         } else if line.starts_with("index")
             || line.starts_with("old mode")
             || line.starts_with("new mode")
@@ -231,11 +232,11 @@ pub fn render_colored_diff(diff: &str) -> String {
             || line.starts_with("rename from")
             || line.starts_with("rename to")
         {
-            output.push_str(&format!("\x1b[2m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[2m{line}\x1b[0m");
         } else if line.is_empty() {
             output.push('\n');
         } else {
-            output.push_str(&format!("\x1b[1m{}\x1b[0m\n", line));
+            let _ = writeln!(output, "\x1b[1m{line}\x1b[0m");
         }
     }
 
@@ -364,7 +365,7 @@ mod tests {
     fn test_go_to_top_and_bottom() {
         let mut view = DiffView::new();
         for i in 0..20 {
-            view.lines.push(DiffLine::Context(format!("line {}", i)));
+            view.lines.push(DiffLine::Context(format!("line {i}")));
         }
         view.scroll = 10;
 

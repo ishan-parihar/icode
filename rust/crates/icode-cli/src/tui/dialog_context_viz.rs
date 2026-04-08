@@ -237,7 +237,7 @@ pub fn render_context_viz_dialog(
         let budget_line = Line::from(vec![
             Span::styled("Budget: ", Style::default().fg(theme.text_muted)),
             Span::styled(
-                format!("${:.2} / ${:.2}", remaining, max),
+                format!("${remaining:.2} / ${max:.2}"),
                 Style::default()
                     .fg(budget_color)
                     .add_modifier(Modifier::BOLD),
@@ -261,13 +261,13 @@ pub fn render_context_viz_dialog(
         Line::from(vec![
             Span::styled("Compaction: ", Style::default().fg(theme.text_muted)),
             Span::styled(
-                format!("{}x", compaction_count),
+                format!("{compaction_count}x"),
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" ({} msgs removed)", compaction_removed_messages),
+                format!(" ({compaction_removed_messages} msgs removed)"),
                 Style::default().fg(theme.text_muted),
             ),
         ])
@@ -334,7 +334,7 @@ pub fn render_context_viz_dialog(
             };
             let mut spans = vec![
                 Span::styled(
-                    format!("{} ", severity_icon),
+                    format!("{severity_icon} "),
                     Style::default().fg(severity_color),
                 ),
                 Span::styled(
@@ -346,7 +346,7 @@ pub fn render_context_viz_dialog(
             ];
             if let Some(action) = &s.action {
                 spans.push(Span::styled(
-                    format!("  [{}]", action),
+                    format!("  [{action}]"),
                     Style::default()
                         .fg(theme.text_muted)
                         .add_modifier(Modifier::ITALIC),
@@ -423,11 +423,11 @@ fn render_cost_estimate(
     Line::from(vec![
         Span::styled("Est. cost:  ", Style::default().fg(theme.text_muted)),
         Span::styled(
-            format!("${:.4}", total_cost),
+            format!("${total_cost:.4}"),
             Style::default().fg(cost_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("  (in ${:.2}/M, out ${:.2}/M)", input_per_m, output_per_m),
+            format!("  (in ${input_per_m:.2}/M, out ${output_per_m:.2}/M)"),
             Style::default().fg(theme.text_muted),
         ),
     ])

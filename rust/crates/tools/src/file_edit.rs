@@ -16,7 +16,7 @@ pub fn edit_file_tool_spec() -> Value {
     serde_json::to_value(schemars::schema_for!(EditFileInput)).unwrap()
 }
 
-pub fn execute_edit_file(input: EditFileInput) -> Result<String, String> {
+pub fn execute_edit_file(input: &EditFileInput) -> Result<String, String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
     let path = cwd.join(&input.path);

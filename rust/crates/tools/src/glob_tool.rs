@@ -1,10 +1,9 @@
 use glob::Pattern;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::fmt::Write;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
-
-use runtime::PermissionMode;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GlobToolInput {
@@ -15,21 +14,11 @@ pub struct GlobToolInput {
     pub path: Option<String>,
 }
 
-pub fn create_glob_tool() -> (String, &'static str, serde_json::Value, PermissionMode) {
-    (
-        "GlobTool".to_string(),
-        "Find files matching a glob pattern. Supports ** for recursive matching.",
-        serde_json::to_value(schemars::schema_for!(GlobToolInput)).unwrap(),
-        PermissionMode::ReadOnly,
-    )
-}
-
-pub fn execute_glob_tool(input: GlobToolInput, cwd: &PathBuf) -> Result<String, String> {
+pub fn execute_glob_tool(input: &GlobToolInput, cwd: &Path) -> Result<String, String> {
     let search_dir = input
         .path
         .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cwd.clone());
+        .map_or_else(|| cwd.to_path_buf(), PathBuf::from);
     if !search_dir.exists() {
         return Err(format!(
             "Search directory not found: {}",
@@ -40,7 +29,10 @@ pub fn execute_glob_tool(input: GlobToolInput, cwd: &PathBuf) -> Result<String, 
     let pattern = Pattern::new(&input.pattern).map_err(|e| format!("Invalid glob pattern: {e}"))?;
 
     let mut matches: Vec<String> = Vec::new();
-    for entry in WalkDir::new(&search_dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&search_dir)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
         let path = entry.path();
         if let Ok(relative) = path.strip_prefix(&search_dir) {
             if pattern.matches_path(relative) {
@@ -67,7 +59,7 @@ pub fn execute_glob_tool(input: GlobToolInput, cwd: &PathBuf) -> Result<String, 
         count, input.pattern, listing
     );
     if count > 100 {
-        output.push_str(&format!("\n\n... and {} more files", count - 100));
+        let _ = write!(output, "\n\n... and {} more files", count - 100);
     }
 
     Ok(output)

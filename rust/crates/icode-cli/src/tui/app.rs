@@ -370,9 +370,7 @@ impl AppState {
         use crate::tui::theme_loader::THEMES;
         THEMES
             .iter()
-            .find(|entry| entry.theme.background == self.theme.background)
-            .map(|entry| entry.id.to_string())
-            .unwrap_or_else(|| "opencode".to_string())
+            .find(|entry| entry.theme.background == self.theme.background).map_or_else(|| "opencode".to_string(), |entry| entry.id.to_string())
     }
 
     pub fn add_user_message(&mut self, content: String) {
@@ -454,10 +452,7 @@ impl AppState {
     pub fn append_thinking(&mut self, delta: &str) {
         if let Some(msg) = self.messages.last_mut() {
             if msg.is_streaming {
-                match msg.parts.last_mut() {
-                    Some(MessagePart::Thinking { content }) => content.push_str(delta),
-                    _ => {}
-                }
+                if let Some(MessagePart::Thinking { content }) = msg.parts.last_mut() { content.push_str(delta) }
             }
         }
     }
@@ -565,8 +560,7 @@ impl AppState {
         let boundary = self
             .revert
             .as_ref()
-            .map(|r| r.message_boundary)
-            .unwrap_or(self.messages.len());
+            .map_or(self.messages.len(), |r| r.message_boundary);
         if boundary == 0 {
             return false;
         }
@@ -731,13 +725,12 @@ impl AppState {
     pub fn tool_count_for_message(&self, msg_idx: usize) -> usize {
         self.messages
             .get(msg_idx)
-            .map(|m| {
+            .map_or(0, |m| {
                 m.parts
                     .iter()
                     .filter(|p| matches!(p, MessagePart::ToolCall { .. }))
                     .count()
             })
-            .unwrap_or(0)
     }
 
     pub fn add_sub_agent(&mut self, agent: SubAgentInfo) {

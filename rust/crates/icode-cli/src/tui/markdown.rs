@@ -1,11 +1,11 @@
+use std::fmt::Write;
+
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use syntect::easy::HighlightLines;
-use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthChar;
 
-use crate::tui::syntax_theme::build_syntect_theme;
+use crate::tui::syntax_highlight::SyntaxHighlighter;
 use crate::tui::theme::Theme;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -184,7 +184,49 @@ pub fn render_markdown_to_lines(
                     let mut prefixed = Vec::with_capacity(hl_spans.len() + 1);
                     prefixed.push(Span::raw("  "));
                     prefixed.extend(hl_spans);
-                    lines.push(Line::from(prefixed));
+                    let line: Line<'static> = Line::from(prefixed);
+                    if content_width > 0 && line.width() > content_width {
+                        let truncated: Vec<Span<'static>> = line
+                            .spans
+                            .into_iter()
+                            .scan(0, |w, span| {
+                                let sw = span
+                                    .content
+                                    .chars()
+                                    .map(|c| c.width().unwrap_or(1))
+                                    .sum::<usize>();
+                                if *w + sw <= content_width {
+                                    *w += sw;
+                                    Some(span)
+                                } else {
+                                    let avail = content_width.saturating_sub(*w);
+                                    if avail > 2 {
+                                        let truncated_content: String = span
+                                            .content
+                                            .chars()
+                                            .scan(0, |cw, c| {
+                                                *cw += c.width().unwrap_or(1);
+                                                if *cw <= avail {
+                                                    Some(c)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+                                        Some(Span::styled(
+                                            format!("{truncated_content}..."),
+                                            span.style,
+                                        ))
+                                    } else {
+                                        None
+                                    }
+                                }
+                            })
+                            .collect();
+                        lines.push(Line::from(truncated));
+                    } else {
+                        lines.push(line);
+                    }
                 }
                 lines.push(Line::from(""));
                 in_code_block = false;
@@ -325,7 +367,7 @@ pub fn render_markdown_to_lines(
             Event::End(TagEnd::Link) => {
                 if let Some(url) = link_url_stack.pop() {
                     let link_text = std::mem::take(&mut link_text_buf);
-                    let link_label = format!("[{}]", url);
+                    let link_label = format!("[{url}]");
                     lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(
@@ -334,7 +376,7 @@ pub fn render_markdown_to_lines(
                                 .fg(theme.link)
                                 .add_modifier(Modifier::UNDERLINED),
                         ),
-                        Span::styled(format!(" ({})", url), Style::default().fg(theme.text_muted)),
+                        Span::styled(format!(" ({url})"), Style::default().fg(theme.text_muted)),
                     ]));
                 }
                 in_link = false;
@@ -408,7 +450,7 @@ pub fn render_markdown_to_lines(
         lines.extend(wrapped);
     }
 
-    if lines.last().map_or(false, |l| l.width() == 0) && lines.len() > 1 {
+    if lines.last().is_some_and(|l| l.width() == 0) && lines.len() > 1 {
         lines.pop();
     }
 
@@ -446,7 +488,7 @@ fn flush_text(
                     prefix_str.push(' ');
                 }
                 ListKind::Ordered(_) => {
-                    prefix_str.push_str(&format!("{}. ", *counter));
+                    let _ = write!(prefix_str, "{}. ", *counter);
                 }
             }
         }
@@ -497,7 +539,7 @@ fn wrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
     }
 
     let mut result = Vec::new();
-    let prefix_span = if line.spans.first().map_or(false, |s| !s.content.is_empty()) {
+    let prefix_span = if line.spans.first().is_some_and(|s| !s.content.is_empty()) {
         Some(line.spans[0].clone())
     } else {
         None
@@ -540,7 +582,7 @@ fn wrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
                     } else {
                         Vec::new()
                     };
-                    next_spans.extend(current_spans.drain(..));
+                    next_spans.append(&mut current_spans);
                     result.push(Line::from(next_spans));
                     current_width = 0;
                 }
@@ -567,74 +609,14 @@ fn wrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
     result
 }
 
-fn syntect_style_to_ratatui(s: &syntect::highlighting::Style) -> Style {
-    let fg = Color::Rgb(s.foreground.r, s.foreground.g, s.foreground.b);
-    let bg = Color::Rgb(s.background.r, s.background.g, s.background.b);
-    let mut style = Style::default().fg(fg).bg(bg);
-    if s.font_style
-        .contains(syntect::highlighting::FontStyle::BOLD)
-    {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    if s.font_style
-        .contains(syntect::highlighting::FontStyle::ITALIC)
-    {
-        style = style.add_modifier(Modifier::ITALIC);
-    }
-    if s.font_style
-        .contains(syntect::highlighting::FontStyle::UNDERLINE)
-    {
-        style = style.add_modifier(Modifier::UNDERLINED);
-    }
-    style
-}
-
 fn highlight_code_block(
     lines: &[String],
     language: &str,
     theme: &Theme,
 ) -> Vec<Vec<Span<'static>>> {
-    let syntax_set = SyntaxSet::load_defaults_newlines();
-    let syntax = syntax_set
-        .find_syntax_by_token(language)
-        .or_else(|| syntax_set.find_syntax_by_token("text"))
-        .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
-
-    let syntect_theme = build_syntect_theme(theme);
-
-    let mut highlighter = HighlightLines::new(syntax, &syntect_theme);
-    let mut result = Vec::new();
-
-    for line_text in lines {
-        let line_with_newline = format!("{line_text}\n");
-        let highlighted = highlighter.highlight_line(&line_with_newline, &syntax_set);
-        if let Ok(ranges) = highlighted {
-            let mut spans = Vec::new();
-            for (s, text) in ranges {
-                let trimmed = text.trim_end_matches('\n');
-                if !trimmed.is_empty() {
-                    spans.push(Span::styled(
-                        trimmed.to_string(),
-                        syntect_style_to_ratatui(&s),
-                    ));
-                }
-            }
-            if spans.is_empty() {
-                spans.push(Span::styled(
-                    line_text.clone(),
-                    Style::default().fg(theme.code_text).bg(theme.code_bg),
-                ));
-            }
-            result.push(spans);
-        } else {
-            result.push(vec![Span::styled(
-                line_text.clone(),
-                Style::default().fg(theme.code_text).bg(theme.code_bg),
-            )]);
-        }
-    }
-
-    result
+    let code = lines.join("\n");
+    let highlighter = SyntaxHighlighter::new(theme);
+    highlighter.highlight(&code, language)
 }
 
 fn render_table(state: &TableState, content_width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -645,7 +627,7 @@ fn render_table(state: &TableState, content_width: usize, theme: &Theme) -> Vec<
     let col_count = state
         .headers
         .len()
-        .max(state.rows.iter().map(|r| r.len()).max().unwrap_or(0));
+        .max(state.rows.iter().map(std::vec::Vec::len).max().unwrap_or(0));
     if col_count == 0 {
         return vec![];
     }
@@ -680,7 +662,7 @@ fn render_table(state: &TableState, content_width: usize, theme: &Theme) -> Vec<
     let mut header_line = String::new();
     header_line.push(vbar);
     for (i, &w) in col_widths.iter().enumerate() {
-        let header_text = state.headers.get(i).map(|s| s.as_str()).unwrap_or("");
+        let header_text = state.headers.get(i).map_or("", std::string::String::as_str);
         let padded = pad_right(header_text, w);
         header_line.push(' ');
         header_line.push_str(&padded);
@@ -709,7 +691,7 @@ fn render_table(state: &TableState, content_width: usize, theme: &Theme) -> Vec<
         let mut row_line = String::new();
         row_line.push(vbar);
         for (i, &w) in col_widths.iter().enumerate() {
-            let cell_text = row.get(i).map(|s| s.as_str()).unwrap_or("");
+            let cell_text = row.get(i).map_or("", std::string::String::as_str);
             let padded = pad_right(cell_text, w);
             row_line.push(' ');
             row_line.push_str(&padded);

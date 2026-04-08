@@ -1,8 +1,8 @@
 use ratatui::style::Color;
 
-/// Theme palette matching OpenCode's default theme.
-/// Colors sourced from opencode.json — the canonical OpenCode TUI theme.
-/// Uses warm orange primary (OpenCode's signature color).
+/// Theme palette matching `OpenCode`'s default theme.
+/// Colors sourced from opencode.json — the canonical `OpenCode` TUI theme.
+/// Uses warm orange primary (`OpenCode`'s signature color).
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
     // === Background ===
@@ -66,7 +66,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// OpenCode default dark theme — sourced from opencode.json.
+    /// `OpenCode` default dark theme — sourced from opencode.json.
     pub const fn dark() -> Self {
         Self {
             background: Color::Rgb(10, 10, 10),
@@ -208,8 +208,6 @@ impl Theme {
     pub fn display_name(name: &str) -> String {
         super::theme_loader::THEMES
             .iter()
-            .find(|e| e.id == name)
-            .map(|e| e.display_name.to_string())
-            .unwrap_or_else(|| name.to_string())
+            .find(|e| e.id == name).map_or_else(|| name.to_string(), |e| e.display_name.to_string())
     }
 }

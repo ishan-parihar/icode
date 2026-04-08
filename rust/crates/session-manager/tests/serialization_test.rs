@@ -1,4 +1,3 @@
-use serde_json;
 use session_manager::types::{
     SessionInfo, SessionListResponse, SessionMessage, SessionReadResponse, SessionSearchResult,
 };

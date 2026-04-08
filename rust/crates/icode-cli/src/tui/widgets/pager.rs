@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+#[derive(Default)]
 pub struct PagerState {
     pub open: bool,
     pub title: String,
@@ -68,16 +69,6 @@ impl PagerState {
     }
 }
 
-impl Default for PagerState {
-    fn default() -> Self {
-        Self {
-            open: false,
-            title: String::new(),
-            content: String::new(),
-            scroll: 0,
-        }
-    }
-}
 
 pub fn render_pager(
     frame: &mut Frame,

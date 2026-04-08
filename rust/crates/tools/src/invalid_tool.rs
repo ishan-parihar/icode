@@ -55,6 +55,7 @@ static TOOL_ALIASES: &[(&str, &str)] = &[
     ("notebook_edit", "NotebookEdit"),
 ];
 
+#[must_use]
 pub fn repair_tool_call(
     tool_name: &str,
     input: &str,
@@ -65,10 +66,7 @@ pub fn repair_tool_call(
 
     match (repaired_name, repaired_input) {
         (Some(name), Some(inp)) => {
-            let note = format!(
-                "Tool call repaired: '{}' -> '{}', JSON syntax fixed",
-                tool_name, name
-            );
+            let note = format!("Tool call repaired: '{tool_name}' -> '{name}', JSON syntax fixed");
             ToolRepairResult::Repaired {
                 tool_name: name,
                 input: inp,
@@ -76,7 +74,7 @@ pub fn repair_tool_call(
             }
         }
         (Some(name), None) => {
-            let note = format!("Tool call repaired: '{}' -> '{}'", tool_name, name);
+            let note = format!("Tool call repaired: '{tool_name}' -> '{name}'");
             if let Ok(parsed) = serde_json::from_str::<Value>(input) {
                 ToolRepairResult::Repaired {
                     tool_name: name,
@@ -95,14 +93,14 @@ pub fn repair_tool_call(
             let suggestions = suggest_tool_names(tool_name, available_tools);
             ToolRepairResult::Failed {
                 suggestions,
-                reason: format!("Could not find a matching tool for '{}'", tool_name),
+                reason: format!("Could not find a matching tool for '{tool_name}'"),
             }
         }
         (None, None) => {
             let suggestions = suggest_tool_names(tool_name, available_tools);
             ToolRepairResult::Failed {
                 suggestions,
-                reason: format!("Unknown tool '{}' with invalid JSON input", tool_name),
+                reason: format!("Unknown tool '{tool_name}' with invalid JSON input"),
             }
         }
     }
@@ -112,7 +110,7 @@ fn find_canonical_name(input: &str, available: &[String]) -> Option<String> {
     let lower = input.to_lowercase();
     let trimmed = lower.trim();
 
-    if let Some(&(alias, canonical)) = TOOL_ALIASES.iter().find(|(a, _)| {
+    if let Some(&(_alias, canonical)) = TOOL_ALIASES.iter().find(|(a, _)| {
         let alias_lower = a.to_lowercase();
         alias_lower == trimmed || alias_lower == trimmed.replace('_', "")
     }) {
@@ -149,8 +147,8 @@ fn find_canonical_name(input: &str, available: &[String]) -> Option<String> {
 
 fn normalize_for_comparison(s: &str) -> String {
     s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
         .collect()
 }
 
@@ -171,6 +169,7 @@ fn fuzzy_match(query: &str, candidates: &[String]) -> Option<String> {
     best_match
 }
 
+#[allow(clippy::needless_range_loop)]
 fn edit_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
@@ -191,11 +190,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
     }
     for i in 1..=m {
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] {
-                0
-            } else {
-                1
-            };
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
             dp[i][j] = (dp[i - 1][j] + 1)
                 .min(dp[i][j - 1] + 1)
                 .min(dp[i - 1][j - 1] + cost);
@@ -407,7 +402,7 @@ mod tests {
         let result = repair_tool_call("read", r#"{"path":"test.rs"}"#, &sample_tools());
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "read_file"),
-            _ => panic!("expected repaired"),
+            ToolRepairResult::Failed { .. } => panic!("expected repaired"),
         }
     }
 
@@ -420,7 +415,7 @@ mod tests {
         );
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "write_file"),
-            _ => panic!("expected repaired"),
+            ToolRepairResult::Failed { .. } => panic!("expected repaired"),
         }
     }
 
@@ -430,7 +425,7 @@ mod tests {
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "WebSearch"),
             ToolRepairResult::Failed { suggestions, .. } => {
-                assert!(suggestions.contains(&"WebSearch".to_string()))
+                assert!(suggestions.contains(&"WebSearch".to_string()));
             }
         }
     }
@@ -473,10 +468,10 @@ mod tests {
 
     #[test]
     fn failed_repair_returns_suggestions() {
-        let result = repair_tool_call("__nonexistent__", r#"{}"#, &sample_tools());
+        let result = repair_tool_call("__nonexistent__", r"{}", &sample_tools());
         match result {
             ToolRepairResult::Failed { .. } => {}
-            _ => panic!("expected failed"),
+            ToolRepairResult::Repaired { .. } => panic!("expected failed"),
         }
     }
 
@@ -530,7 +525,7 @@ mod tests {
                 assert_eq!(input["query"], "rust");
                 assert!(note.contains("repaired"));
             }
-            _ => panic!("expected repaired, got {:?}", result),
+            ToolRepairResult::Failed { .. } => panic!("expected repaired, got {result:?}"),
         }
     }
 
@@ -539,7 +534,7 @@ mod tests {
         let result = repair_tool_call("shell", r#"{"command":"ls"}"#, &sample_tools());
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "bash"),
-            _ => panic!("expected repaired"),
+            ToolRepairResult::Failed { .. } => panic!("expected repaired"),
         }
     }
 
@@ -549,7 +544,7 @@ mod tests {
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "glob_search"),
             ToolRepairResult::Failed { suggestions, .. } => {
-                assert!(suggestions.iter().any(|s| s.contains("glob")))
+                assert!(suggestions.iter().any(|s| s.contains("glob")));
             }
         }
     }
@@ -568,7 +563,7 @@ mod tests {
         let result = repair_tool_call("zzzzz", "{}", &sample_tools());
         match result {
             ToolRepairResult::Failed { .. } => {}
-            other => panic!("expected failed, got {:?}", other),
+            other @ ToolRepairResult::Repaired { .. } => panic!("expected failed, got {other:?}"),
         }
     }
 
@@ -616,7 +611,7 @@ mod tests {
                 assert_eq!(tool_name, "read_file");
                 assert_eq!(input["path"], "x.rs");
             }
-            _ => panic!("expected repaired"),
+            ToolRepairResult::Failed { .. } => panic!("expected repaired"),
         }
     }
 
@@ -633,16 +628,15 @@ mod tests {
                 assert_eq!(input["path"], "x.rs");
                 assert!(note.contains("repaired"));
             }
-            _ => panic!("expected repaired"),
+            ToolRepairResult::Failed { .. } => panic!("expected repaired"),
         }
     }
 
     #[test]
     fn repairs_hyphen_to_underscore() {
         let result = repair_tool_call("read-file", r#"{"path":"x.rs"}"#, &sample_tools());
-        match result {
-            ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "read_file"),
-            _ => {}
+        if let ToolRepairResult::Repaired { tool_name, .. } = result {
+            assert_eq!(tool_name, "read_file");
         }
     }
 
@@ -650,21 +644,18 @@ mod tests {
     fn repairs_sendusermessage_alias() {
         let tools = vec!["SendUserMessage".to_string()];
         let result = repair_tool_call("send_user_message", r#"{"text":"hi"}"#, &tools);
-        match result {
-            ToolRepairResult::Repaired { tool_name, .. } => {
-                assert_eq!(tool_name, "SendUserMessage")
-            }
-            _ => {}
+        if let ToolRepairResult::Repaired { tool_name, .. } = result {
+            assert_eq!(tool_name, "SendUserMessage");
         }
     }
 
     #[test]
     fn repairs_taskcreate_alias() {
         let tools = vec!["TaskCreate".to_string()];
-        let result = repair_tool_call("taskcreate", r#"{}"#, &tools);
+        let result = repair_tool_call("taskcreate", r"{}", &tools);
         match result {
             ToolRepairResult::Repaired { tool_name, .. } => assert_eq!(tool_name, "TaskCreate"),
-            _ => panic!("expected repaired, got {:?}", result),
+            ToolRepairResult::Failed { .. } => panic!("expected repaired, got {result:?}"),
         }
     }
 }

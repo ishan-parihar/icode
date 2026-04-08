@@ -23,6 +23,7 @@ pub struct PermissionRule {
 }
 
 impl PermissionRule {
+    #[must_use]
     pub fn matches(&self, tool_name: &str, input: &str) -> bool {
         if self.tool_name != tool_name {
             return false;
@@ -33,6 +34,7 @@ impl PermissionRule {
         true
     }
 
+    #[must_use]
     pub fn effective_action(&self, tool_name: &str, input: &str) -> Option<PermissionAction> {
         if self.matches(tool_name, input) {
             Some(self.action.clone())
@@ -52,6 +54,7 @@ impl PermissionRuleStore {
         self.rules.push(rule);
     }
 
+    #[must_use]
     pub fn find_matching(&self, tool_name: &str, input: &str) -> Option<&PermissionRule> {
         self.rules.iter().find(|r| r.matches(tool_name, input))
     }

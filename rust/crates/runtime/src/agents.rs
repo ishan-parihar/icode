@@ -37,6 +37,7 @@ impl Default for AgentDefinition {
     }
 }
 
+#[must_use]
 pub fn default_agents() -> HashMap<String, AgentDefinition> {
     let mut m = HashMap::new();
     m.insert(

@@ -160,8 +160,7 @@ impl SkillsDialogState {
             .iter()
             .rev()
             .find(|(_, offset)| self.cursor >= *offset)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("Skills")
+            .map_or("Skills", |(name, _)| name.as_str())
     }
 }
 
@@ -334,8 +333,7 @@ pub fn render_skills_dialog(
             .iter()
             .rev()
             .find(|(_, offset)| pos >= *offset)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("Skills");
+            .map_or("Skills", |(name, _)| name.as_str());
 
         if section != current_section {
             current_section = section.to_string();

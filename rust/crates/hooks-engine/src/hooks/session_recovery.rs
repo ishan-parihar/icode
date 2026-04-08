@@ -55,7 +55,7 @@ mod tests {
         let mut ctx = HookContext::new();
         let mut msg = Message {
             role: "user".into(),
-            content: "".into(),
+            content: String::new(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(hook.on_message(&mut ctx, &mut msg)).unwrap();

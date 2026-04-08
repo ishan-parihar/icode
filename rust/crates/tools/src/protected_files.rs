@@ -23,6 +23,7 @@ const PROTECTED_FILES: &[&str] = &[
 const PROTECTED_PATTERNS: &[&str] = &[".git/**", "**/.env*", "**/secrets.*"];
 
 /// Check if a file path is protected.
+#[must_use]
 pub fn is_protected(path: &Path) -> bool {
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
@@ -42,6 +43,7 @@ pub fn is_protected(path: &Path) -> bool {
 }
 
 /// Get a warning message for attempting to edit a protected file.
+#[must_use]
 pub fn protected_file_warning(path: &Path) -> String {
     format!(
         "Attempting to modify protected file: {}. This file is guarded and should be edited manually.",

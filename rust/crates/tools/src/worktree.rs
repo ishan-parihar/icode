@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Command;
@@ -51,7 +51,7 @@ fn run_git(cwd: &PathBuf, args: &[&str]) -> Result<String, String> {
     }
 }
 
-pub fn execute_enter_worktree(input: EnterWorktreeInput) -> Result<String, String> {
+pub fn execute_enter_worktree(input: &EnterWorktreeInput) -> Result<String, String> {
     let session = global_worktree_session();
     {
         let guard = session.lock().map_err(|e| format!("lock poisoned: {e}"))?;
@@ -62,7 +62,7 @@ pub fn execute_enter_worktree(input: EnterWorktreeInput) -> Result<String, Strin
 
     let cwd = std::env::current_dir().map_err(|e| format!("cannot determine cwd: {e}"))?;
 
-    let branch = input.branch.unwrap_or_else(|| {
+    let branch = input.branch.clone().unwrap_or_else(|| {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -139,7 +139,7 @@ pub fn execute_enter_worktree(input: EnterWorktreeInput) -> Result<String, Strin
         });
     }
 
-    to_pretty_json(json!({
+    to_pretty_json(&json!({
         "status": "success",
         "message": format!(
             "Created worktree at {} on branch '{}'.\nUse ExitWorktree to return.",
@@ -152,7 +152,7 @@ pub fn execute_enter_worktree(input: EnterWorktreeInput) -> Result<String, Strin
     }))
 }
 
-pub fn execute_exit_worktree(input: ExitWorktreeInput) -> Result<String, String> {
+pub fn execute_exit_worktree(input: &ExitWorktreeInput) -> Result<String, String> {
     let session = global_worktree_session();
 
     let state = {
@@ -234,7 +234,7 @@ pub fn execute_exit_worktree(input: ExitWorktreeInput) -> Result<String, String>
         }
     };
 
-    to_pretty_json(json!({
+    to_pretty_json(&json!({
         "status": "success",
         "message": message,
         "action": input.action,
@@ -250,7 +250,7 @@ pub fn exit_worktree_tool_spec() -> Value {
     serde_json::to_value(schemars::schema_for!(ExitWorktreeInput)).unwrap()
 }
 
-fn to_pretty_json(value: Value) -> Result<String, String> {
+fn to_pretty_json(value: &Value) -> Result<String, String> {
     serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
 }
 
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn exit_worktree_requires_no_active_session() {
-        let result = execute_exit_worktree(ExitWorktreeInput {
+        let result = execute_exit_worktree(&ExitWorktreeInput {
             action: "keep".to_string(),
             discard_changes: false,
         });

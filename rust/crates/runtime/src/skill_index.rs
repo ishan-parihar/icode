@@ -12,7 +12,14 @@ pub struct SkillIndex {
     skills: Vec<DiscoveredSkill>,
 }
 
+impl Default for SkillIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillIndex {
+    #[must_use]
     pub fn new() -> Self {
         Self { skills: Vec::new() }
     }
@@ -21,6 +28,7 @@ impl SkillIndex {
         self.skills.extend(skills);
     }
 
+    #[must_use]
     pub fn search(&self, query: &str) -> Vec<&DiscoveredSkill> {
         let query_lower = query.to_lowercase();
         self.skills
@@ -32,12 +40,14 @@ impl SkillIndex {
             .collect()
     }
 
+    #[must_use]
     pub fn list(&self) -> &[DiscoveredSkill] {
         &self.skills
     }
 }
 
 impl SharedSkillIndex {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(SkillIndex::new())),

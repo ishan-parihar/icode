@@ -8,14 +8,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::tui::theme::Theme;
 
-const MIN_WIDTH: u16 = 60;
-const MIN_HEIGHT: u16 = 14;
+const MIN_WIDTH: u16 = 70;
+const MIN_HEIGHT: u16 = 16;
+
+/// Operating modes for the workspace dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceDialogMode {
+    /// Normal browsing / searching.
+    Listing,
+    /// Confirming deletion of the workspace at the given index (into `filtered`).
+    ConfirmDelete(usize),
+    /// Prompting the user for a new workspace path.
+    EnterCreatePath,
+}
 
 fn dialog_width(term_width: u16) -> u16 {
     if term_width >= 128 {
-        90
+        100
     } else if term_width >= 96 {
-        80
+        86
     } else {
         MIN_WIDTH
     }
@@ -40,6 +51,8 @@ pub struct WorkspaceDialogState {
     pub selected: usize,
     pub scroll_offset: usize,
     pub search: String,
+    pub mode: WorkspaceDialogMode,
+    pub create_input: String,
 }
 
 impl WorkspaceDialogState {
@@ -51,6 +64,8 @@ impl WorkspaceDialogState {
             selected: 0,
             scroll_offset: 0,
             search: String::new(),
+            mode: WorkspaceDialogMode::Listing,
+            create_input: String::new(),
         }
     }
 
@@ -59,12 +74,16 @@ impl WorkspaceDialogState {
         self.selected = 0;
         self.scroll_offset = 0;
         self.search.clear();
+        self.mode = WorkspaceDialogMode::Listing;
+        self.create_input.clear();
         self.scan_workspaces();
         self.apply_filter();
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        self.mode = WorkspaceDialogMode::Listing;
+        self.create_input.clear();
     }
 
     pub fn scan_workspaces(&mut self) {
@@ -118,7 +137,7 @@ impl WorkspaceDialogState {
         if let Ok(home) = std::env::var("HOME") {
             let home_path = PathBuf::from(&home);
             if let Ok(entries) = std::fs::read_dir(&home_path) {
-                for entry in entries.filter_map(|e| e.ok()) {
+                for entry in entries.filter_map(std::result::Result::ok) {
                     let path = entry.path();
                     if path.is_dir() {
                         locations.push(path);
@@ -132,7 +151,7 @@ impl WorkspaceDialogState {
                 let path = PathBuf::from(dir);
                 if path.is_dir() {
                     if let Ok(entries) = std::fs::read_dir(&path) {
-                        for entry in entries.filter_map(|e| e.ok()) {
+                        for entry in entries.filter_map(std::result::Result::ok) {
                             let sub = entry.path();
                             if sub.is_dir() {
                                 locations.push(sub);
@@ -154,8 +173,7 @@ impl WorkspaceDialogState {
         }
         std::fs::read_dir(&sessions_dir)
             .ok()
-            .map(|entries| entries.filter_map(|e| e.ok()).count())
-            .unwrap_or(0)
+            .map_or(0, |entries| entries.filter_map(std::result::Result::ok).count())
     }
 
     fn last_active(marker_dir: &PathBuf) -> u128 {
@@ -166,7 +184,7 @@ impl WorkspaceDialogState {
 
         let mut latest = 0u128;
         if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
+            for entry in entries.filter_map(std::result::Result::ok) {
                 if let Ok(metadata) = entry.metadata() {
                     if let Ok(modified) = metadata.modified() {
                         if let Ok(duration) = modified.duration_since(UNIX_EPOCH) {
@@ -181,7 +199,7 @@ impl WorkspaceDialogState {
         latest
     }
 
-    fn apply_filter(&mut self) {
+    pub fn apply_filter(&mut self) {
         if self.search.is_empty() {
             self.filtered = self.workspaces.clone();
         } else {
@@ -189,7 +207,7 @@ impl WorkspaceDialogState {
             self.filtered = self
                 .workspaces
                 .iter()
-                .filter(|w| w.path.to_string_lossy().to_lowercase().contains(&q))
+                .filter(|w| fuzzy_match(&q, &w.path.to_string_lossy()))
                 .cloned()
                 .collect();
         }
@@ -198,6 +216,66 @@ impl WorkspaceDialogState {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> WorkspaceAction {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        if self.mode == WorkspaceDialogMode::EnterCreatePath {
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = WorkspaceDialogMode::Listing;
+                    self.create_input.clear();
+                    return WorkspaceAction::None;
+                }
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.mode = WorkspaceDialogMode::Listing;
+                    self.create_input.clear();
+                    return WorkspaceAction::None;
+                }
+                KeyCode::Enter => {
+                    let path = self.create_input.clone();
+                    self.create_input.clear();
+                    self.mode = WorkspaceDialogMode::Listing;
+                    if path.is_empty() {
+                        return WorkspaceAction::None;
+                    }
+                    return WorkspaceAction::Create(path);
+                }
+                KeyCode::Char(c) => {
+                    self.create_input.push(c);
+                    return WorkspaceAction::None;
+                }
+                KeyCode::Backspace => {
+                    self.create_input.pop();
+                    return WorkspaceAction::None;
+                }
+                _ => return WorkspaceAction::None,
+            }
+        }
+
+        if let WorkspaceDialogMode::ConfirmDelete(idx) = self.mode {
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = WorkspaceDialogMode::Listing;
+                    return WorkspaceAction::None;
+                }
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.mode = WorkspaceDialogMode::Listing;
+                    return WorkspaceAction::None;
+                }
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    if let Some(ws) = self.filtered.get(idx) {
+                        let path = ws.path.to_string_lossy().to_string();
+                        self.mode = WorkspaceDialogMode::Listing;
+                        return WorkspaceAction::Delete(path);
+                    }
+                    self.mode = WorkspaceDialogMode::Listing;
+                    return WorkspaceAction::None;
+                }
+                KeyCode::Char('n') => {
+                    self.mode = WorkspaceDialogMode::Listing;
+                    return WorkspaceAction::None;
+                }
+                _ => return WorkspaceAction::None,
+            }
+        }
 
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc) => {
@@ -249,6 +327,17 @@ impl WorkspaceDialogState {
                 self.search.clear();
                 WorkspaceAction::StartSearch
             }
+            (_, KeyCode::Delete) => {
+                if !self.filtered.is_empty() {
+                    self.mode = WorkspaceDialogMode::ConfirmDelete(self.selected);
+                }
+                WorkspaceAction::None
+            }
+            (_, KeyCode::Char('n')) => {
+                self.mode = WorkspaceDialogMode::EnterCreatePath;
+                self.create_input.clear();
+                WorkspaceAction::None
+            }
             (_, KeyCode::Backspace) => {
                 if !self.search.is_empty() {
                     self.search.pop();
@@ -280,6 +369,8 @@ pub enum WorkspaceAction {
     Close,
     Switch(String),
     StartSearch,
+    Delete(String),
+    Create(String),
 }
 
 fn format_relative_time(epoch_millis: u128) -> String {
@@ -298,6 +389,35 @@ fn format_relative_time(epoch_millis: u128) -> String {
     } else {
         format!("{}d ago", secs / 86400)
     }
+}
+
+fn fuzzy_match(query: &str, haystack: &str) -> bool {
+    let query_chars = query.chars().peekable();
+    let mut haystack_chars = haystack.chars().peekable();
+    let mut last_match_idx = 0usize;
+    let haystack_lower: Vec<char> = haystack.to_lowercase().chars().collect();
+
+    for qc in query_chars {
+        let mut found = false;
+        for (i, hc) in haystack_chars.clone().enumerate() {
+            if qc == hc {
+                let abs_idx = last_match_idx + i + 1;
+                if abs_idx > haystack_lower.len() {
+                    return false;
+                }
+                last_match_idx = abs_idx;
+                for _ in 0..=i {
+                    haystack_chars.next();
+                }
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn render_workspace_dialog(
@@ -354,7 +474,7 @@ pub fn render_workspace_dialog(
     frame.render_widget(Paragraph::new(search_line), chunks[0]);
 
     let hint = Span::styled(
-        "Enter: switch  •  /: search  •  ↑↓: navigate  •  Esc: close",
+        "Enter: open  •  N: new  •  Del: delete  •  /: search  •  ↑↓: navigate  •  Esc: close",
         Style::default()
             .fg(theme.text_muted)
             .add_modifier(Modifier::ITALIC),
@@ -364,9 +484,15 @@ pub fn render_workspace_dialog(
     let list_area = chunks[2];
     let visible_lines = list_area.height as usize;
 
-    if state.filtered.is_empty() {
+    if state.filtered.is_empty() && state.search.is_empty() {
         let empty = Paragraph::new(Span::styled(
-            "No workspaces found",
+            "No workspaces found. Press N to create one.",
+            Style::default().fg(theme.text_muted),
+        ));
+        frame.render_widget(empty, list_area);
+    } else if state.filtered.is_empty() && !state.search.is_empty() {
+        let empty = Paragraph::new(Span::styled(
+            "No matches. Press N to create new.",
             Style::default().fg(theme.text_muted),
         ));
         frame.render_widget(empty, list_area);
@@ -387,33 +513,37 @@ pub fn render_workspace_dialog(
                 "never".to_string()
             };
 
-            let display_path = truncate_path(&workspace.path, 50);
+            let display_path = truncate_path(&workspace.path, 42);
 
-            let mut spans = vec![Span::raw(" ")];
-            spans.push(Span::styled(
-                "\u{25b6} ",
-                Style::default().fg(if is_selected {
-                    theme.background
-                } else {
-                    theme.primary
-                }),
-            ));
-            spans.push(Span::styled(
-                &display_path,
-                Style::default().fg(if is_selected {
-                    theme.background
-                } else {
-                    theme.text
-                }),
-            ));
-            spans.push(Span::styled(
-                format!(" ({} sessions) ", workspace.session_count),
-                Style::default().fg(if is_selected {
-                    theme.background
-                } else {
-                    theme.text_muted
-                }),
-            ));
+            let indicator = if is_selected { "\u{25b6} " } else { "  " };
+            let sessions_label = format!("{} sess", workspace.session_count);
+
+            let line_spans = vec![
+                Span::styled(
+                    indicator,
+                    Style::default().fg(if is_selected {
+                        theme.background
+                    } else {
+                        theme.primary
+                    }),
+                ),
+                Span::styled(
+                    &display_path,
+                    Style::default().fg(if is_selected {
+                        theme.background
+                    } else {
+                        theme.text
+                    }),
+                ),
+                Span::styled(
+                    format!(" ({sessions_label}) "),
+                    Style::default().fg(if is_selected {
+                        theme.background
+                    } else {
+                        theme.text_muted
+                    }),
+                ),
+            ];
 
             let style = if is_selected {
                 Style::default()
@@ -427,14 +557,14 @@ pub fn render_workspace_dialog(
             let line_y = list_area.y + line_idx as u16;
             if line_y < list_area.bottom() {
                 let line_area = Rect::new(list_area.x, line_y, list_area.width, 1);
-                let line = Line::from(spans);
+                let line = Line::from(line_spans);
                 frame.render_widget(Paragraph::new(line).style(style), line_area);
 
-                if list_area.width > 12 {
+                if list_area.width > 14 {
                     let time_style = if is_selected {
                         Style::default().fg(theme.background).bg(theme.primary)
                     } else {
-                        Style::default().fg(theme.text_muted)
+                        Style::default().fg(theme.secondary)
                     };
                     frame.render_widget(
                         Paragraph::new(time_str).style(time_style),
@@ -476,8 +606,7 @@ fn truncate_path(path: &PathBuf, max_len: usize) -> String {
             .char_indices()
             .take_while(|(idx, _)| *idx < limit)
             .last()
-            .map(|(idx, ch)| idx + ch.len_utf8())
-            .unwrap_or(0);
+            .map_or(0, |(idx, ch)| idx + ch.len_utf8());
         format!("...{}", &s[safe_end..])
     }
 }
@@ -565,7 +694,7 @@ mod tests {
                     WorkspaceAction::Switch(path) => {
                         assert!(!path.is_empty());
                     }
-                    _ => panic!("Expected Switch action, got {:?}", action),
+                    _ => panic!("Expected Switch action, got {action:?}"),
                 }
                 assert!(!state.open);
             }
@@ -644,5 +773,91 @@ mod tests {
             state.selected,
             10.min(state.filtered.len().saturating_sub(1))
         );
+    }
+
+    #[test]
+    fn test_fuzzy_match_basic() {
+        assert!(fuzzy_match("icode", "/home/user/icode/rust"));
+        assert!(fuzzy_match("rust", "/home/user/icode/rust"));
+        assert!(fuzzy_match("hm", "/home/user/icode"));
+        assert!(!fuzzy_match("xyz", "/home/user/icode"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_empty() {
+        assert!(fuzzy_match("", "/any/path"));
+        assert!(!fuzzy_match("a", ""));
+    }
+
+    #[test]
+    fn test_delete_opens_confirmation() {
+        with_test_workspace(|| {
+            let mut state = WorkspaceDialogState::new();
+            state.scan_workspaces();
+            state.apply_filter();
+            state.open();
+
+            let action = state.handle_key(key(KeyCode::Delete, KeyModifiers::NONE));
+            assert!(matches!(action, WorkspaceAction::None));
+            assert!(matches!(state.mode, WorkspaceDialogMode::ConfirmDelete(_)));
+        });
+    }
+
+    #[test]
+    fn test_n_opens_create_mode() {
+        let mut state = WorkspaceDialogState::new();
+        state.open();
+
+        let action = state.handle_key(key(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(matches!(action, WorkspaceAction::None));
+        assert!(matches!(state.mode, WorkspaceDialogMode::EnterCreatePath));
+    }
+
+    #[test]
+    fn test_create_path_entry() {
+        let mut state = WorkspaceDialogState::new();
+        state.open();
+        state.handle_key(key(KeyCode::Char('n'), KeyModifiers::NONE));
+
+        state.handle_key(key(KeyCode::Char('/'), KeyModifiers::NONE));
+        state.handle_key(key(KeyCode::Char('t'), KeyModifiers::NONE));
+        state.handle_key(key(KeyCode::Char('e'), KeyModifiers::NONE));
+        state.handle_key(key(KeyCode::Char('s'), KeyModifiers::NONE));
+        state.handle_key(key(KeyCode::Char('t'), KeyModifiers::NONE));
+
+        let action = state.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+        match action {
+            WorkspaceAction::Create(path) => assert_eq!(path, "/test"),
+            _ => panic!("Expected Create action, got {action:?}"),
+        }
+    }
+
+    #[test]
+    fn test_esc_cancels_delete_confirmation() {
+        with_test_workspace(|| {
+            let mut state = WorkspaceDialogState::new();
+            state.scan_workspaces();
+            state.apply_filter();
+            state.open();
+
+            state.handle_key(key(KeyCode::Delete, KeyModifiers::NONE));
+            assert!(matches!(state.mode, WorkspaceDialogMode::ConfirmDelete(_)));
+
+            let action = state.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(matches!(action, WorkspaceAction::None));
+            assert!(matches!(state.mode, WorkspaceDialogMode::Listing));
+        });
+    }
+
+    #[test]
+    fn test_esc_cancels_create_mode() {
+        let mut state = WorkspaceDialogState::new();
+        state.open();
+        state.handle_key(key(KeyCode::Char('n'), KeyModifiers::NONE));
+
+        let action = state.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(action, WorkspaceAction::None));
+        assert!(matches!(state.mode, WorkspaceDialogMode::Listing));
+        assert!(state.create_input.is_empty());
     }
 }

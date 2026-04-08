@@ -125,7 +125,7 @@ fn complete_file_path(partial: &str) -> Vec<String> {
     std::fs::read_dir(dir_path)
         .ok()
         .into_iter()
-        .flat_map(|entries| entries.filter_map(|e| e.ok()))
+        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with(&file_prefix) {
@@ -133,9 +133,9 @@ fn complete_file_path(partial: &str) -> Vec<String> {
                 let full = if dir.is_empty() {
                     name.clone()
                 } else {
-                    format!("{}/{}", dir, name)
+                    format!("{dir}/{name}")
                 };
-                Some(if is_dir { format!("{}/", full) } else { full })
+                Some(if is_dir { format!("{full}/") } else { full })
             } else {
                 None
             }
@@ -213,8 +213,7 @@ impl Completer for SlashCommandHelper {
                     .available_models
                     .iter()
                     .filter(|m| m.starts_with(&partial))
-                    .cloned()
-                    .take(20)
+                    .take(20).cloned()
                     .collect();
                 (start, comps)
             }
@@ -225,8 +224,7 @@ impl Completer for SlashCommandHelper {
                     .available_sessions
                     .iter()
                     .filter(|s| s.starts_with(&partial))
-                    .cloned()
-                    .take(20)
+                    .take(20).cloned()
                     .collect();
                 (start, comps)
             }

@@ -239,7 +239,7 @@ fn extract_json_label(val: &serde_json::Value, tool_name: &str) -> String {
                     .iter()
                     .filter_map(|t| t.get("content").and_then(|v| v.as_str()))
                     .take(3)
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect();
                 items.join(", ")
             })
@@ -336,22 +336,22 @@ fn detect_language(tool_name: &str, input_summary: &str) -> Option<&'static str>
         Some("rb") => Some("ruby"),
         Some("java") => Some("java"),
         Some("c") => Some("c"),
-        Some("cpp") | Some("cc") | Some("cxx") => Some("c++"),
-        Some("h") | Some("hpp") => Some("c++"),
+        Some("cpp" | "cc" | "cxx") => Some("c++"),
+        Some("h" | "hpp") => Some("c++"),
         Some("hs") => Some("haskell"),
         Some("scala") => Some("scala"),
         Some("kt") => Some("kotlin"),
         Some("swift") => Some("swift"),
-        Some("sh") | Some("bash") | Some("zsh") => Some("bash"),
+        Some("sh" | "bash" | "zsh") => Some("bash"),
         Some("json") => Some("json"),
-        Some("yaml") | Some("yml") => Some("yaml"),
+        Some("yaml" | "yml") => Some("yaml"),
         Some("toml") => Some("toml"),
         Some("xml") => Some("xml"),
         Some("html") => Some("html"),
         Some("css") => Some("css"),
         Some("sql") => Some("sql"),
         Some("md") => Some("markdown"),
-        Some("diff") | Some("patch") => Some("diff"),
+        Some("diff" | "patch") => Some("diff"),
         Some("lua") => Some("lua"),
         Some("r") => Some("r"),
         Some("php") => Some("php"),
@@ -374,7 +374,7 @@ fn extract_file_extension(tool_name: &str, input_summary: &str) -> Option<String
 
         if let Some(p) = path {
             if let Some(ext) = std::path::Path::new(p).extension() {
-                return ext.to_str().map(|s| s.to_string());
+                return ext.to_str().map(std::string::ToString::to_string);
             }
         }
     }
@@ -386,7 +386,7 @@ fn extract_file_extension(tool_name: &str, input_summary: &str) -> Option<String
 }
 
 /// Syntax-highlight code and return ratatui Line objects.
-/// Returns highlighted lines (capped at max_lines) and whether the content was highlighted.
+/// Returns highlighted lines (capped at `max_lines`) and whether the content was highlighted.
 fn highlight_code_output(
     code: &str,
     language: &str,
@@ -398,7 +398,7 @@ fn highlight_code_output(
         .find_syntax_by_token(language)
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
 
-    let mut highlighter = HighlightLines::new(syntax, &*SYNTAX_THEME);
+    let mut highlighter = HighlightLines::new(syntax, &SYNTAX_THEME);
 
     let mut result = Vec::new();
     let mut line_count = 0;
@@ -409,18 +409,42 @@ fn highlight_code_output(
         }
 
         let ranges = highlighter
-            .highlight_line(raw_line, &*SYNTAX_SET)
+            .highlight_line(raw_line, &SYNTAX_SET)
             .unwrap_or_default();
 
         let mut spans = Vec::with_capacity(ranges.len() + 1);
         spans.push(Span::raw("  "));
 
+        let mut width_used = 2;
         for (style, text) in &ranges {
             if text.is_empty() || *text == "\n" {
                 continue;
             }
             let color = syntect_color_to_ratatui(style.foreground);
+            let text_width = text.chars().map(|c| c.width().unwrap_or(1)).sum::<usize>();
+            if width_used + text_width > content_width {
+                let available = content_width.saturating_sub(width_used);
+                if available > 2 {
+                    let truncated: String = text
+                        .chars()
+                        .scan(0, |w, c| {
+                            *w += c.width().unwrap_or(1);
+                            if *w <= available {
+                                Some(c)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    spans.push(Span::styled(
+                        format!("{truncated}..."),
+                        Style::default().fg(color),
+                    ));
+                }
+                break;
+            }
             spans.push(Span::styled(text.to_string(), Style::default().fg(color)));
+            width_used += text_width;
         }
 
         result.push(Line::from(spans));
@@ -462,8 +486,13 @@ fn looks_like_diff(output: &str) -> bool {
     diff_markers >= 2
 }
 
-/// Render a diff preview from edit_file output.
-fn render_diff_preview(output: &str, theme: &Theme, max_lines: usize) -> Vec<Line<'static>> {
+/// Render a diff preview from `edit_file` output.
+fn render_diff_preview(
+    output: &str,
+    theme: &Theme,
+    max_lines: usize,
+    content_width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut shown = 0;
 
@@ -477,17 +506,27 @@ fn render_diff_preview(output: &str, theme: &Theme, max_lines: usize) -> Vec<Lin
             continue;
         }
 
-        let line_span = if raw_line.starts_with('+') && !raw_line.starts_with("+++") {
-            Span::styled(raw_line.to_string(), Style::default().fg(theme.diff_added))
-        } else if raw_line.starts_with('-') && !raw_line.starts_with("---") {
-            Span::styled(
-                raw_line.to_string(),
-                Style::default().fg(theme.diff_removed),
-            )
-        } else if raw_line.starts_with("@@") {
-            Span::styled(raw_line.to_string(), Style::default().fg(theme.accent))
+        let display_line: String = if content_width > 0 {
+            let mut w = 0;
+            raw_line
+                .chars()
+                .take_while(|c| {
+                    w += c.width().unwrap_or(1);
+                    w <= content_width
+                })
+                .collect()
         } else {
-            Span::styled(raw_line.to_string(), Style::default().fg(theme.text_muted))
+            raw_line.to_string()
+        };
+
+        let line_span = if raw_line.starts_with('+') && !raw_line.starts_with("+++") {
+            Span::styled(display_line, Style::default().fg(theme.diff_added))
+        } else if raw_line.starts_with('-') && !raw_line.starts_with("---") {
+            Span::styled(display_line, Style::default().fg(theme.diff_removed))
+        } else if raw_line.starts_with("@@") {
+            Span::styled(display_line, Style::default().fg(theme.accent))
+        } else {
+            Span::styled(display_line, Style::default().fg(theme.text_muted))
         };
 
         lines.push(Line::from(vec![line_span]));
@@ -497,7 +536,7 @@ fn render_diff_preview(output: &str, theme: &Theme, max_lines: usize) -> Vec<Lin
     if output.lines().count() > shown + 5 {
         let remaining = output.lines().count().saturating_sub(shown);
         lines.push(Line::from(vec![Span::styled(
-            format!("  ... {} more lines", remaining),
+            format!("  ... {remaining} more lines"),
             Style::default()
                 .fg(theme.text_muted)
                 .add_modifier(Modifier::ITALIC),
@@ -523,12 +562,11 @@ fn parse_todos_from_input(input_json: &str) -> Vec<TodoItemData> {
             let status = t
                 .get("status")
                 .and_then(|v| v.as_str())
-                .map(|s| match s {
+                .map_or(TodoStatus::Pending, |s| match s {
                     "completed" => TodoStatus::Completed,
                     "in_progress" => TodoStatus::InProgress,
                     _ => TodoStatus::Pending,
-                })
-                .unwrap_or(TodoStatus::Pending);
+                });
             Some(TodoItemData { content, status })
         })
         .collect()
@@ -714,7 +752,7 @@ impl MessageList {
                                     duration_ms: 0,
                                 };
                                 let has_output = data.output.is_some()
-                                    && !data.output.as_ref().map_or(true, |s| s.is_empty());
+                                    && !data.output.as_ref().is_none_or(std::string::String::is_empty);
                                 match data.status {
                                     ToolStatus::Pending | ToolStatus::Running => {
                                         items.push(RenderItem::ToolCallInline(data));
@@ -723,13 +761,13 @@ impl MessageList {
                                     ToolStatus::Completed | ToolStatus::Failed => {
                                         if data.name == "todo_write" || data.name == "todo" {
                                             let todos = parse_todos_from_input(&data.input_summary);
-                                            if !todos.is_empty() {
+                                            if todos.is_empty() {
+                                                items.push(RenderItem::ToolCallInline(data));
+                                                line_counts.push(1);
+                                            } else {
                                                 let h = todos.len() + 2;
                                                 items.push(RenderItem::TodoList(todos));
                                                 line_counts.push(h);
-                                            } else {
-                                                items.push(RenderItem::ToolCallInline(data));
-                                                line_counts.push(1);
                                             }
                                         } else if has_output {
                                             let block_h = compute_tool_call_block_height(
@@ -796,7 +834,7 @@ impl MessageList {
                         line_counts.push(1);
                     }
                     let tool = state.tools.iter().rev().find(|t| t.name == *name);
-                    let status = tool.map(|t| t.status).unwrap_or(ToolStatus::Completed);
+                    let status = tool.map_or(ToolStatus::Completed, |t| t.status);
                     let (icon, color) = match status {
                         ToolStatus::Pending | ToolStatus::Running => ("○", state.theme.warning),
                         ToolStatus::Completed => ("✓", state.theme.success),
@@ -909,10 +947,7 @@ impl MessageList {
                     frame.render_widget(Paragraph::new(Line::from(spans.clone())), item_area);
                 }
                 RenderItem::TextLines(ls) => {
-                    let visible: Vec<Line<'_>> = ls[visible_start..visible_end.min(ls.len())]
-                        .iter()
-                        .cloned()
-                        .collect();
+                    let visible: Vec<Line<'_>> = ls[visible_start..visible_end.min(ls.len())].to_vec();
                     frame.render_widget(Paragraph::new(visible), item_area);
                 }
                 RenderItem::ToolCallInline(data) => {
@@ -947,10 +982,7 @@ impl MessageList {
                     );
                 }
                 RenderItem::Thinking(lines) => {
-                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())]
-                        .iter()
-                        .cloned()
-                        .collect();
+                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())].to_vec();
                     let block = Block::new()
                         .borders(Borders::LEFT)
                         .border_type(BorderType::Double)
@@ -1001,7 +1033,7 @@ impl MessageList {
                                 Style::default().fg(*color).add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
-                                format!(" · {}", model),
+                                format!(" · {model}"),
                                 Style::default().fg(state.theme.text_muted),
                             ),
                         ])),
@@ -1022,10 +1054,7 @@ impl MessageList {
                     } else {
                         render_subagent_footer_collapsed(agents, &state.theme)
                     };
-                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())]
-                        .iter()
-                        .cloned()
-                        .collect();
+                    let visible: Vec<Line<'_>> = lines[visible_start..visible_end.min(lines.len())].to_vec();
                     frame.render_widget(Paragraph::new(visible), item_area);
                 }
             }
@@ -1098,18 +1127,7 @@ fn render_tool_call_inline(
             let cmd = extract_bash_command(&data.input_summary);
             let icon = tool_icon(&data.name);
             let pending_label = human_tool_title(&data.name, &data.input_summary);
-            if !cmd.is_empty() {
-                vec![
-                    Span::raw("   "),
-                    Span::styled(
-                        format!("{icon} "),
-                        Style::default()
-                            .fg(theme.warning)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(cmd, Style::default().fg(theme.text)),
-                ]
-            } else {
+            if cmd.is_empty() {
                 vec![
                     Span::raw("   "),
                     Span::styled(
@@ -1124,6 +1142,17 @@ fn render_tool_call_inline(
                             .fg(theme.text_muted)
                             .add_modifier(Modifier::ITALIC),
                     ),
+                ]
+            } else {
+                vec![
+                    Span::raw("   "),
+                    Span::styled(
+                        format!("{icon} "),
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(cmd, Style::default().fg(theme.text)),
                 ]
             }
         }
@@ -1229,7 +1258,7 @@ fn render_tool_call_block(
                 && matches!(data.status, ToolStatus::Completed)
                 && looks_like_diff(out)
             {
-                let diff_lines = render_diff_preview(out, theme, MAX_EXPANDED_LINES);
+                let diff_lines = render_diff_preview(out, theme, MAX_EXPANDED_LINES, content_width);
                 all_lines.extend(diff_lines);
             } else {
                 // Try syntax highlighting for code-like output
@@ -1291,7 +1320,7 @@ fn render_tool_call_block(
             && matches!(data.status, ToolStatus::Completed)
             && looks_like_diff(out)
         {
-            let diff_preview = render_diff_preview(out, theme, 2);
+            let diff_preview = render_diff_preview(out, theme, 2, content_width);
             all_lines.extend(diff_preview);
             if out.lines().count() > 7 {
                 all_lines.push(Line::from(vec![Span::styled(
@@ -1339,7 +1368,7 @@ fn render_tool_call_block(
         return;
     }
 
-    let visible: Vec<Line<'_>> = all_lines[start..end].iter().cloned().collect();
+    let visible: Vec<Line<'_>> = all_lines[start..end].to_vec();
 
     let bg = if data.expanded {
         theme.background_element
@@ -1398,7 +1427,7 @@ fn render_todo_list(
         return;
     }
 
-    let visible: Vec<Line<'_>> = all_lines[start..end].iter().cloned().collect();
+    let visible: Vec<Line<'_>> = all_lines[start..end].to_vec();
 
     let block = Block::new()
         .borders(Borders::LEFT)
@@ -1449,7 +1478,7 @@ fn build_thinking_lines(content: &str, content_width: usize, theme: &Theme) -> V
 
 pub fn wrap_text(text: &str, max_display_width: usize) -> Vec<String> {
     if max_display_width == 0 {
-        return vec![text.into()];
+        return text.lines().map(std::string::ToString::to_string).collect();
     }
     let mut result = Vec::new();
     for line in text.lines() {

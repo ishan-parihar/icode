@@ -130,6 +130,7 @@ impl EnhancedQueryLoop {
     }
 
     #[expect(dead_code)]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn should_auto_compact(&self) -> bool {
         let estimated = estimate_session_tokens(&self.session);
         let threshold = self

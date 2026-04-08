@@ -2025,6 +2025,7 @@ pub enum DefinitionSource {
 }
 
 impl DefinitionSource {
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::ProjectCodex => "Project (.codex)",
@@ -2064,6 +2065,7 @@ pub enum SkillOrigin {
 }
 
 impl SkillOrigin {
+    #[must_use]
     pub fn detail_label(self) -> Option<&'static str> {
         match self {
             Self::SkillsDir => None,
@@ -2233,7 +2235,7 @@ pub fn handle_skills_slash_command(args: Option<&str>, cwd: &Path) -> std::io::R
             let skills = load_skills_from_roots(&roots)?;
             Ok(render_skills_report(&skills))
         }
-        Some("refresh") => handle_skills_refresh(),
+        Some("refresh") => Ok(handle_skills_refresh()),
         Some("clear") => handle_skills_clear(),
         Some("install") => Ok(render_skills_usage(Some("install"))),
         Some(args) if args.starts_with("install ") => {
@@ -2249,7 +2251,7 @@ pub fn handle_skills_slash_command(args: Option<&str>, cwd: &Path) -> std::io::R
     }
 }
 
-fn handle_skills_refresh() -> std::io::Result<String> {
+fn handle_skills_refresh() -> String {
     let urls: Vec<String> = std::env::var("SKILL_REMOTE_URLS")
         .map(|val| {
             val.split(',')
@@ -2261,52 +2263,46 @@ fn handle_skills_refresh() -> std::io::Result<String> {
         .unwrap_or_default();
 
     if urls.is_empty() {
-        return Ok("Skills\n  Result           no remote URLs configured. Set SKILL_REMOTE_URLS env var (comma-separated).".to_string());
+        return "Skills\n  Result           no remote URLs configured. Set SKILL_REMOTE_URLS env var (comma-separated).".to_string();
     }
 
-    let cache_dir = std::env::var("ICODE_SKILLS_CACHE")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let cache_dir = std::env::var("ICODE_SKILLS_CACHE").ok().map_or_else(
+        || {
             let home = std::env::var("HOME").unwrap_or_default();
             PathBuf::from(home).join(".icode").join("skills-cache")
-        });
+        },
+        PathBuf::from,
+    );
 
     let discovery = tools::SkillDiscovery::with_default_ttl(cache_dir);
     match discovery.refresh_from_urls(&urls) {
         Ok(names) => {
             if names.is_empty() {
-                Ok("Skills\n  Result           no skills found in remote indexes.".to_string())
+                "Skills\n  Result           no skills found in remote indexes.".to_string()
             } else {
-                Ok(format!(
+                format!(
                     "Skills\n  Result           refreshed {} skill(s)\n  Updated          {}",
                     names.len(),
                     names.join(", ")
-                ))
+                )
             }
         }
-        Err(error) => Ok(format!(
-            "Skills\n  Result           refresh failed: {error}"
-        )),
+        Err(error) => format!("Skills\n  Result           refresh failed: {error}"),
     }
 }
 
 fn handle_skills_clear() -> std::io::Result<String> {
-    let cache_dir = std::env::var("ICODE_SKILLS_CACHE")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let cache_dir = std::env::var("ICODE_SKILLS_CACHE").ok().map_or_else(
+        || {
             let home = std::env::var("HOME").unwrap_or_default();
             PathBuf::from(home).join(".icode").join("skills-cache")
-        });
+        },
+        PathBuf::from,
+    );
 
     if cache_dir.exists() {
-        fs::remove_dir_all(&cache_dir).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("failed to clear cache: {e}"),
-            )
-        })?;
+        fs::remove_dir_all(&cache_dir)
+            .map_err(|e| std::io::Error::other(format!("failed to clear cache: {e}")))?;
         Ok("Skills\n  Result           cache cleared.".to_string())
     } else {
         Ok("Skills\n  Result           no cache to clear.".to_string())
@@ -2400,6 +2396,7 @@ fn resolve_plugin_target(
     }
 }
 
+#[must_use]
 pub fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, PathBuf)> {
     let mut roots = Vec::new();
 
@@ -2441,6 +2438,7 @@ pub fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSourc
     roots
 }
 
+#[must_use]
 pub fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
@@ -3042,6 +3040,7 @@ fn render_skills_report(skills: &[SkillSummary]) -> String {
 }
 
 /// Render skills as a JSON array for CLI `--output-format json`.
+#[must_use]
 pub fn render_skills_json(skills: &[SkillSummary]) -> String {
     let entries: Vec<serde_json::Value> = skills
         .iter()
@@ -3060,8 +3059,7 @@ pub fn render_skills_json(skills: &[SkillSummary]) -> String {
                 skill
                     .description
                     .clone()
-                    .map(serde_json::Value::String)
-                    .unwrap_or(serde_json::Value::Null),
+                    .map_or(serde_json::Value::Null, serde_json::Value::String),
             );
             obj.insert(
                 "source".to_string(),
@@ -3077,6 +3075,7 @@ pub fn render_skills_json(skills: &[SkillSummary]) -> String {
 }
 
 /// Render agents as a JSON array for CLI `--output-format json`.
+#[must_use]
 pub fn render_agents_json(agents: &[AgentSummary]) -> String {
     let entries: Vec<serde_json::Value> = agents
         .iter()
@@ -3091,8 +3090,7 @@ pub fn render_agents_json(agents: &[AgentSummary]) -> String {
                 agent
                     .description
                     .clone()
-                    .map(serde_json::Value::String)
-                    .unwrap_or(serde_json::Value::Null),
+                    .map_or(serde_json::Value::Null, serde_json::Value::String),
             );
             if let Some(model) = &agent.model {
                 obj.insert(
@@ -3370,6 +3368,7 @@ fn format_mcp_oauth(oauth: Option<&McpOAuthConfig>) -> String {
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn handle_slash_command(
     input: &str,
     session: &Session,

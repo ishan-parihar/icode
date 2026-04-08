@@ -115,7 +115,7 @@ impl PromptStashState {
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(names) = serde_json::from_str::<Vec<String>>(&content) {
                 for name in &names {
-                    let entry_path = Self::stash_dir().join(format!("stash_{}.json", name));
+                    let entry_path = Self::stash_dir().join(format!("stash_{name}.json"));
                     if let Ok(entry_content) = fs::read_to_string(&entry_path) {
                         if let Ok(entry) = serde_json::from_str::<PromptStashEntry>(&entry_content)
                         {
@@ -231,19 +231,17 @@ impl PromptStashState {
             },
 
             (_, KeyCode::Up) => {
-                if matches!(self.mode, StashMode::Browsing | StashMode::SearchInput) {
-                    if self.selected > 0 {
+                if matches!(self.mode, StashMode::Browsing | StashMode::SearchInput)
+                    && self.selected > 0 {
                         self.selected -= 1;
                     }
-                }
                 StashAction::None
             }
             (_, KeyCode::Down) => {
-                if matches!(self.mode, StashMode::Browsing | StashMode::SearchInput) {
-                    if self.selected < self.filtered.len().saturating_sub(1) {
+                if matches!(self.mode, StashMode::Browsing | StashMode::SearchInput)
+                    && self.selected < self.filtered.len().saturating_sub(1) {
                         self.selected += 1;
                     }
-                }
                 StashAction::None
             }
             (_, KeyCode::PageUp) => {
@@ -376,8 +374,7 @@ fn truncate(s: &str, max_len: usize) -> String {
             .char_indices()
             .take_while(|(idx, _)| *idx < limit)
             .last()
-            .map(|(idx, ch)| idx + ch.len_utf8())
-            .unwrap_or(0);
+            .map_or(0, |(idx, ch)| idx + ch.len_utf8());
         format!("{}...", &s[..safe_end])
     }
 }
@@ -509,10 +506,10 @@ pub fn render_prompt_stash_dialog(
     let visible_lines = list_area.height as usize;
 
     if state.filtered.is_empty() && !is_creating {
-        let empty_msg = if !state.search.is_empty() {
-            "No matching stashed prompts"
-        } else {
+        let empty_msg = if state.search.is_empty() {
             "No stashed prompts yet. Press Ctrl+N to create one."
+        } else {
+            "No matching stashed prompts"
         };
         let empty = Paragraph::new(Span::styled(
             empty_msg,
@@ -531,7 +528,7 @@ pub fn render_prompt_stash_dialog(
             let is_selected = i == state.selected;
             let is_deleting = matches!(&state.mode, StashMode::ConfirmDelete(idx) if state.entries.get(*idx).map(|e| &e.name) == Some(&entry.name));
             let time_str = format_relative_time(entry.updated_at);
-            let preview = truncate(&entry.content.lines().next().unwrap_or(""), 40);
+            let preview = truncate(entry.content.lines().next().unwrap_or(""), 40);
 
             let mut title_spans = vec![Span::raw(" ")];
 
@@ -552,7 +549,7 @@ pub fn render_prompt_stash_dialog(
                     }),
                 ));
                 title_spans.push(Span::styled(
-                    format!(" - {} ", preview),
+                    format!(" - {preview} "),
                     Style::default().fg(if is_selected {
                         theme.background
                     } else {
@@ -741,7 +738,7 @@ mod tests {
                 StashAction::Select(content) => {
                     assert_eq!(content, "Test content");
                 }
-                _ => panic!("Expected Select action, got {:?}", action),
+                _ => panic!("Expected Select action, got {action:?}"),
             }
         });
     }

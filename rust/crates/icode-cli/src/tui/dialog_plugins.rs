@@ -224,8 +224,7 @@ pub fn render_plugins_dialog(
             .iter()
             .rev()
             .find(|(_, offset)| pos >= *offset)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("Plugins");
+            .map_or("Plugins", |(name, _)| name.as_str());
 
         if section != current_section {
             current_section = section.to_string();

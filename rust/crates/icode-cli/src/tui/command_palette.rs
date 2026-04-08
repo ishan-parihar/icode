@@ -203,8 +203,7 @@ impl CommandPaletteState {
             .iter()
             .rev()
             .find(|(_, offset)| self.cursor >= *offset)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("Commands")
+            .map_or("Commands", |(name, _)| name.as_str())
     }
 }
 
@@ -489,8 +488,7 @@ pub fn render_command_palette(
             .iter()
             .rev()
             .find(|(_, offset)| pos >= *offset)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("Commands");
+            .map_or("Commands", |(name, _)| name.as_str());
 
         if section != current_section {
             current_section = section.to_string();

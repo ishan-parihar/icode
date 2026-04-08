@@ -23,10 +23,10 @@ pub fn open_editor(initial_content: &str) -> Result<String, String> {
 
     let temp_path = create_temp_file(initial_content)?;
     let result = run_editor(&editor, &temp_path);
-    let content = result.and_then(|_| read_temp_file(&temp_path));
+    let content = result.and_then(|()| read_temp_file(&temp_path));
     let _ = fs::remove_file(&temp_path);
 
-    content.map(|s| s.trim_end_matches(|c| c == '\n' || c == '\r').to_string())
+    content.map(|s| s.trim_end_matches(['\n', '\r']).to_string())
 }
 
 fn create_temp_file(content: &str) -> Result<PathBuf, String> {
@@ -38,9 +38,9 @@ fn create_temp_file(content: &str) -> Result<PathBuf, String> {
     ));
 
     let mut file =
-        fs::File::create(&path).map_err(|e| format!("Failed to create temp file: {}", e))?;
+        fs::File::create(&path).map_err(|e| format!("Failed to create temp file: {e}"))?;
     file.write_all(content.as_bytes())
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+        .map_err(|e| format!("Failed to write temp file: {e}"))?;
 
     Ok(path)
 }
@@ -49,16 +49,14 @@ fn run_editor(editor: &str, path: &PathBuf) -> Result<(), String> {
     let status = Command::new(editor)
         .arg(path)
         .status()
-        .map_err(|e| format!("Failed to launch editor '{}': {}", editor, e))?;
+        .map_err(|e| format!("Failed to launch editor '{editor}': {e}"))?;
 
     if !status.success() {
         return Err(format!(
             "Editor '{}' exited with status: {}",
             editor,
             status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
+                .code().map_or_else(|| "unknown".to_string(), |c| c.to_string())
         ));
     }
 
@@ -66,7 +64,7 @@ fn run_editor(editor: &str, path: &PathBuf) -> Result<(), String> {
 }
 
 fn read_temp_file(path: &PathBuf) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| format!("Failed to read edited content: {}", e))
+    fs::read_to_string(path).map_err(|e| format!("Failed to read edited content: {e}"))
 }
 
 #[cfg(test)]
@@ -149,7 +147,7 @@ mod tests {
 
         let read_content = read_temp_file(&temp_path).expect("should read content");
         let stripped = read_content
-            .trim_end_matches(|c| c == '\n' || c == '\r')
+            .trim_end_matches(['\n', '\r'])
             .to_string();
         assert_eq!(stripped, "hello");
 
@@ -163,7 +161,7 @@ mod tests {
 
         let read_content = read_temp_file(&temp_path).expect("should read content");
         let stripped = read_content
-            .trim_end_matches(|c| c == '\n' || c == '\r')
+            .trim_end_matches(['\n', '\r'])
             .to_string();
         assert_eq!(stripped, "test");
 
@@ -177,7 +175,7 @@ mod tests {
 
         let read_content = read_temp_file(&temp_path).expect("should read content");
         let stripped = read_content
-            .trim_end_matches(|c| c == '\n' || c == '\r')
+            .trim_end_matches(['\n', '\r'])
             .to_string();
         assert_eq!(stripped, "line1\nline2\nline3");
 

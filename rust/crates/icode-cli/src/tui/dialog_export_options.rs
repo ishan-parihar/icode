@@ -77,7 +77,7 @@ impl ExportOptionsState {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         let secs = now.as_secs();
-        format!("export-{}.txt", secs)
+        format!("export-{secs}.txt")
     }
 
     fn checkbox_value(&self, idx: usize) -> bool {
@@ -118,9 +118,8 @@ impl ExportOptionsState {
         let base = self
             .filename
             .rsplit_once('.')
-            .map(|(b, _)| b)
-            .unwrap_or(&self.filename);
-        self.filename = format!("{}{}", base, ext);
+            .map_or(self.filename.as_str(), |(b, _)| b);
+        self.filename = format!("{base}{ext}");
     }
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> ExportAction {
@@ -262,7 +261,7 @@ pub fn render_export_options_dialog(
         .split(inner);
 
     // Filename row
-    let is_file_selected = state.selected >= OPTION_LABELS.len() + 1;
+    let is_file_selected = state.selected > OPTION_LABELS.len();
     let filename_style = if is_file_selected || state.editing_filename {
         Style::default()
             .fg(theme.background)
@@ -488,7 +487,7 @@ mod tests {
 
         // Backspace
         state.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE));
-        assert!(!state.filename.ends_with("y"));
+        assert!(!state.filename.ends_with('y'));
 
         // Enter exits edit mode
         let action = state.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));

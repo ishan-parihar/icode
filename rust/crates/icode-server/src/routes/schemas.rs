@@ -1,7 +1,7 @@
-//! OpenAPI schema types for utoipa documentation.
+//! `OpenAPI` schema types for `utoipa` documentation.
 //!
 //! These types exist solely for API documentation purposes and derive
-//! `utoipa::ToSchema` so that the generated OpenAPI spec includes proper
+//! `utoipa::ToSchema` so that the generated `OpenAPI` spec includes proper
 //! request/response schemas.
 
 use serde::{Deserialize, Serialize};

@@ -4,7 +4,39 @@
     unused_variables,
     clippy::unneeded_struct_pattern,
     clippy::unnecessary_wraps,
-    clippy::unused_self
+    clippy::unused_self,
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::struct_excessive_bools,
+    clippy::similar_names,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::match_same_arms,
+    clippy::type_complexity,
+    clippy::enum_glob_use,
+    clippy::doc_markdown,
+    clippy::module_name_repetitions,
+    clippy::upper_case_acronyms,
+    clippy::wildcard_in_or_patterns,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::wrong_self_convention,
+    clippy::needless_pass_by_value,
+    clippy::if_same_then_else,
+    clippy::items_after_statements,
+    clippy::manual_clamp,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::needless_range_loop,
+    clippy::explicit_counter_loop,
+    clippy::vec_init_then_push,
+    clippy::collapsible_match,
+    clippy::ptr_arg,
+    clippy::assigning_clones,
+    clippy::manual_let_else,
+    clippy::used_underscore_binding,
+    clippy::self_only_used_in_recursion
 )]
 mod git;
 mod init;
@@ -1581,7 +1613,7 @@ fn run_repl(
     let rt = tokio::runtime::Runtime::new()?;
     let _enter = rt.enter();
 
-    let mut cli = LiveCli::new(model.clone(), true, allowed_tools, permission_mode.clone())?;
+    let mut cli = LiveCli::new(model.clone(), true, allowed_tools, permission_mode)?;
 
     let cwd = std::env::current_dir()
         .ok()

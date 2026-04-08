@@ -42,7 +42,7 @@ use runtime::{
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
     ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock, ConversationMessage,
     ConversationRuntime, GrepSearchInput, LaneEvent, LaneEventBlocker, LaneFailureClass,
-    ListDirectoryInput, MessageRole, PermissionMode, PermissionPolicy, PermissionScope,
+    ListDirectoryInput, MessageRole, PermissionMode, PermissionPolicy,
     PromptCacheEvent, RuntimeError, Session, ToolError, ToolExecutor, TruncationPolicy,
 };
 use schemars::JsonSchema;
@@ -830,6 +830,7 @@ pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
     execute_tool_with_enforcer(None, name, input)
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute_tool_with_enforcer(
     enforcer: Option<&PermissionEnforcer>,
     name: &str,
@@ -955,12 +956,12 @@ fn execute_tool_with_enforcer(
         "GlobTool" => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
             from_value::<glob_tool::GlobToolInput>(input)
-                .and_then(|inp| glob_tool::execute_glob_tool(inp, &cwd))
+                .and_then(|inp| glob_tool::execute_glob_tool(&inp, &cwd))
         }
         "GrepTool" => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
             from_value::<grep_tool::GrepToolInput>(input)
-                .and_then(|inp| grep_tool::execute_grep_tool(inp, &cwd))
+                .and_then(|inp| grep_tool::execute_grep_tool(&inp, &cwd))
         }
         _ => Err(format!("unsupported tool: {name}")),
     };
@@ -1063,7 +1064,7 @@ fn run_task_create(input: TaskCreateInput) -> Result<String, String> {
     }))
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn run_task_packet(input: Value) -> Result<String, String> {
     use runtime::task_packet::{
         AcceptanceTest, BranchPolicy, CommitPolicy, EscalationPolicy, RepoConfig,
@@ -1161,8 +1162,9 @@ fn run_task_packet(input: Value) -> Result<String, String> {
         "retry_then_escalate" => EscalationPolicy::RetryThenEscalate {
             max_retries: input
                 .get("max_retries")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(3) as u32,
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(3),
         },
         "auto_escalate" => EscalationPolicy::AutoEscalate,
         "never_escalate" => EscalationPolicy::NeverEscalate,
@@ -1586,7 +1588,7 @@ fn run_remote_trigger(input: RemoteTriggerInput) -> Result<String, String> {
                 "method": method,
                 "status_code": status,
                 "body": truncated_body,
-                "success": status >= 200 && status < 300
+                "success": (200..300).contains(&status)
             }))
         }
         Err(e) => to_pretty_json(json!({
@@ -1629,7 +1631,7 @@ fn run_testing_permission(input: TestingPermissionInput) -> Result<String, Strin
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_pty_bash(input: pty_bash::PtyBashInput) -> Result<String, String> {
-    let output = pty_bash::execute_pty_bash(input)?;
+    let output = pty_bash::execute_pty_bash(&input)?;
     to_pretty_json(json!({
         "stdout": output.stdout,
         "stderr": output.stderr,
@@ -1641,25 +1643,25 @@ fn run_pty_bash(input: pty_bash::PtyBashInput) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_batch_edit(input: batch_edit::BatchEditInput) -> Result<String, String> {
-    let output = batch_edit::execute_batch_edit(input)?;
+    let output = batch_edit::execute_batch_edit(&input)?;
     to_pretty_json(output)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_apply_patch(input: apply_patch::ApplyPatchInput) -> Result<String, String> {
-    let output = apply_patch::execute_apply_patch(input)?;
+    let output = apply_patch::execute_apply_patch(&input)?;
     to_pretty_json(output)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_formatter(input: formatter::FormatterInput) -> Result<String, String> {
-    let output = formatter::execute_formatter(input)?;
+    let output = formatter::execute_formatter(&input)?;
     to_pretty_json(output)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_snip_tool(input: snip_tool::SnipToolInput) -> Result<String, String> {
-    let output = snip_tool::execute_snip_tool(input)?;
+    let output = snip_tool::execute_snip_tool(&input)?;
     to_pretty_json(output)
 }
 
@@ -1671,12 +1673,12 @@ fn run_elicitation(input: elicitation::ElicitationInput) -> Result<String, Strin
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_enter_worktree(input: worktree::EnterWorktreeInput) -> Result<String, String> {
-    worktree::execute_enter_worktree(input)
+    worktree::execute_enter_worktree(&input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_exit_worktree(input: worktree::ExitWorktreeInput) -> Result<String, String> {
-    worktree::execute_exit_worktree(input)
+    worktree::execute_exit_worktree(&input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1685,7 +1687,7 @@ fn run_codesearch(input: CodeSearchInput) -> Result<String, String> {
     let languages: Vec<&str> = input
         .languages
         .as_ref()
-        .map(|langs| langs.iter().map(|s| s.as_str()).collect())
+        .map(|langs| langs.iter().map(String::as_str).collect())
         .unwrap_or_default();
 
     let results = codesearch(&input.pattern, &root, &languages).map_err(|e| e.to_string())?;
@@ -1723,17 +1725,17 @@ fn run_bash(input: BashCommandInput) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_read_file(input: file_read::ReadFileInput) -> Result<String, String> {
-    file_read::execute_read_file(input)
+    file_read::execute_read_file(&input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_write_file(input: file_write::WriteFileInput) -> Result<String, String> {
-    file_write::execute_write_file(input)
+    file_write::execute_write_file(&input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_edit_file(input: file_edit::EditFileInput) -> Result<String, String> {
-    file_edit::execute_edit_file(input)
+    file_edit::execute_edit_file(&input)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1770,6 +1772,7 @@ fn run_skill(input: SkillInput) -> Result<String, String> {
     to_pretty_json(execute_skill(input)?)
 }
 
+#[allow(dead_code)]
 fn run_agent(input: AgentInput) -> Result<String, String> {
     run_agent_with_enforcer(input, None)
 }
@@ -2503,7 +2506,13 @@ fn url_encode_simple(s: &str) -> String {
         .map(|c| match c {
             'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
             ' ' => "+".to_string(),
-            _ => c.to_string().bytes().map(|b| format!("%{b:02X}")).collect(),
+            _ => {
+                let mut encoded = String::new();
+                for b in c.to_string().bytes() {
+                    let _ = std::fmt::write(&mut encoded, format_args!("%{b:02X}"));
+                }
+                encoded
+            }
         })
         .collect()
 }
@@ -2910,6 +2919,7 @@ fn all_builtin_tools() -> BTreeSet<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
     execute_agent_with_parent(input, None)
 }
@@ -2925,6 +2935,7 @@ fn execute_agent_with_parent(
     execute_agent_with_spawn_and_parent(input, spawn_agent_job, parent_mode, parent_tools)
 }
 
+#[allow(dead_code)]
 fn execute_agent_with_spawn<F>(input: AgentInput, spawn_fn: F) -> Result<AgentOutput, String>
 where
     F: FnOnce(AgentJob) -> Result<(), String>,
@@ -3065,7 +3076,9 @@ fn build_agent_runtime(
     let allowed_tools = job.allowed_tools.clone();
     let api_client = ProviderRuntimeClient::new(model, allowed_tools.clone())?;
 
-    let permission_policy = if !job.parent_available_tools.is_empty() {
+    let permission_policy = if job.parent_available_tools.is_empty() {
+        agent_permission_policy()
+    } else {
         let effective_tools: BTreeSet<String> = allowed_tools
             .iter()
             .filter(|t| job.parent_available_tools.contains(*t))
@@ -3080,12 +3093,9 @@ fn build_agent_runtime(
                 let required = mvp_tool_specs()
                     .iter()
                     .find(|s| s.name == tool_name)
-                    .map(|s| s.required_permission)
-                    .unwrap_or(PermissionMode::DangerFullAccess);
+                    .map_or(PermissionMode::DangerFullAccess, |s| s.required_permission);
                 policy.with_tool_requirement(tool_name, required)
             })
-    } else {
-        agent_permission_policy()
     };
 
     let tool_executor = SubagentToolExecutor::new(allowed_tools)
@@ -3262,7 +3272,7 @@ fn persist_agent_terminal_state(
     let mut next_manifest = manifest.clone();
     next_manifest.status = status.to_string();
     next_manifest.completed_at = Some(iso8601_now());
-    next_manifest.current_blocker = blocker.clone();
+    next_manifest.current_blocker.clone_from(&blocker);
     next_manifest.error = error;
     if let Some(blocker) = &blocker {
         next_manifest
@@ -3273,7 +3283,7 @@ fn persist_agent_terminal_state(
             .push(LaneEvent::failed(iso8601_now(), blocker));
     } else {
         next_manifest.current_blocker = None;
-        let compressed_detail = result.map(|r| r.to_string());
+        let compressed_detail = result.map(ToString::to_string);
         next_manifest
             .lane_events
             .push(LaneEvent::finished(iso8601_now(), compressed_detail));
@@ -5723,6 +5733,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn agent_fake_runner_can_persist_completion_and_failure() {
         let _guard = env_lock()
             .lock()

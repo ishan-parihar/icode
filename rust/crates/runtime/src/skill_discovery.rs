@@ -15,13 +15,14 @@ pub enum SkillSource {
     Git(String),
 }
 
+#[must_use]
 pub fn discover_skills(paths: &[String]) -> Vec<DiscoveredSkill> {
     let mut skills = Vec::new();
     for path in paths {
         let path = Path::new(path);
         if path.is_dir() {
             discover_skills_in_dir(path, &mut skills);
-        } else if path.is_file() && path.extension().map_or(false, |e| e == "md") {
+        } else if path.is_file() && path.extension().is_some_and(|e| e == "md") {
             if let Ok(content) = fs::read_to_string(path) {
                 skills.push(DiscoveredSkill {
                     name: path
@@ -41,9 +42,9 @@ pub fn discover_skills(paths: &[String]) -> Vec<DiscoveredSkill> {
 
 fn discover_skills_in_dir(dir: &Path, skills: &mut Vec<DiscoveredSkill>) {
     if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
+        for entry in entries.filter_map(std::result::Result::ok) {
             let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |e| e == "md") {
+            if path.is_file() && path.extension().is_some_and(|e| e == "md") {
                 if let Ok(content) = fs::read_to_string(&path) {
                     skills.push(DiscoveredSkill {
                         name: path

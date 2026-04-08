@@ -20,7 +20,7 @@ pub fn read_file_tool_spec() -> Value {
     serde_json::to_value(schemars::schema_for!(ReadFileInput)).unwrap()
 }
 
-pub fn execute_read_file(input: ReadFileInput) -> Result<String, String> {
+pub fn execute_read_file(input: &ReadFileInput) -> Result<String, String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
     let path = cwd.join(&input.path);

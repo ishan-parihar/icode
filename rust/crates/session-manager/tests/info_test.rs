@@ -1,4 +1,3 @@
-use serde_json;
 use session_manager::info;
 use session_manager::types::SessionInfo;
 use std::fs;

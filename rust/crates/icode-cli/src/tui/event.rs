@@ -1,6 +1,48 @@
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind, MouseEvent};
 use std::time::Duration;
 
+/// Structured key event with convenient accessor methods.
+/// With Kitty keyboard enabled, modifiers are properly reported for all keys.
+#[derive(Debug, Clone)]
+pub struct ParsedKey {
+    pub code: event::KeyCode,
+    pub modifiers: event::KeyModifiers,
+}
+
+impl ParsedKey {
+    pub const fn ctrl(&self) -> bool {
+        self.modifiers.contains(event::KeyModifiers::CONTROL)
+    }
+
+    pub const fn meta(&self) -> bool {
+        self.modifiers.contains(event::KeyModifiers::ALT)
+    }
+
+    pub const fn shift(&self) -> bool {
+        self.modifiers.contains(event::KeyModifiers::SHIFT)
+    }
+}
+
+impl From<KeyEvent> for ParsedKey {
+    fn from(key: KeyEvent) -> Self {
+        Self {
+            code: key.code,
+            modifiers: key.modifiers,
+        }
+    }
+}
+
+impl From<&ParsedKey> for KeyEvent {
+    fn from(key: &ParsedKey) -> Self {
+        KeyEvent {
+            code: key.code,
+            modifiers: key.modifiers,
+            kind: KeyEventKind::Press,
+            state: event::KeyEventState::empty(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Event {
     Key(KeyEvent),

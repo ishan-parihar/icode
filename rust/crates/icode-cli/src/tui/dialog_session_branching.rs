@@ -136,7 +136,7 @@ impl SessionBranchingState {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         match (key.modifiers, key.code) {
-            (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
                 self.close();
                 BranchingAction::Close
             }

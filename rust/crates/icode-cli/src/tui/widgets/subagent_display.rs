@@ -401,7 +401,7 @@ mod tests {
             expanded: false,
         }];
         let lines = render_subagent_footer_expanded(&agents, &theme, 80);
-        assert!(lines.len() >= 1);
+        assert!(!lines.is_empty());
         let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header_text.contains("Sub-agents"));
     }

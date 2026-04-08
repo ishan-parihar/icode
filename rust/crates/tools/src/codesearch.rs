@@ -72,6 +72,7 @@ fn language_configs() -> Vec<LanguageConfig> {
     ]
 }
 
+#[allow(clippy::too_many_lines)]
 fn queries_for_pattern(pattern: &str, lang: &str) -> Option<Vec<(String, String)>> {
     let pattern_lower = pattern.to_lowercase();
     match pattern_lower.as_str() {
@@ -216,7 +217,6 @@ fn queries_for_pattern(pattern: &str, lang: &str) -> Option<Vec<(String, String)
                     String::from("type_alias"),
                 ),
             ]),
-            "python" => None,
             "go" => Some(vec![(
                 String::from(
                     "(type_spec name: (type_identifier) @name type: (interface_type)) @decl",
@@ -236,12 +236,13 @@ fn extract_context(source: &str, target_line: usize) -> String {
         return String::new();
     }
 
-    let start = if target_line <= 3 { 0 } else { target_line - 3 };
+    let start = target_line.saturating_sub(3);
     let end = std::cmp::min(start + 5, total);
 
     lines[start..end].join("\n")
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn codesearch(
     pattern: &str,
     root_dir: &Path,
@@ -290,7 +291,7 @@ pub fn codesearch(
     let mut results: Vec<CodeSearchResult> = Vec::new();
 
     for entry in walk {
-        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let entry = entry.map_err(std::io::Error::other)?;
         let path = entry.path();
 
         if !path.is_file() {
@@ -300,7 +301,7 @@ pub fn codesearch(
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         let Some(ext) = ext else {
             continue;
         };
@@ -309,12 +310,11 @@ pub fn codesearch(
             continue;
         }
 
-        let lang_config = match selected
+        let Some(lang_config) = selected
             .iter()
             .find(|cfg| cfg.extensions.iter().any(|&e| e == ext))
-        {
-            Some(cfg) => cfg,
-            None => continue,
+        else {
+            continue;
         };
 
         let source = fs::read_to_string(path)?;
@@ -481,7 +481,7 @@ use std::collections::HashMap;
 
         std::fs::write(
             dir.join("app.ts"),
-            r#"
+            r"
 import React from 'react';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
@@ -497,7 +497,7 @@ class MyClass {
 interface MyInterface {
     id: string;
 }
-"#,
+",
         )
         .expect("app.ts should write");
 
@@ -510,7 +510,7 @@ interface MyInterface {
 
         std::fs::write(
             dir.join("app.py"),
-            r#"
+            r"
 import os
 import sys
 from pathlib import Path
@@ -520,14 +520,14 @@ class MyClass:
         pass
 
 class AnotherClass:
-    pass
+        pass
 
 def helper():
     pass
 
 def test_my_function():
     assert True
-"#,
+",
         )
         .expect("app.py should write");
 
@@ -631,8 +631,7 @@ func TestMain(m *testing.M) {
 
         assert!(
             !results.is_empty(),
-            "should find TypeScript imports, got {:?}",
-            results
+            "should find TypeScript imports, got {results:?}"
         );
 
         let has_react = results.iter().any(|r| {
@@ -659,8 +658,7 @@ func TestMain(m *testing.M) {
 
         assert!(
             !class_results.is_empty(),
-            "should find Python classes, got {:?}",
-            results
+            "should find Python classes, got {results:?}"
         );
 
         let names: Vec<&str> = class_results.iter().map(|r| r.symbol.as_str()).collect();
@@ -689,8 +687,7 @@ func TestMain(m *testing.M) {
 
         assert!(
             !func_results.is_empty(),
-            "should find Go functions, got {:?}",
-            results
+            "should find Go functions, got {results:?}"
         );
 
         let names: Vec<&str> = func_results.iter().map(|r| r.symbol.as_str()).collect();
@@ -779,9 +776,7 @@ func TestMain(m *testing.M) {
             assert!(
                 prev.file_path < curr.file_path
                     || (prev.file_path == curr.file_path && prev.line <= curr.line),
-                "results should be sorted: {:?} before {:?}",
-                prev,
-                curr
+                "results should be sorted: {prev:?} before {curr:?}"
             );
         }
 

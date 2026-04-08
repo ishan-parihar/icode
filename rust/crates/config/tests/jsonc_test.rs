@@ -212,8 +212,8 @@ fn loader_uses_jsonc_for_config_with_comments() {
     )
     .expect("write config with comments");
 
-    let loader = ConfigLoader::new(&cwd, &home);
-    let loaded = loader.load().expect("should load");
+    let cfg_loader = ConfigLoader::new(&cwd, &home);
+    let loaded = cfg_loader.load().expect("should load");
 
     assert_eq!(loaded.typed().model, Some("sonnet".to_string()));
     let agents = loaded.typed().agents.as_ref().expect("agents should exist");
@@ -240,8 +240,8 @@ fn loader_backward_compat_with_plain_json() {
     )
     .expect("write plain JSON config");
 
-    let loader = ConfigLoader::new(&cwd, &home);
-    let loaded = loader.load().expect("should load");
+    let cfg_loader = ConfigLoader::new(&cwd, &home);
+    let loaded = cfg_loader.load().expect("should load");
 
     assert_eq!(loaded.typed().model, Some("opus".to_string()));
     let env = loaded.typed().env.as_ref().expect("env should exist");

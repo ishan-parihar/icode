@@ -249,7 +249,7 @@ pub fn render_theme_list_dialog(
             if *offset == i && section_name != &current_section {
                 current_section = section_name.clone();
                 lines.push(Line::from(Span::styled(
-                    format!(" {}", section_name),
+                    format!(" {section_name}"),
                     Style::default()
                         .fg(theme.primary)
                         .add_modifier(Modifier::BOLD),

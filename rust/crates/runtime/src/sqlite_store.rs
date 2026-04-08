@@ -16,12 +16,12 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
-    pub fn new(path: PathBuf) -> Result<Self, rusqlite::Error> {
+    pub fn new(path: &PathBuf) -> Result<Self, rusqlite::Error> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
         }
-        let conn = Connection::open(&path)?;
+        let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         Ok(Self { conn })
     }
@@ -122,7 +122,7 @@ mod tests {
     fn temp_store() -> (SqliteStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let store = SqliteStore::new(path).unwrap();
+        let store = SqliteStore::new(&path).unwrap();
         store.run_migrations().unwrap();
         (store, dir)
     }

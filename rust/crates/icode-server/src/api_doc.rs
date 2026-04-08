@@ -21,6 +21,7 @@ use crate::routes::{
     stop_task, CreateSessionRequest, SendMessageRequest,
 };
 
+#[allow(clippy::needless_for_each, clippy::match_wildcard_for_single_variants)]
 #[derive(OpenApi)]
 #[openapi(
     paths(

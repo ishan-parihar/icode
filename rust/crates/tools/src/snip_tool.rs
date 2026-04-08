@@ -12,7 +12,7 @@ pub struct SnipToolInput {
     pub session_ref: String,
     /// Number of recent messages to extract (default: 20)
     pub count: Option<usize>,
-    /// Whether to include ToolResult blocks (default: true)
+    /// Whether to include `ToolResult` blocks (default: true)
     pub include_tool_results: Option<bool>,
     /// Optional case-insensitive substring filter on message text
     pub search_term: Option<String>,
@@ -34,7 +34,7 @@ pub struct SnippetEntry {
     pub tool_name: Option<String>,
 }
 
-pub fn execute_snip_tool(input: SnipToolInput) -> Result<SnipToolOutput, String> {
+pub fn execute_snip_tool(input: &SnipToolInput) -> Result<SnipToolOutput, String> {
     let base_dir = std::env::current_dir().map_err(|e| e.to_string())?;
 
     let handle = resolve_session_reference_for(&base_dir, &input.session_ref)
@@ -45,7 +45,7 @@ pub fn execute_snip_tool(input: SnipToolInput) -> Result<SnipToolOutput, String>
     }
 
     let session = Session::load_from_path(&handle.path)
-        .map_err(|e| format!("Failed to load session: {}", e))?;
+        .map_err(|e| format!("Failed to load session: {e}"))?;
 
     let session_id = handle.id;
     let total_messages = session.messages.len();

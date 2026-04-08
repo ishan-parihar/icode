@@ -50,7 +50,7 @@ impl StatusBar {
         if let Some(elapsed) = state.turn_elapsed() {
             left_spans.push(Span::raw(" "));
             left_spans.push(Span::styled(
-                format!("\u{23f1} {}", elapsed),
+                format!("\u{23f1} {elapsed}"),
                 Style::default()
                     .fg(state.theme.warning)
                     .add_modifier(Modifier::BOLD),
@@ -80,7 +80,7 @@ impl StatusBar {
             right_spans.push(Span::raw("  "));
         }
 
-        if state.mcp_dialog.servers.len() > 0 {
+        if !state.mcp_dialog.servers.is_empty() {
             right_spans.push(Span::styled(
                 "\u{2299}",
                 Style::default().fg(state.theme.success),

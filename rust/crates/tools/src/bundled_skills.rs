@@ -1,7 +1,7 @@
-/// Bundled skill definitions with prompt templates.
-///
-/// Each bundled skill represents a pre-defined instruction template that can be
-/// looked up by name or alias and expanded with user-provided arguments.
+//! Bundled skill definitions with prompt templates.
+//!
+//! Each bundled skill represents a pre-defined instruction template that can be
+//! looked up by name or alias and expanded with user-provided arguments.
 
 /// A single bundled skill with metadata and a prompt template.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -46,7 +46,7 @@ fn complete_file_path(cwd: &str, partial: &str) -> Vec<String> {
     std::fs::read_dir(dir_path)
         .ok()
         .into_iter()
-        .flat_map(|entries| entries.filter_map(|e| e.ok()))
+        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with(&file_prefix) {
@@ -54,9 +54,9 @@ fn complete_file_path(cwd: &str, partial: &str) -> Vec<String> {
                 let full = if dir.is_empty() {
                     name.clone()
                 } else {
-                    format!("{}/{}", dir, name)
+                    format!("{dir}/{name}")
                 };
-                Some(if is_dir { format!("{}/", full) } else { full })
+                Some(if is_dir { format!("{full}/") } else { full })
             } else {
                 None
             }
@@ -147,8 +147,7 @@ impl InputState {
         self.value
             .char_indices()
             .nth(char_offset)
-            .map(|(byte_idx, _)| byte_idx)
-            .unwrap_or(self.value.len())
+            .map_or(self.value.len(), |(byte_idx, _)| byte_idx)
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -175,8 +174,7 @@ impl InputState {
         let prev_byte_idx = self.value[..byte_idx]
             .char_indices()
             .last()
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
+            .map_or(0, |(idx, _)| idx);
         self.value.drain(prev_byte_idx..byte_idx);
         self.cursor -= 1;
         self.update_slash_autocomplete();
@@ -408,11 +406,10 @@ impl InputState {
         let mut char_offset = 0usize;
 
         for ch in self.value.chars() {
-            if row == target_row {
-                if col >= target_col {
+            if row == target_row
+                && col >= target_col {
                     return char_offset;
                 }
-            }
             if ch == '\n' {
                 if row == target_row {
                     return char_offset;
@@ -504,8 +501,7 @@ impl InputState {
             self.history
                 .iter()
                 .filter(|h| h.to_lowercase().starts_with(&prefix_lower))
-                .cloned()
-                .take(limit)
+                .take(limit).cloned()
                 .collect()
         }
     }
@@ -514,7 +510,7 @@ impl InputState {
         if let Some(ref frecency) = self.frecency {
             frecency.top_entries(limit)
         } else {
-            self.history.iter().rev().cloned().take(limit).collect()
+            self.history.iter().rev().take(limit).cloned().collect()
         }
     }
 
@@ -553,8 +549,7 @@ impl InputState {
             self.available_models
                 .iter()
                 .filter(|m| m.starts_with(partial))
-                .cloned()
-                .take(20)
+                .take(20).cloned()
                 .collect()
         } else if let Some(partial) = value.get(16..).filter(|_| {
             (value.starts_with("/session switch ") || value.starts_with("/session switch\t"))
@@ -563,20 +558,19 @@ impl InputState {
             self.available_sessions
                 .iter()
                 .filter(|s| s.starts_with(partial))
-                .cloned()
-                .take(20)
+                .take(20).cloned()
                 .collect()
         } else {
             return false;
         };
 
-        if !completions.is_empty() {
+        if completions.is_empty() {
+            false
+        } else {
             self.completions = completions;
             self.completion_idx = 0;
             self.show_completions = true;
             true
-        } else {
-            false
         }
     }
 
@@ -612,7 +606,7 @@ impl InputState {
             self.slash_completions = SLASH_COMMANDS
                 .iter()
                 .filter(|cmd| cmd.starts_with(prefix))
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
             self.show_slash_autocomplete = !self.slash_completions.is_empty();
             if self.show_slash_autocomplete {
@@ -661,7 +655,7 @@ impl InputState {
     pub fn selected_slash_completion(&self) -> Option<&str> {
         self.slash_completions
             .get(self.slash_completion_idx)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
     }
 
     pub fn submit(&mut self) -> String {
@@ -704,7 +698,7 @@ impl InputState {
                 count += 1;
                 continue;
             }
-            let wraps = (line_w + avail - 1) / avail;
+            let wraps = line_w.div_ceil(avail);
             count += wraps.max(1);
         }
         count.max(1)
@@ -760,7 +754,7 @@ impl StatefulWidget for InputWidget {
                                 }
                                 InputSegment::FileChip(t) => {
                                     spans.push(Span::styled(
-                                        format!(" {} ", t),
+                                        format!(" {t} "),
                                         Style::default()
                                             .fg(self.theme.info)
                                             .bg(self.theme.background_hover),
@@ -768,7 +762,7 @@ impl StatefulWidget for InputWidget {
                                 }
                                 InputSegment::AgentChip(t) => {
                                     spans.push(Span::styled(
-                                        format!(" {} ", t),
+                                        format!(" {t} "),
                                         Style::default()
                                             .fg(self.theme.accent)
                                             .bg(self.theme.background_hover),
@@ -786,7 +780,7 @@ impl StatefulWidget for InputWidget {
                                 }
                                 InputSegment::FileChip(t) => {
                                     spans.push(Span::styled(
-                                        format!(" {} ", t),
+                                        format!(" {t} "),
                                         Style::default()
                                             .fg(self.theme.info)
                                             .bg(self.theme.background_hover),
@@ -794,7 +788,7 @@ impl StatefulWidget for InputWidget {
                                 }
                                 InputSegment::AgentChip(t) => {
                                     spans.push(Span::styled(
-                                        format!(" {} ", t),
+                                        format!(" {t} "),
                                         Style::default()
                                             .fg(self.theme.accent)
                                             .bg(self.theme.background_hover),
@@ -826,8 +820,7 @@ impl StatefulWidget for InputWidget {
             .value
             .char_indices()
             .nth(state.cursor.min(state.value.chars().count()))
-            .map(|(i, _)| i)
-            .unwrap_or(state.value.len());
+            .map_or(state.value.len(), |(i, _)| i);
         let prefix = &state.value[..byte_idx];
 
         let mut row = 0u16;
@@ -932,7 +925,7 @@ mod tests {
     #[test]
     fn parse_all_known_agents() {
         for agent in KNOWN_AGENTS {
-            let input = format!("@{}", agent);
+            let input = format!("@{agent}");
             let segments = parse_input_segments(&input);
             assert_eq!(segments.len(), 1);
             assert!(

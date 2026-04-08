@@ -9,7 +9,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fs;
 use std::process::Command;
 
@@ -52,8 +52,7 @@ fn detect_language(path: &str) -> Option<String> {
     std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|ext| extension_to_language(ext))
-        .flatten()
+        .and_then(|ext| extension_to_language(ext))
         .map(String::from)
 }
 
@@ -129,7 +128,7 @@ fn count_lines(path: &str) -> usize {
 /// Returns `Ok(FormatterOutput)` even when the formatter binary is not found —
 /// in that case `success` is `false` and the output carries a warning message
 /// in the `formatter_used` field.
-pub fn execute_formatter(input: FormatterInput) -> Result<FormatterOutput, String> {
+pub fn execute_formatter(input: &FormatterInput) -> Result<FormatterOutput, String> {
     let path = input.path.clone();
 
     let language = input
@@ -221,6 +220,7 @@ pub fn formatter_tool_spec() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn detects_rust_from_rs_extension() {
@@ -368,7 +368,7 @@ mod tests {
             path: "test.java".to_string(),
             language: Some("java".to_string()),
         };
-        let result = execute_formatter(input);
+        let result = execute_formatter(&input);
         assert!(result.is_ok());
         let output = result.unwrap();
         if !output.success {
@@ -382,7 +382,7 @@ mod tests {
             path: "test.unknown".to_string(),
             language: None,
         };
-        let result = execute_formatter(input);
+        let result = execute_formatter(&input);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("could not determine language"));
@@ -400,7 +400,7 @@ mod tests {
             path: path.to_string_lossy().to_string(),
             language: Some("rust".to_string()),
         };
-        let result = execute_formatter(input);
+        let result = execute_formatter(&input);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert_eq!(output.language, "rust");

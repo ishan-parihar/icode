@@ -340,7 +340,7 @@ pub fn render_provider_dialog(
 
             let mut spans = vec![Span::raw(" ")];
             spans.push(Span::styled(
-                format!("{} ", icon),
+                format!("{icon} "),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
@@ -352,7 +352,7 @@ pub fn render_provider_dialog(
                 }),
             ));
             spans.push(Span::styled(
-                format!(" ({}) ", configured_label),
+                format!(" ({configured_label}) "),
                 Style::default().fg(if is_selected {
                     theme.background
                 } else {
@@ -360,7 +360,7 @@ pub fn render_provider_dialog(
                 }),
             ));
             spans.push(Span::styled(
-                format!("{} models", model_count),
+                format!("{model_count} models"),
                 Style::default().fg(if is_selected {
                     theme.background
                 } else {

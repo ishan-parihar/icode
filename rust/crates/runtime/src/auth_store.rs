@@ -17,12 +17,14 @@ pub struct AuthStore {
 }
 
 impl AuthStore {
+    #[must_use]
     pub fn config_dir() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".icode")
     }
 
+    #[must_use]
     pub fn load() -> Self {
         let path = Self::config_dir().join("auth.json");
         if path.exists() {
@@ -44,6 +46,7 @@ impl AuthStore {
         std::fs::write(&path, content)
     }
 
+    #[must_use]
     pub fn api_key_for(&self, provider: &str) -> Option<String> {
         self.api_keys.get(provider).cloned()
     }
@@ -52,6 +55,7 @@ impl AuthStore {
         self.api_keys.insert(provider, key);
     }
 
+    #[must_use]
     pub fn oauth_token_for(&self, provider: &str) -> Option<&OAuthToken> {
         self.oauth_tokens.get(provider)
     }
@@ -94,7 +98,7 @@ mod tests {
         let token = OAuthToken {
             access_token: "at-123".to_string(),
             refresh_token: Some("rt-456".to_string()),
-            expires_at: Some(1700000000),
+            expires_at: Some(1_700_000_000),
             scopes: vec!["read".to_string(), "write".to_string()],
         };
         store.set_oauth_token("google".to_string(), token.clone());

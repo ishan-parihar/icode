@@ -7,6 +7,8 @@ pub enum RiskLevel {
     High,
 }
 
+#[must_use]
+#[allow(clippy::match_same_arms)]
 pub fn tool_risk_level(tool_name: &str) -> RiskLevel {
     match tool_name {
         "read_file" | "glob_search" | "grep_search" | "WebFetch" | "WebSearch" | "ToolSearch"

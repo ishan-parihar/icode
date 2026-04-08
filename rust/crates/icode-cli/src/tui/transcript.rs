@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 
 use crate::tui::app::{AppState, MessagePart, MessageRole, ToolStatus};
 
@@ -21,19 +22,19 @@ fn format_plain(state: &AppState) -> Result<String, String> {
     let mut output = String::new();
 
     output.push_str("=== Conversation Transcript ===\n");
-    output.push_str(&format!("Session: {}\n", state.session.id));
-    output.push_str(&format!("Model: {}\n", state.session.model));
-    output.push_str(&format!("Messages: {}\n\n", state.messages.len()));
+    let _ = writeln!(output, "Session: {}", state.session.id);
+    let _ = writeln!(output, "Model: {}", state.session.model);
+    let _ = write!(output, "Messages: {}\n\n", state.messages.len());
 
     for (idx, msg) in state.messages.iter().enumerate() {
         match &msg.role {
             MessageRole::User => {
-                output.push_str(&format!("--- User #{} ---\n", idx + 1));
+                let _ = writeln!(output, "--- User #{} ---", idx + 1);
                 output.push_str(&strip_ansi(&msg.full_text()));
                 output.push_str("\n\n");
             }
             MessageRole::Assistant => {
-                output.push_str(&format!("--- {} #{} ---\n", msg.agent, idx + 1));
+                let _ = writeln!(output, "--- {} #{} ---", msg.agent, idx + 1);
                 for part in &msg.parts {
                     match part {
                         MessagePart::Text { content } => {
@@ -58,10 +59,10 @@ fn format_plain(state: &AppState) -> Result<String, String> {
                                 ToolStatus::Running => "running",
                                 ToolStatus::Pending => "pending",
                             };
-                            output.push_str(&format!("  [tool: {} ({})]\n", name, status_label));
-                            output.push_str(&format!("  Input: {}\n", strip_ansi(input_summary)));
+                            let _ = writeln!(output, "  [tool: {name} ({status_label})]");
+                            let _ = writeln!(output, "  Input: {}", strip_ansi(input_summary));
                             if let Some(out) = tool_output {
-                                output.push_str(&format!("  Output: {}\n", strip_ansi(out)));
+                                let _ = writeln!(output, "  Output: {}", strip_ansi(out));
                             }
                             output.push('\n');
                         }
@@ -69,10 +70,10 @@ fn format_plain(state: &AppState) -> Result<String, String> {
                 }
             }
             MessageRole::Tool { name } => {
-                output.push_str(&format!("--- Tool: {} ---\n", name));
+                let _ = writeln!(output, "--- Tool: {name} ---");
                 if let Some(tool) = state.tools.iter().rev().find(|t| &t.name == name) {
-                    output.push_str(&format!("  Status: {:?}\n", tool.status));
-                    output.push_str(&format!("  Input: {}\n", strip_ansi(&tool.input_summary)));
+                    let _ = writeln!(output, "  Status: {:?}", tool.status);
+                    let _ = writeln!(output, "  Input: {}", strip_ansi(&tool.input_summary));
                 }
                 output.push('\n');
             }
@@ -80,10 +81,10 @@ fn format_plain(state: &AppState) -> Result<String, String> {
     }
 
     output.push_str("--- Session Stats ---\n");
-    output.push_str(&format!("Turns: {}\n", state.session.turns));
-    output.push_str(&format!("Input tokens: {}\n", state.session.input_tokens));
-    output.push_str(&format!("Output tokens: {}\n", state.session.output_tokens));
-    output.push_str(&format!("Cost: ${:.4}\n", state.session.cumulative_cost));
+    let _ = writeln!(output, "Turns: {}", state.session.turns);
+    let _ = writeln!(output, "Input tokens: {}", state.session.input_tokens);
+    let _ = writeln!(output, "Output tokens: {}", state.session.output_tokens);
+    let _ = writeln!(output, "Cost: ${:.4}", state.session.cumulative_cost);
 
     Ok(output)
 }
@@ -92,20 +93,20 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
     let mut output = String::new();
 
     output.push_str("# Conversation Transcript\n\n");
-    output.push_str(&format!("**Session**: {}\n", state.session.id));
-    output.push_str(&format!("**Model**: {}\n", state.session.model));
-    output.push_str(&format!("**Messages**: {}\n\n", state.messages.len()));
+    let _ = writeln!(output, "**Session**: {}", state.session.id);
+    let _ = writeln!(output, "**Model**: {}", state.session.model);
+    let _ = write!(output, "**Messages**: {}\n\n", state.messages.len());
     output.push_str("---\n\n");
 
     for (idx, msg) in state.messages.iter().enumerate() {
         match &msg.role {
             MessageRole::User => {
-                output.push_str(&format!("### User #{}\n\n", idx + 1));
+                let _ = write!(output, "### User #{}\n\n", idx + 1);
                 output.push_str(&msg.full_text());
                 output.push_str("\n\n");
             }
             MessageRole::Assistant => {
-                output.push_str(&format!("### {} #{}\n\n", msg.agent, idx + 1));
+                let _ = write!(output, "### {} #{}\n\n", msg.agent, idx + 1);
                 for part in &msg.parts {
                     match part {
                         MessagePart::Text { content } => {
@@ -130,18 +131,18 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
                                 ToolStatus::Running => "⏳",
                                 ToolStatus::Pending => "⏸️",
                             };
-                            output.push_str(&format!("**Tool**: {} {}\n\n", name, status_emoji));
+                            let _ = write!(output, "**Tool**: {name} {status_emoji}\n\n");
 
                             if let Ok(parsed) =
                                 serde_json::from_str::<serde_json::Value>(input_summary)
                             {
-                                output.push_str(&format!(
+                                let _ = write!(output,
                                     "```json\n{}\n```\n\n",
                                     serde_json::to_string_pretty(&parsed)
                                         .unwrap_or_else(|_| input_summary.clone())
-                                ));
+                                );
                             } else {
-                                output.push_str(&format!("```json\n{}\n```\n\n", input_summary));
+                                let _ = write!(output, "```json\n{input_summary}\n```\n\n");
                             }
 
                             if let Some(out) = tool_output {
@@ -149,13 +150,13 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
                                 if out.lines().count() > 20 {
                                     let preview: String =
                                         out.lines().take(20).collect::<Vec<_>>().join("\n");
-                                    output.push_str(&format!(
+                                    let _ = write!(output,
                                         "```\n{}\n...\n(+ {} more lines)\n```\n\n",
                                         preview,
                                         out.lines().count() - 20
-                                    ));
+                                    );
                                 } else {
-                                    output.push_str(&format!("```\n{}\n```\n\n", out));
+                                    let _ = write!(output, "```\n{out}\n```\n\n");
                                 }
                             }
                         }
@@ -163,7 +164,7 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
                 }
             }
             MessageRole::Tool { name } => {
-                output.push_str(&format!("### Tool Result: {}\n\n", name));
+                let _ = write!(output, "### Tool Result: {name}\n\n");
                 if let Some(tool) = state.tools.iter().rev().find(|t| &t.name == name) {
                     let status_emoji = match tool.status {
                         ToolStatus::Completed => "✅",
@@ -171,8 +172,8 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
                         ToolStatus::Running => "⏳",
                         ToolStatus::Pending => "⏸️",
                     };
-                    output.push_str(&format!("Status: {} {:?}\n\n", status_emoji, tool.status));
-                    output.push_str(&format!("Input: `{}`\n\n", strip_ansi(&tool.input_summary)));
+                    let _ = write!(output, "Status: {} {:?}\n\n", status_emoji, tool.status);
+                    let _ = write!(output, "Input: `{}`\n\n", strip_ansi(&tool.input_summary));
                 }
             }
         }
@@ -180,19 +181,19 @@ fn format_markdown(state: &AppState) -> Result<String, String> {
 
     output.push_str("---\n\n");
     output.push_str("## Session Stats\n\n");
-    output.push_str(&format!("- **Turns**: {}\n", state.session.turns));
-    output.push_str(&format!(
-        "- **Input tokens**: {}\n",
+    let _ = writeln!(output, "- **Turns**: {}", state.session.turns);
+    let _ = writeln!(output, 
+        "- **Input tokens**: {}",
         state.session.input_tokens
-    ));
-    output.push_str(&format!(
-        "- **Output tokens**: {}\n",
+    );
+    let _ = writeln!(output, 
+        "- **Output tokens**: {}",
         state.session.output_tokens
-    ));
-    output.push_str(&format!(
-        "- **Cost**: ${:.4}\n",
+    );
+    let _ = writeln!(output, 
+        "- **Cost**: ${:.4}",
         state.session.cumulative_cost
-    ));
+    );
 
     Ok(output)
 }
@@ -286,7 +287,7 @@ fn strip_ansi(input: &str) -> String {
         if c == '\x1b' {
             in_escape = true;
         } else if in_escape {
-            if c == 'm' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+            if c == 'm' || c.is_ascii_uppercase() || c.is_ascii_lowercase() {
                 in_escape = false;
             }
         } else {

@@ -1,3 +1,6 @@
+#![allow(clippy::needless_for_each)]
+#![allow(clippy::items_after_statements)]
+
 pub mod api_doc;
 pub mod routes;
 pub mod sse;
@@ -121,7 +124,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(val["sessions"].as_array().unwrap().len() >= 1);
+        assert!(!val["sessions"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

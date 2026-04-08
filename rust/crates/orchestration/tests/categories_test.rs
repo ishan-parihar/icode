@@ -10,13 +10,12 @@ fn builtin_categories_returns_8() {
 fn each_category_has_required_fields() {
     let cats = builtin_categories();
     for cat in &cats {
-        assert!(!cat.name.is_empty(), "category name is empty: {:?}", cat);
+        assert!(!cat.name.is_empty(), "category name is empty: {cat:?}");
         assert!(
             !cat.description.is_empty(),
-            "category description is empty: {:?}",
-            cat
+            "category description is empty: {cat:?}"
         );
-        assert!(!cat.model.is_empty(), "category model is empty: {:?}", cat);
+        assert!(!cat.model.is_empty(), "category model is empty: {cat:?}");
     }
 }
 

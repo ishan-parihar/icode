@@ -543,7 +543,6 @@ impl StreamState {
         }
     }
 
-    #[expect(clippy::too_many_lines)]
     fn ingest_chunk(&mut self, chunk: ChunkData) -> Vec<StreamEvent> {
         let mut events = Vec::new();
         if !self.message_started {

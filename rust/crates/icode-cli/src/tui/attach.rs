@@ -66,7 +66,7 @@ fn file_last_modified_ms(path: &Path) -> u128 {
 }
 
 /// Scan session directories for available session files.
-/// Returns a list of ListedSessionInfo sorted by last_active descending.
+/// Returns a list of `ListedSessionInfo` sorted by `last_active` descending.
 pub fn list_sessions() -> Vec<ListedSessionInfo> {
     let Some(dir) = sessions_dir() else {
         return Vec::new();
@@ -131,12 +131,11 @@ pub fn list_sessions() -> Vec<ListedSessionInfo> {
                     0.0f64,
                     None,
                     None,
-                    session.compaction.as_ref().map(|c| c.count).unwrap_or(0),
+                    session.compaction.as_ref().map_or(0, |c| c.count),
                     session
                         .compaction
                         .as_ref()
-                        .map(|c| c.removed_message_count as u32)
-                        .unwrap_or(0),
+                        .map_or(0, |c| c.removed_message_count as u32),
                     effort_level,
                 )
             }
@@ -189,8 +188,8 @@ pub fn list_sessions() -> Vec<ListedSessionInfo> {
     sessions
 }
 
-/// Load a session from file and populate an AppState with its data.
-/// The returned AppState is in read-only / attach mode — it carries the session's
+/// Load a session from file and populate an `AppState` with its data.
+/// The returned `AppState` is in read-only / attach mode — it carries the session's
 /// messages, tools, and metadata but is NOT connected to a live runtime.
 pub fn attach_session(session_path: &Path) -> Result<AppState, String> {
     let session = runtime::Session::load_from_path(session_path)
@@ -229,7 +228,7 @@ pub fn attach_session(session_path: &Path) -> Result<AppState, String> {
     Ok(state)
 }
 
-/// Convert runtime ConversationMessage vec to TUI Message vec.
+/// Convert runtime `ConversationMessage` vec to TUI Message vec.
 /// This is a simplified conversion — it extracts text content from blocks.
 fn convert_runtime_messages_to_tui(
     messages: &[runtime::ConversationMessage],

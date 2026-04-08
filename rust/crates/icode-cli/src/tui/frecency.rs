@@ -96,7 +96,7 @@ impl FrecencyStore {
         Ok(())
     }
 
-    /// Record a text entry: increment frequency and update last_used timestamp.
+    /// Record a text entry: increment frequency and update `last_used` timestamp.
     /// If the text already exists, merges by incrementing frequency.
     pub fn record(&mut self, text: &str) {
         let trimmed = text.trim();

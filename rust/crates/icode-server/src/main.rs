@@ -123,8 +123,8 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        () = ctrl_c => {},
+        () = terminate => {},
     }
 
     tracing::info!("shutdown signal received");
@@ -152,7 +152,7 @@ fn parse_args() -> ServerArgs {
             "--host" => {
                 i += 1;
                 if i < args.len() {
-                    host = args[i].clone();
+                    host.clone_from(&args[i]);
                 }
             }
             "--port" => {

@@ -17,13 +17,9 @@ fn builtin_agents_returns_11_agents() {
 fn each_agent_has_required_fields() {
     let agents = builtin_agents();
     for agent in &agents {
-        assert!(!agent.name.is_empty(), "agent name is empty: {:?}", agent);
-        assert!(!agent.model.is_empty(), "agent model is empty: {:?}", agent);
-        assert!(
-            !agent.prompt.is_empty(),
-            "agent prompt is empty: {:?}",
-            agent
-        );
+        assert!(!agent.name.is_empty(), "agent name is empty: {agent:?}");
+        assert!(!agent.model.is_empty(), "agent model is empty: {agent:?}");
+        assert!(!agent.prompt.is_empty(), "agent prompt is empty: {agent:?}");
     }
 }
 

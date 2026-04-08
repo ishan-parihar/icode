@@ -75,7 +75,7 @@ impl FilesPanelState {
 }
 
 /// Extract file path and status from a tool call.
-/// Returns (path, FileStatus) if the tool is a file-modifying tool.
+/// Returns (path, `FileStatus`) if the tool is a file-modifying tool.
 fn extract_file_from_tool(tool_name: &str, input_summary: &str) -> Option<(String, FileStatus)> {
     let status = match tool_name {
         "write_file" | "edit_file" | "write" | "edit" | "Write" | "Edit" => FileStatus::Modified,

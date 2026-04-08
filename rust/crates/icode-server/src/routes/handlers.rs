@@ -210,7 +210,7 @@ pub async fn send_message(
     let state_ref = Arc::clone(&state);
     tokio::task::spawn_blocking(move || {
         match run_conversation_turn(&session_id_for_task, &message, &model, &tx, &state_ref) {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(e) => {
                 let _ = tx.send(format!("error: {e}"));
             }
@@ -241,11 +241,11 @@ fn run_conversation_turn(
             let store = state.store.lock().await;
             load_or_create_session(&store, session_id)
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e: String| e)?;
 
-    let auth_source = resolve_auth_source().map_err(|e| e.to_string())?;
-    let api_client = ServerApiClient::new(handle.clone(), model.to_string(), auth_source)
-        .map_err(|e| e.to_string())?;
+    let auth_source = resolve_auth_source().map_err(|e: api::ApiError| e.to_string())?;
+    let api_client =
+        ServerApiClient::new(handle.clone(), model.to_string(), auth_source).map_err(|e: api::ApiError| e.to_string())?;
 
     let tool_executor = ServerToolExecutor;
 
@@ -363,11 +363,10 @@ impl RuntimeApiClient for ServerApiClient {
                 .await
                 .map_err(|e| RuntimeError::new(e.to_string()))?;
 
+            use api::StreamEvent as ApiStreamEvent;
             let mut events = Vec::new();
             let mut text_buf = String::new();
             let mut pending_tool: Option<(String, String, String)> = None;
-
-            use api::StreamEvent as ApiStreamEvent;
 
             while let Some(event) = stream
                 .next_event()
@@ -406,21 +405,21 @@ impl RuntimeApiClient for ServerApiClient {
                             events.push(AssistantEvent::ToolUse { id, name, input });
                         }
                         events.push(AssistantEvent::MessageStop);
+                        if let Some(cb) = &progress {
+                            cb(runtime::AssistantEvent::MessageStop);
+                        }
                     }
-                    ApiStreamEvent::MessageDelta(delta) => {
-                        let usage = delta.usage;
-                        events.push(AssistantEvent::Usage(runtime::TokenUsage {
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            cache_creation_input_tokens: usage.cache_creation_input_tokens,
-                            cache_read_input_tokens: usage.cache_read_input_tokens,
-                        }));
-                    }
-                    _ => {}
-                }
-            }
+                     #[allow(clippy::match_wildcard_for_single_variants)]
+                     ApiStreamEvent::MessageDelta(delta) => {
+                         if let Some(cb) = &progress {
+                             cb(runtime::AssistantEvent::Usage(delta.usage.token_usage()));
+                         }
+                     }
+                     ApiStreamEvent::MessageStart(_) => {}
+                 }
+             }
 
-            Ok(events)
+             Ok(events)
         })
     }
 }
@@ -428,7 +427,7 @@ impl RuntimeApiClient for ServerApiClient {
 fn convert_messages(messages: &[ConversationMessage]) -> Vec<api::InputMessage> {
     messages
         .iter()
-        .filter_map(|message| {
+        .map(|message| {
             let role = match message.role {
                 runtime::MessageRole::System
                 | runtime::MessageRole::User
@@ -462,10 +461,10 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<api::InputMessage> 
                     },
                 })
                 .collect();
-            Some(api::InputMessage {
+            api::InputMessage {
                 role: role.to_string(),
                 content,
-            })
+            }
         })
         .collect()
 }
@@ -664,7 +663,10 @@ pub async fn create_task(
     Json(body): Json<super::schemas::TaskCreateRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let task_id = uuid::Uuid::new_v4().to_string();
-    let task_packet_json = body.task_packet.as_ref().map(|v| v.to_string());
+    let task_packet_json = body
+        .task_packet
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_default());
 
     let store = state.store.lock().await;
     match store.create_task(
