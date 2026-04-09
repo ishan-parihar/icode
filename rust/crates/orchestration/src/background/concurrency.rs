@@ -30,7 +30,6 @@ impl ConcurrencyLimiter {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let limit = limits.get(model).copied().unwrap_or(self.default_limit);
-        drop(limits);
         let mut active = self
             .active
             .write()

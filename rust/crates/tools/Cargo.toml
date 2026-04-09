@@ -26,6 +26,7 @@ tree-sitter-typescript = "0.23"
 glob.workspace = true
 regex.workspace = true
 walkdir.workspace = true
+libc = "0.2"
 
 [lints]
 workspace = true

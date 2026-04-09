@@ -5,6 +5,28 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// Check whether `path` resolves within `workspace_root`.
+/// For existing files, canonicalizes the path; for new files, canonicalizes the parent.
+fn is_within_workspace(path: &Path, workspace_root: &Path) -> bool {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical.starts_with(workspace_root);
+    }
+    // For non-existing files, check the parent directory.
+    if let Some(parent) = path.parent() {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            return canonical_parent.starts_with(workspace_root);
+        }
+    }
+    // Fallback: prefix check (TOCTOU — not secure but better than nothing).
+    path.starts_with(workspace_root)
+}
+
+/// Return the workspace root, or the empty path if it cannot be determined.
+fn workspace_root() -> PathBuf {
+    std::env::current_dir().unwrap_or_default()
+}
 
 /// Input for the `batch_edit` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -137,7 +159,22 @@ fn apply_single_edit(edit: &FileEdit) -> EditResult {
     let path = edit.path.clone();
     let replace_all = edit.replace_all.unwrap_or(false);
 
-    let content = match std::fs::read_to_string(&path) {
+    let path_buf = PathBuf::from(&path);
+    let workspace = workspace_root();
+    if !is_within_workspace(&path_buf, &workspace) {
+        return EditResult {
+            path,
+            success: false,
+            error: Some(format!(
+                "path '{}' is outside workspace '{}'",
+                path_buf.display(),
+                workspace.display()
+            )),
+            lines_changed: None,
+        };
+    }
+
+    let content = match std::fs::read_to_string(&path_buf) {
         Ok(c) => c,
         Err(e) => {
             return EditResult {

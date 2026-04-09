@@ -10,6 +10,7 @@ pub mod dialog_export_options;
 pub mod dialog_help;
 pub mod dialog_mcp;
 pub mod dialog_message_actions;
+pub mod dialog_permission;
 pub mod dialog_plugins;
 pub mod dialog_prompt_stash;
 pub mod dialog_providers;

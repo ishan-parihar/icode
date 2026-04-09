@@ -163,6 +163,16 @@ impl TaskRegistry {
             .get_mut(task_id)
             .ok_or_else(|| format!("task not found: {task_id}"))?;
 
+        match task.status {
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped => {
+                return Err(format!(
+                    "cannot update task {task_id}: task is already in terminal state: {}",
+                    task.status
+                ));
+            }
+            _ => {}
+        }
+
         task.messages.push(TaskMessage {
             role: String::from("user"),
             content: message.to_owned(),
@@ -187,6 +197,17 @@ impl TaskRegistry {
             .tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task not found: {task_id}"))?;
+
+        match task.status {
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped => {
+                return Err(format!(
+                    "cannot append output to task {task_id}: task is already in terminal state: {}",
+                    task.status
+                ));
+            }
+            _ => {}
+        }
+
         task.output.push_str(output);
         task.updated_at = now_secs();
         Ok(())
@@ -208,6 +229,31 @@ impl TaskRegistry {
                 ));
             }
             _ => {}
+        }
+
+        // Validate semantic state transitions
+        let valid = matches!(
+            (task.status, status),
+            (
+                TaskStatus::Created,
+                TaskStatus::Running
+                    | TaskStatus::Stopped
+                    | TaskStatus::Failed
+                    | TaskStatus::Completed
+            ) | (
+                TaskStatus::Running,
+                TaskStatus::Completed
+                    | TaskStatus::Failed
+                    | TaskStatus::Stopped
+                    | TaskStatus::Created
+            )
+        );
+
+        if !valid {
+            return Err(format!(
+                "invalid state transition: {} to {}",
+                task.status, status
+            ));
         }
 
         task.status = status;
@@ -241,6 +287,19 @@ impl TaskRegistry {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    #[must_use]
+    pub fn purge_completed(&self) -> usize {
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let before = inner.tasks.len();
+        inner.tasks.retain(|_, t| {
+            !matches!(
+                t.status,
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped
+            )
+        });
+        before - inner.tasks.len()
     }
 }
 

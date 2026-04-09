@@ -1,9 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 60;
@@ -182,7 +183,8 @@ pub fn render_plugins_dialog(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default().borders(Borders::ALL).title(" Plugins ");
+    let config = PopupConfig::full("Plugins");
+    let block = config.to_block(theme);
     frame.render_widget(block, dialog_area);
 
     let inner = dialog_area.inner(Margin::new(1, 1));

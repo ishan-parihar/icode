@@ -699,9 +699,11 @@ fn collect_tool_uses(summary: &runtime::TurnSummary) -> Vec<serde_json::Value> {
 
 fn acp_session_dir() -> PathBuf {
     let dir = session_dir();
-    std::fs::create_dir_all(&dir).inspect_err(|e| {
-        tracing::warn!(error = %e, "Failed to create ACP session directory: {}", dir.display());
-    }).ok();
+    std::fs::create_dir_all(&dir)
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "Failed to create ACP session directory: {}", dir.display());
+        })
+        .ok();
     dir
 }
 

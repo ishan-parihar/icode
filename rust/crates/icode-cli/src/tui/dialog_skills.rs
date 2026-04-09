@@ -1,10 +1,11 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use std::sync::Arc;
 
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 use runtime::skill_manager::{SkillInfo, SkillManager, SkillSource};
 
@@ -310,10 +311,8 @@ pub fn render_skills_dialog(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Skills ")
-        .border_style(Style::default().fg(theme.border));
+    let config = PopupConfig::full("Skills");
+    let block = config.to_block(theme);
     frame.render_widget(block, dialog_area);
 
     let inner = dialog_area.inner(Margin::new(1, 1));

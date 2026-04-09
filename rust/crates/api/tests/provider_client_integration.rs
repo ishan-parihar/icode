@@ -14,20 +14,16 @@ fn provider_client_routes_grok_aliases_through_xai() {
 }
 
 #[test]
-fn provider_client_reports_missing_xai_credentials_for_grok_models() {
+fn provider_client_soft_fails_on_missing_xai_credentials_for_grok_models() {
     let _lock = env_lock();
     let _xai_api_key = EnvVarGuard::set("XAI_API_KEY", None);
 
-    let error = ProviderClient::from_model("grok-3")
-        .expect_err("grok requests without XAI_API_KEY should fail fast");
+    // Missing credentials should not crash — return Unconfigured instead.
+    // The actual error is deferred until an API call is made.
+    let client = ProviderClient::from_model("grok-3")
+        .expect("grok without XAI_API_KEY should soft-fail to Unconfigured");
 
-    match error {
-        ApiError::MissingCredentials { provider, env_vars } => {
-            assert_eq!(provider, "xAI");
-            assert_eq!(env_vars, &["XAI_API_KEY"]);
-        }
-        other => panic!("expected missing xAI credentials, got {other:?}"),
-    }
+    assert_eq!(client.provider_kind(), ProviderKind::Unconfigured);
 }
 
 #[test]

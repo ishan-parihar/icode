@@ -215,8 +215,11 @@ pub fn render_agent_picker(
         };
 
         let mode = mode_label(&agent.mode);
-        let desc = if agent.description.len() > 30 {
-            format!("{}...", &agent.description[..27])
+        let desc = if agent.description.chars().count() > 30 {
+            format!(
+                "{}...",
+                agent.description.chars().take(27).collect::<String>()
+            )
         } else {
             agent.description.clone()
         };

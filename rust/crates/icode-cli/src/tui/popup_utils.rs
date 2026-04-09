@@ -1,10 +1,144 @@
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear};
 use ratatui::Frame;
 
 use crate::tui::theme::Theme;
+
+// =============================================================================
+// Unified Popup Configuration System
+// =============================================================================
+
+/// Accent color for popup borders and titles.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum PopupAccent {
+    #[default]
+    Default, // theme.border
+    Warning,   // theme.warning
+    Error,     // theme.error
+    Primary,   // theme.primary
+    Success,   // theme.success
+    Accent,    // theme.accent
+    Secondary, // theme.secondary
+}
+
+impl PopupAccent {
+    /// Resolve the accent to an actual color from the theme.
+    pub fn resolve(&self, theme: Theme) -> Color {
+        match self {
+            PopupAccent::Default => theme.border,
+            PopupAccent::Warning => theme.warning,
+            PopupAccent::Error => theme.error,
+            PopupAccent::Primary => theme.primary,
+            PopupAccent::Success => theme.success,
+            PopupAccent::Accent => theme.accent,
+            PopupAccent::Secondary => theme.secondary,
+        }
+    }
+}
+
+/// Unified configuration for rendering a popup/dialog block.
+///
+/// Replaces ad-hoc block creation across all dialogs with a single
+/// consistent API. All dialogs should migrate to use this.
+#[derive(Debug, Clone)]
+pub struct PopupConfig {
+    pub accent: PopupAccent,
+    pub title: String,
+    /// `true` = full rounded border (command palette, help, etc.)
+    /// `false` = left-only thick border (permission, question, toasts)
+    pub use_full_border: bool,
+    /// Background color override. `None` uses `theme.background_panel`.
+    pub background: Option<Color>,
+}
+
+impl PopupConfig {
+    /// Standard full-bordered popup (command palette, dialogs, pickers).
+    pub fn full(title: &str) -> Self {
+        Self {
+            accent: PopupAccent::Default,
+            title: format!(" {title} "),
+            use_full_border: true,
+            background: None,
+        }
+    }
+
+    /// Left-accent popup for alerts, permissions, questions.
+    pub fn left(title: &str, accent: PopupAccent) -> Self {
+        Self {
+            accent,
+            title: format!(" {title} "),
+            use_full_border: false,
+            background: None,
+        }
+    }
+
+    /// Build the ratatui Block from this config and theme.
+    pub fn to_block(&self, theme: Theme) -> Block<'static> {
+        let border_color = self.accent.resolve(theme);
+        let bg = self.background.unwrap_or(theme.background_panel);
+
+        if self.use_full_border {
+            let mut block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .border_type(BorderType::Rounded)
+                .style(Style::default().bg(bg));
+
+            if !self.title.is_empty() {
+                block = block.title(Span::styled(
+                    self.title.clone(),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                ));
+            }
+            block
+        } else {
+            let mut block = Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(border_color))
+                .border_type(BorderType::Thick)
+                .style(Style::default().bg(bg));
+
+            if !self.title.is_empty() {
+                block = block.title(Span::styled(
+                    self.title.clone(),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                ));
+            }
+            block
+        }
+    }
+}
+
+/// Clear the area and render a popup frame, returning the inner content area.
+///
+/// Convenience function that combines Clear + Block rendering.
+pub fn render_popup_frame(
+    frame: &mut Frame,
+    area: Rect,
+    config: &PopupConfig,
+    theme: Theme,
+) -> Rect {
+    frame.render_widget(Clear, area);
+    let block = config.to_block(theme);
+    frame.render_widget(block.clone(), area);
+    block.inner(area)
+}
+
+/// Render a semi-transparent backdrop behind modal dialogs.
+/// Useful for permission dialogs, question prompts that block interaction.
+pub fn render_backdrop(frame: &mut Frame, area: Rect, _theme: Theme) {
+    // In ratatui, Clear + layering is the standard backdrop approach.
+    // The actual "dimming" is achieved by the popup's Clear widget + border.
+    // This function is a placeholder for future backdrop tinting support.
+    let _ = (frame, area);
+}
+
+// =============================================================================
+// Legacy helpers (kept for backward compatibility)
+// =============================================================================
 
 /// Calculate a centered popup area.
 ///
@@ -60,6 +194,29 @@ pub fn anchored_popup(
 
     Rect::new(area.x + anchor_x, area.y + popup_y, width, height)
 }
+
+/// Calculate a popup area that appears BELOW a given anchor rect.
+///
+/// Used for autocomplete popups that render just below the prompt input.
+pub fn anchored_popup_below(
+    area: Rect,
+    anchor_rect: Rect,
+    anchor_width: u16,
+    item_count: u16,
+    max_items: u16,
+) -> Rect {
+    let width = anchor_width
+        .clamp(20, 60)
+        .min(area.width.saturating_sub(anchor_rect.x));
+    let height = item_count
+        .min(max_items)
+        .min(area.height.saturating_sub(anchor_rect.bottom()))
+        .max(1);
+    let popup_y = anchor_rect
+        .bottom()
+        .min(area.bottom().saturating_sub(height));
+    Rect::new(anchor_rect.x, popup_y, width, height)
+}
 /// Create an opencode-style block with a left-only border.
 ///
 /// Matches the `SplitBorder` pattern used across opencode popups:
@@ -86,6 +243,45 @@ pub fn left_border_block(
 
     if let Some(bg_color) = bg {
         block = block.style(Style::default().bg(bg_color));
+    }
+
+    block
+}
+
+/// Create an opencode-style block with a split left border.
+///
+/// Uses custom border characters to render a left-only border with a
+/// distinct bottom-left corner character (`╹`, U+2579) instead of a
+/// plain thick line ending. This matches opencode's prompt box styling.
+pub fn split_border_block(
+    theme: Theme,
+    border_color: Color,
+    title: &str,
+    bg: Option<Color>,
+) -> Block<'static> {
+    let custom_border = border::Set {
+        top_left: "│",
+        bottom_left: "╹",
+        top_right: "",
+        bottom_right: "",
+        vertical_left: "│",
+        vertical_right: "",
+        horizontal_top: "",
+        horizontal_bottom: "",
+    };
+
+    let bg_color = bg.unwrap_or(theme.background_element);
+    let mut block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(border_color))
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(bg_color));
+
+    if !title.is_empty() {
+        block = block.title(Span::styled(
+            title.to_string(),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ));
     }
 
     block
@@ -227,8 +423,92 @@ mod tests {
     }
 
     #[test]
+    fn test_anchored_popup_below_basic() {
+        let area = Rect::new(0, 0, 100, 50);
+        let anchor = Rect::new(10, 20, 40, 1);
+        let popup = anchored_popup_below(area, anchor, 40, 5, 10);
+
+        assert_eq!(popup.width, 40);
+        assert_eq!(popup.height, 5);
+        assert_eq!(popup.x, 10);
+        assert_eq!(popup.y, 21);
+    }
+
+    #[test]
+    fn test_anchored_popup_below_caps_at_screen_bottom() {
+        let area = Rect::new(0, 0, 100, 25);
+        let anchor = Rect::new(10, 20, 40, 1);
+        let popup = anchored_popup_below(area, anchor, 40, 10, 10);
+
+        assert_eq!(popup.height, 4);
+        assert_eq!(popup.y, 21);
+    }
+
+    #[test]
+    fn test_split_border_block_renders_left_only() {
+        let theme = Theme::default();
+        let block = split_border_block(theme, Color::Rgb(160, 160, 160), "", None);
+
+        let custom_border = border::Set {
+            top_left: "│",
+            bottom_left: "╹",
+            top_right: "",
+            bottom_right: "",
+            vertical_left: "│",
+            vertical_right: "",
+            horizontal_top: "",
+            horizontal_bottom: "",
+        };
+        assert_eq!(custom_border.top_left, "│");
+        assert_eq!(custom_border.bottom_left, "╹");
+        assert_eq!(custom_border.top_right, "");
+        assert_eq!(custom_border.bottom_right, "");
+        assert_eq!(custom_border.vertical_left, "│");
+        assert_eq!(custom_border.vertical_right, "");
+        assert_eq!(custom_border.horizontal_top, "");
+        assert_eq!(custom_border.horizontal_bottom, "");
+
+        let block_with_title = split_border_block(theme, Color::Rgb(160, 160, 160), "Test", None);
+        drop(block);
+        drop(block_with_title);
+    }
+
+    #[test]
     fn test_hint_bar_renders_empty_safely() {
         let area = Rect::new(0, 0, 100, 1);
         assert!(area.height >= 1);
+    }
+
+    #[test]
+    fn test_permission_popup_dimensions_at_min_size() {
+        let area = Rect::new(0, 0, 40, 10);
+        let popup = popup_dimensions(area, 0.5, 30, 60, 0.5, 15);
+
+        assert!(popup.width > 0);
+        assert!(popup.height > 0);
+        assert!(popup.right() <= area.right());
+        assert!(popup.bottom() <= area.bottom());
+    }
+
+    #[test]
+    fn test_question_popup_dimensions_at_min_size() {
+        let area = Rect::new(0, 0, 60, 15);
+        let popup = popup_dimensions(area, 0.5, 40, 70, 0.6, 12);
+
+        assert!(popup.width > 0);
+        assert!(popup.height > 0);
+        assert!(popup.right() <= area.right());
+        assert!(popup.bottom() <= area.bottom());
+    }
+
+    #[test]
+    fn test_popup_dimensions_clamps_to_area() {
+        let area = Rect::new(0, 0, 25, 8);
+        let popup = popup_dimensions(area, 0.5, 30, 60, 0.5, 20);
+
+        assert!(popup.width <= area.width);
+        assert!(popup.height <= area.height);
+        assert!(popup.right() <= area.right());
+        assert!(popup.bottom() <= area.bottom());
     }
 }

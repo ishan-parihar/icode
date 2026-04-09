@@ -224,21 +224,25 @@ pub fn write_file(path: &str, content: &str) -> io::Result<WriteFileOutput> {
     }
 
     let absolute_path = normalize_path_allow_missing(path)?;
+    let file_exists = absolute_path.exists();
     let original_file = fs::read_to_string(&absolute_path).ok();
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(&absolute_path, content)?;
 
+    let kind = if file_exists {
+        String::from("update")
+    } else {
+        String::from("create")
+    };
+    let original_for_patch = original_file.as_deref().unwrap_or("");
+
     Ok(WriteFileOutput {
-        kind: if original_file.is_some() {
-            String::from("update")
-        } else {
-            String::from("create")
-        },
+        kind,
         file_path: absolute_path.to_string_lossy().into_owned(),
         content: content.to_owned(),
-        structured_patch: make_patch(original_file.as_deref().unwrap_or(""), content),
+        structured_patch: make_patch(original_for_patch, content),
         original_file,
         git_diff: None,
     })
@@ -327,7 +331,30 @@ pub fn glob_search(pattern: &str, path: Option<&str>) -> io::Result<GlobSearchOu
     })
 }
 
+fn validate_grep_pattern(pattern: &str) -> io::Result<()> {
+    if pattern.len() > 1000 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Pattern exceeds maximum length of 1000 characters",
+        ));
+    }
+    let quantifier_count = pattern
+        .chars()
+        .filter(|&c| matches!(c, '*' | '+' | '?' | '{'))
+        .count();
+    if quantifier_count > 25 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Pattern contains too many quantifiers (max 25)",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn grep_search(input: &GrepSearchInput) -> io::Result<GrepSearchOutput> {
+    validate_grep_pattern(&input.pattern)?;
+
     let base_path = input
         .path
         .as_deref()
@@ -391,16 +418,21 @@ pub fn grep_search(input: &GrepSearchInput) -> io::Result<GrepSearchOutput> {
 
         filenames.push(file_path.to_string_lossy().into_owned());
         if output_mode == "content" {
+            let mut last_emitted: usize = 0;
             for index in matched_lines {
                 let start = index.saturating_sub(input.before.unwrap_or(context));
                 let end = (index + input.after.unwrap_or(context) + 1).min(lines.len());
                 for (current, line) in lines.iter().enumerate().take(end).skip(start) {
+                    if current <= last_emitted {
+                        continue;
+                    }
                     let prefix = if input.line_numbers.unwrap_or(true) {
                         format!("{}:{}:", file_path.to_string_lossy(), current + 1)
                     } else {
                         format!("{}:", file_path.to_string_lossy())
                     };
                     content_lines.push(format!("{prefix}{line}"));
+                    last_emitted = current;
                 }
             }
         }

@@ -75,14 +75,21 @@ pub async fn create_session(
     let created_at = session.created_at_ms;
 
     let store = state.store.lock().await;
-    let _ = store.create_session(
+    if let Err(e) = store.create_session(
         &session_id,
         i64::from(session.version),
         created_at,
         session.updated_at_ms,
         None,
         None,
-    );
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("failed to create session: {e}"),
+            })),
+        );
+    }
     drop(store);
 
     state.event_bus.publish(runtime::Event::SessionCreated {
@@ -116,8 +123,11 @@ pub async fn create_session(
 pub async fn list_sessions(
     State(state): State<Arc<ServerState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.list_sessions() {
+    let result = {
+        let store = state.store.lock().await;
+        store.list_sessions()
+    };
+    match result {
         Ok(rows) => {
             let sessions: Vec<serde_json::Value> = rows
                 .iter()
@@ -157,8 +167,11 @@ pub async fn get_session(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.get_session(&id) {
+    let result = {
+        let store = state.store.lock().await;
+        store.get_session(&id)
+    };
+    match result {
         Ok(Some(row)) => (
             StatusCode::OK,
             Json(json!({
@@ -251,7 +264,12 @@ pub async fn send_message(
         ) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx_for_blocking.blocking_send(format!("error: {e}"));
+                if tx_for_blocking
+                    .blocking_send(format!("error: {e}"))
+                    .is_err()
+                {
+                    tracing::warn!("SSE client disconnected before error could be sent");
+                }
             }
         }
     });
@@ -263,7 +281,8 @@ pub async fn send_message(
     });
 
     let stream = GuardedSseStream {
-        inner: ReceiverStream::new(rx).map(|text| Ok(SseEvent::default().event("content").data(text))),
+        inner: ReceiverStream::new(rx)
+            .map(|text| Ok(SseEvent::default().event("content").data(text))),
         async_handle,
     };
 
@@ -317,10 +336,15 @@ fn run_conversation_turn(
 
     match runtime.run_turn(user_message, None, Some(&progress)) {
         Ok(summary) => {
-            let _ = tx.blocking_send(format!(
-                "\n\n[turn_complete: {} iterations]",
-                summary.iterations
-            ));
+            if tx
+                .blocking_send(format!(
+                    "\n\n[turn_complete: {} iterations]",
+                    summary.iterations
+                ))
+                .is_err()
+            {
+                return Err("SSE client disconnected".to_string());
+            }
             let usage = summary.usage;
             event_bus.publish(runtime::Event::MessageCompleted {
                 session_id: session_id.to_string(),
@@ -350,14 +374,16 @@ fn load_or_create_session(store: &SqliteStore, session_id: &str) -> Result<Sessi
         return Ok(session);
     }
     let session = Session::new();
-    let _ = store.create_session(
-        &session.session_id,
-        i64::from(session.version),
-        session.created_at_ms,
-        session.updated_at_ms,
-        None,
-        None,
-    );
+    store
+        .create_session(
+            &session.session_id,
+            i64::from(session.version),
+            session.created_at_ms,
+            session.updated_at_ms,
+            None,
+            None,
+        )
+        .map_err(|e| format!("failed to persist session: {e}"))?;
     Ok(session)
 }
 
@@ -623,8 +649,11 @@ pub async fn get_config(
 pub async fn list_tasks(
     State(state): State<Arc<ServerState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.list_tasks(None) {
+    let result = {
+        let store = state.store.lock().await;
+        store.list_tasks(None)
+    };
+    match result {
         Ok(rows) => {
             let tasks: Vec<serde_json::Value> = rows
                 .iter()
@@ -668,8 +697,11 @@ pub async fn get_task(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.get_task(&id) {
+    let result = {
+        let store = state.store.lock().await;
+        store.get_task(&id)
+    };
+    match result {
         Ok(Some(row)) => (
             StatusCode::OK,
             Json(json!({
@@ -801,8 +833,11 @@ pub async fn stop_task(
 pub async fn list_teams(
     State(state): State<Arc<ServerState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.list_teams() {
+    let result = {
+        let store = state.store.lock().await;
+        store.list_teams()
+    };
+    match result {
         Ok(rows) => {
             let teams: Vec<serde_json::Value> = rows
                 .iter()
@@ -910,8 +945,11 @@ pub async fn delete_team(
 pub async fn list_crons(
     State(state): State<Arc<ServerState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.list_crons() {
+    let result = {
+        let store = state.store.lock().await;
+        store.list_crons()
+    };
+    match result {
         Ok(rows) => {
             let crons: Vec<serde_json::Value> = rows
                 .iter()
@@ -1029,8 +1067,11 @@ pub async fn delete_cron(
 pub async fn list_mcp(
     State(state): State<Arc<ServerState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.list_mcp_servers() {
+    let result = {
+        let store = state.store.lock().await;
+        store.list_mcp_servers()
+    };
+    match result {
         Ok(rows) => {
             let servers: Vec<serde_json::Value> = rows
                 .iter()
@@ -1144,8 +1185,11 @@ pub async fn disconnect_mcp(
 pub async fn list_workers(
     State(state): State<Arc<ServerState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.list_workers() {
+    let result = {
+        let store = state.store.lock().await;
+        store.list_workers()
+    };
+    match result {
         Ok(rows) => {
             let workers: Vec<serde_json::Value> = rows
                 .iter()
@@ -1317,8 +1361,11 @@ pub async fn restart_worker(
 pub async fn list_lsp(
     State(state): State<Arc<ServerState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let store = state.store.lock().await;
-    match store.list_lsp_servers() {
+    let result = {
+        let store = state.store.lock().await;
+        store.list_lsp_servers()
+    };
+    match result {
         Ok(rows) => {
             let servers: Vec<serde_json::Value> = rows
                 .iter()

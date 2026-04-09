@@ -10,6 +10,7 @@
 
 use std::path::Path;
 
+use crate::permission_enforcer::sed_has_inplace_flag;
 use crate::permissions::PermissionMode;
 
 /// Result of validating a bash command before execution.
@@ -105,37 +106,48 @@ pub fn validate_read_only(command: &str, mode: PermissionMode) -> ValidationResu
         return ValidationResult::Allow;
     }
 
-    let first_command = extract_first_command(command);
+    let all_commands = extract_all_commands(command);
 
-    // Check for write commands.
-    for &write_cmd in WRITE_COMMANDS {
-        if first_command == write_cmd {
-            return ValidationResult::Block {
-                reason: format!(
-                    "Command '{write_cmd}' modifies the filesystem and is not allowed in read-only mode"
-                ),
-            };
+    for first_command in &all_commands {
+        // Check for write commands.
+        for &write_cmd in WRITE_COMMANDS {
+            if first_command == write_cmd {
+                return ValidationResult::Block {
+                    reason: format!(
+                        "Command '{write_cmd}' modifies the filesystem and is not allowed in read-only mode"
+                    ),
+                };
+            }
         }
-    }
 
-    // Check for state-modifying commands.
-    for &state_cmd in STATE_MODIFYING_COMMANDS {
-        if first_command == state_cmd {
-            return ValidationResult::Block {
-                reason: format!(
-                    "Command '{state_cmd}' modifies system state and is not allowed in read-only mode"
-                ),
-            };
+        // Check for state-modifying commands.
+        for &state_cmd in STATE_MODIFYING_COMMANDS {
+            if first_command == state_cmd {
+                return ValidationResult::Block {
+                    reason: format!(
+                        "Command '{state_cmd}' modifies system state and is not allowed in read-only mode"
+                    ),
+                };
+            }
         }
-    }
 
-    // Check for sudo wrapping write commands.
-    if first_command == "sudo" {
-        let inner = extract_sudo_inner(command);
-        if !inner.is_empty() {
-            let inner_result = validate_read_only(inner, mode);
-            if inner_result != ValidationResult::Allow {
-                return inner_result;
+        // Check for sudo wrapping write commands.
+        if first_command == "sudo" {
+            let sudo_words = extract_sudo_words(command);
+            for word in sudo_words {
+                if WRITE_COMMANDS.contains(&word) || STATE_MODIFYING_COMMANDS.contains(&word) || ALWAYS_DESTRUCTIVE_COMMANDS.contains(&word) {
+                    return ValidationResult::Block {
+                        reason: format!("sudo command contains blocked target '{word}' which modifies state in read-only mode"),
+                    };
+                }
+            }
+        }
+
+        // Check for git commands that modify state.
+        if first_command == "git" {
+            let res = validate_git_read_only(command);
+            if res != ValidationResult::Allow {
+                return res;
             }
         }
     }
@@ -149,11 +161,6 @@ pub fn validate_read_only(command: &str, mode: PermissionMode) -> ValidationResu
                 ),
             };
         }
-    }
-
-    // Check for git commands that modify state.
-    if first_command == "git" {
-        return validate_git_read_only(command);
     }
 
     ValidationResult::Allow
@@ -248,15 +255,16 @@ pub fn check_destructive(command: &str) -> ValidationResult {
         }
     }
 
-    // Check always-destructive commands.
-    let first = extract_first_command(command);
-    for &cmd in ALWAYS_DESTRUCTIVE_COMMANDS {
-        if first == cmd {
-            return ValidationResult::Warn {
-                message: format!(
-                    "Command '{cmd}' is inherently destructive and may cause data loss"
-                ),
-            };
+    let all_cmds = extract_all_commands(command);
+    for first in &all_cmds {
+        for &cmd in ALWAYS_DESTRUCTIVE_COMMANDS {
+            if first == cmd {
+                return ValidationResult::Warn {
+                    message: format!(
+                        "Command '{cmd}' is inherently destructive and may cause data loss"
+                    ),
+                };
+            }
         }
     }
 
@@ -308,9 +316,14 @@ fn command_targets_outside_workspace(command: &str) -> bool {
         "/etc/", "/usr/", "/var/", "/boot/", "/sys/", "/proc/", "/dev/", "/sbin/", "/lib/", "/opt/",
     ];
 
-    let first = extract_first_command(command);
-    let is_write_cmd = WRITE_COMMANDS.contains(&first.as_str())
-        || STATE_MODIFYING_COMMANDS.contains(&first.as_str());
+    let all_cmds = extract_all_commands(command);
+    let mut is_write_cmd = false;
+    for first in &all_cmds {
+        if WRITE_COMMANDS.contains(&first.as_str()) || STATE_MODIFYING_COMMANDS.contains(&first.as_str()) {
+            is_write_cmd = true;
+            break;
+        }
+    }
 
     if !is_write_cmd {
         return false;
@@ -334,13 +347,21 @@ fn command_targets_outside_workspace(command: &str) -> bool {
 /// Corresponds to upstream `tools/BashTool/sedValidation.ts`.
 #[must_use]
 pub fn validate_sed(command: &str, mode: PermissionMode) -> ValidationResult {
-    let first = extract_first_command(command);
-    if first != "sed" {
+    let all_cmds = extract_all_commands(command);
+    let mut has_sed = false;
+    for first in &all_cmds {
+        if first == "sed" {
+            has_sed = true;
+            break;
+        }
+    }
+    
+    if !has_sed {
         return ValidationResult::Allow;
     }
 
     // In read-only mode, block sed -i (in-place editing).
-    if mode == PermissionMode::ReadOnly && command.contains(" -i") {
+    if mode == PermissionMode::ReadOnly && sed_has_inplace_flag(command) {
         return ValidationResult::Block {
             reason: "sed -i (in-place editing) is not allowed in read-only mode".to_string(),
         };
@@ -358,23 +379,23 @@ pub fn validate_sed(command: &str, mode: PermissionMode) -> ValidationResult {
 /// Corresponds to upstream `tools/BashTool/pathValidation.ts`.
 #[must_use]
 pub fn validate_paths(command: &str, workspace: &Path) -> ValidationResult {
-    // Check for directory traversal attempts.
-    if command.contains("../") {
+    if command.contains("../") || command.contains("..\\") {
         let workspace_str = workspace.to_string_lossy();
-        // Allow traversal if it resolves within workspace (heuristic).
-        if !command.contains(&*workspace_str) {
-            return ValidationResult::Warn {
-                message: "Command contains directory traversal pattern '../' — verify the target path resolves within the workspace".to_string(),
+        let canonical_workspace = workspace.canonicalize().ok();
+        let in_workspace = canonical_workspace
+            .as_ref()
+            .is_some_and(|ws| command.contains(&*ws.to_string_lossy()));
+        if !in_workspace && !command.contains(&*workspace_str) {
+            return ValidationResult::Block {
+                reason: "Command contains directory traversal pattern that escapes the workspace — blocked".to_string(),
             };
         }
     }
 
-    // Check for home directory references that could escape workspace.
     if command.contains("~/") || command.contains("$HOME") {
-        return ValidationResult::Warn {
-            message:
-                "Command references home directory — verify it stays within the workspace scope"
-                    .to_string(),
+        return ValidationResult::Block {
+            reason: "Command references home directory outside workspace scope — blocked"
+                .to_string(),
         };
     }
 
@@ -531,8 +552,27 @@ const SYSTEM_ADMIN_COMMANDS: &[&str] = &[
 /// Corresponds to upstream `tools/BashTool/commandSemantics.ts`.
 #[must_use]
 pub fn classify_command(command: &str) -> CommandIntent {
-    let first = extract_first_command(command);
-    classify_by_first_command(&first, command)
+    let commands = extract_all_commands(command);
+    let mut highest_severity = CommandIntent::Unknown;
+    
+    if commands.is_empty() {
+        return highest_severity;
+    }
+    
+    for first in &commands {
+        let intent = classify_by_first_command(first, command);
+        highest_severity = match (highest_severity, intent) {
+            (CommandIntent::Destructive, _) | (_, CommandIntent::Destructive) => CommandIntent::Destructive,
+            (CommandIntent::SystemAdmin, _) | (_, CommandIntent::SystemAdmin) => CommandIntent::SystemAdmin,
+            (CommandIntent::Write, _) | (_, CommandIntent::Write) => CommandIntent::Write,
+            (CommandIntent::Network, _) | (_, CommandIntent::Network) => CommandIntent::Network,
+            (CommandIntent::ProcessManagement, _) | (_, CommandIntent::ProcessManagement) => CommandIntent::ProcessManagement,
+            (CommandIntent::PackageManagement, _) | (_, CommandIntent::PackageManagement) => CommandIntent::PackageManagement,
+            (CommandIntent::ReadOnly, _) | (_, CommandIntent::ReadOnly) => CommandIntent::ReadOnly,
+            _ => CommandIntent::Unknown,
+        };
+    }
+    highest_severity
 }
 
 fn classify_by_first_command(first: &str, command: &str) -> CommandIntent {
@@ -618,6 +658,62 @@ pub fn validate_command(command: &str, mode: PermissionMode, workspace: &Path) -
 // Helpers
 // ---------------------------------------------------------------------------
 
+pub fn extract_all_commands(command: &str) -> Vec<String> {
+    let mut cmds = Vec::new();
+    for part in split_bash_commands(command) {
+        let first = extract_first_command(part);
+        if !first.is_empty() {
+            cmds.push(first);
+        }
+    }
+    cmds
+}
+
+fn split_bash_commands(command: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut last_split = 0;
+
+    let bytes = command.as_bytes();
+    for i in 0..bytes.len() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        let b = bytes[i];
+        if b == b'\\' {
+            // In bash, backslash only escapes inside double quotes or outside quotes. 
+            if !in_single {
+                escaped = true;
+            }
+            continue;
+        }
+
+        if b == b'\'' && !in_double {
+            in_single = !in_single;
+        } else if b == b'"' && !in_single {
+            in_double = !in_double;
+        } else if !in_single && !in_double {
+            match b {
+                b';' | b'|' | b'&' | b'\n' | b'(' | b')' | b'`' => {
+                    if i > last_split {
+                        parts.push(&command[last_split..i]);
+                    }
+                    last_split = i + 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    if last_split < command.len() {
+        parts.push(&command[last_split..]);
+    }
+
+    parts
+}
+
 /// Extract the first bare command from a pipeline/chain, stripping env vars and sudo.
 fn extract_first_command(command: &str) -> String {
     let trimmed = command.trim();
@@ -654,25 +750,18 @@ fn extract_first_command(command: &str) -> String {
         .to_string()
 }
 
-/// Extract the command following "sudo" (skip sudo flags).
-fn extract_sudo_inner(command: &str) -> &str {
+/// Extract all words following "sudo".
+fn extract_sudo_words(command: &str) -> Vec<&str> {
     let parts: Vec<&str> = command.split_whitespace().collect();
-    let sudo_idx = parts.iter().position(|&p| p == "sudo");
-    match sudo_idx {
-        Some(idx) => {
-            // Skip flags after sudo.
-            let rest = &parts[idx + 1..];
-            for &part in rest {
-                if !part.starts_with('-') {
-                    // Found the inner command — return from here to end.
-                    let offset = command.find(part).unwrap_or(0);
-                    return &command[offset..];
-                }
-            }
-            ""
+    let mut inner = Vec::new();
+    if let Some(mut idx) = parts.iter().position(|&p| p == "sudo") {
+        idx += 1;
+        while idx < parts.len() {
+            inner.push(parts[idx]);
+            idx += 1;
         }
-        None => "",
     }
+    inner
 }
 
 /// Find the end of a value in `KEY=value rest` (handles basic quoting).
@@ -687,7 +776,13 @@ fn find_end_of_value(s: &str) -> Option<usize> {
         let quote = first;
         let mut i = 1;
         while i < s.len() {
-            if s.as_bytes()[i] == quote && (i == 0 || s.as_bytes()[i - 1] != b'\\') {
+            let ch = s.as_bytes()[i];
+            if ch == quote {
+                // In bash, single quotes do not support backslash escapes.
+                if quote == b'"' && s.as_bytes()[i - 1] == b'\\' {
+                    i += 1;
+                    continue;
+                }
                 // Skip past quote.
                 i += 1;
                 // Find next whitespace.
@@ -866,20 +961,20 @@ mod tests {
     // --- pathValidation ---
 
     #[test]
-    fn warns_directory_traversal() {
+    fn blocks_directory_traversal() {
         let workspace = PathBuf::from("/workspace/project");
         assert!(matches!(
             validate_paths("cat ../../../etc/passwd", &workspace),
-            ValidationResult::Warn { message } if message.contains("traversal")
+            ValidationResult::Block { reason } if reason.contains("traversal")
         ));
     }
 
     #[test]
-    fn warns_home_directory_reference() {
+    fn blocks_home_directory_reference() {
         let workspace = PathBuf::from("/workspace/project");
         assert!(matches!(
             validate_paths("cat ~/.ssh/id_rsa", &workspace),
-            ValidationResult::Warn { message } if message.contains("home directory")
+            ValidationResult::Block { reason } if reason.contains("home directory")
         ));
     }
 

@@ -863,7 +863,9 @@ fn build_assistant_message(
 }
 
 fn flush_text_block(text: &mut String, blocks: &mut Vec<ContentBlock>) {
-    if !text.is_empty() {
+    if text.trim().is_empty() {
+        text.clear();
+    } else {
         blocks.push(ContentBlock::Text {
             text: std::mem::take(text),
         });

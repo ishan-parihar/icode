@@ -4,6 +4,8 @@
 //! persisting working directory and environment variables between invocations.
 //! On Windows, falls back to `std::process::Command` with `cmd /C`.
 
+#![allow(unsafe_code)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -65,6 +67,53 @@ type BgHandleMap = HashMap<String, thread::JoinHandle<()>>;
 #[cfg(windows)]
 fn global_bg_handle_registry() -> Arc<Mutex<BgHandleMap>> {
     static REG: OnceLock<Arc<Mutex<BgHandleMap>>> = OnceLock::new();
+    REG.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+/// RAII guard that kills a child process on drop.
+/// Prevents orphaned processes when a thread panics or times out.
+#[cfg(unix)]
+struct ChildGuard {
+    pid: u32,
+    killed: bool,
+}
+
+#[cfg(unix)]
+impl ChildGuard {
+    fn new(pid: u32) -> Self {
+        Self { pid, killed: false }
+    }
+
+    #[allow(dead_code)]
+    fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    fn kill(&mut self) {
+        if !self.killed {
+            unsafe {
+                libc::kill(self.pid.cast_signed(), libc::SIGKILL);
+            }
+            self.killed = true;
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Registry of background child PIDs for Unix, allowing later cleanup.
+#[cfg(unix)]
+type BgChildPidMap = HashMap<String, u32>;
+
+#[cfg(unix)]
+fn global_bg_child_pids() -> Arc<Mutex<BgChildPidMap>> {
+    static REG: OnceLock<Arc<Mutex<BgChildPidMap>>> = OnceLock::new();
     REG.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone()
 }
@@ -240,6 +289,60 @@ fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> 
     let _ = writer.write_all(b"\n");
     let _ = writer.flush();
 
+    if run_in_background {
+        let id = format!("pty_bg_{}", BG_COUNTER.fetch_add(1, Ordering::SeqCst) + 1);
+        let id_for_return = id.clone();
+        let registry = global_bg_task_registry();
+        let pid_registry = global_bg_child_pids();
+        let pid_for_registry = child.process_id().unwrap_or(0);
+
+        pid_registry
+            .lock()
+            .map(|mut map| map.insert(id.clone(), pid_for_registry))
+            .ok();
+
+        std::thread::spawn(move || {
+            let mut guard = ChildGuard::new(pid_for_registry);
+            let mut stdout = String::new();
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let s = String::from_utf8_lossy(&buf[..n]);
+                        stdout.push_str(&s);
+                        if stdout.len() > 2_097_152 {
+                            stdout.truncate(2_097_152);
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = child.wait();
+            guard.killed = true;
+
+            let output = PtyBashOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                interrupted: false,
+                background_task_id: Some(id.clone()),
+            };
+            let _ = registry.lock().map(|mut map| map.insert(id, Ok(output)));
+        });
+
+        return Ok(PtyBashOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            interrupted: false,
+            background_task_id: Some(id_for_return),
+        });
+    }
+
+    let pid = child.process_id().unwrap_or(0);
+    let mut guard = ChildGuard::new(pid);
+
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
@@ -262,11 +365,20 @@ fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> 
         let _ = tx.send((exit_status, stdout));
     });
 
-    let result = rx
-        .recv_timeout(std::time::Duration::from_secs(timeout_secs))
-        .map_err(|_| "command timed out".to_string())?;
+    let result = rx.recv_timeout(std::time::Duration::from_secs(timeout_secs));
 
-    let (exit_result, raw_output) = result;
+    let (exit_result, raw_output) = match result {
+        Ok(val) => {
+            guard.killed = true;
+            val
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err("command timed out".to_string());
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("background thread panicked".to_string());
+        }
+    };
 
     let stripped = strip_ansi_codes(&raw_output);
     let interrupted = exit_result.is_err();
@@ -276,41 +388,11 @@ fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> 
         Err(_) => -1,
     };
 
-    if !run_in_background {
-        if let Some((cwd, env_vars)) = parse_shell_state(&stripped) {
-            if let Ok(mut s) = state.lock() {
-                s.cwd = Some(cwd);
-                s.env_vars = env_vars;
-            }
+    if let Some((cwd, env_vars)) = parse_shell_state(&stripped) {
+        if let Ok(mut s) = state.lock() {
+            s.cwd = Some(cwd);
+            s.env_vars = env_vars;
         }
-    }
-
-    if run_in_background {
-        let id = format!("pty_bg_{}", BG_COUNTER.fetch_add(1, Ordering::SeqCst) + 1);
-        let registry = global_bg_task_registry();
-
-        let output = PtyBashOutput {
-            stdout: stripped.clone(),
-            stderr: String::new(),
-            exit_code,
-            interrupted,
-            background_task_id: Some(id.clone()),
-        };
-
-        let _ = registry
-            .lock()
-            .map(|mut map| {
-                map.insert(id.clone(), Ok(output));
-            })
-            .map_err(|e| format!("lock poisoned: {e}"));
-
-        return Ok(PtyBashOutput {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: 0,
-            interrupted: false,
-            background_task_id: Some(id),
-        });
     }
 
     Ok(PtyBashOutput {

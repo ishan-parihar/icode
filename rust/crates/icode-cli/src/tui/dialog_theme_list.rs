@@ -1,9 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 use crate::tui::theme_loader::{list_themes_by_category, ThemeCategory, ThemeEntry};
 
@@ -184,10 +185,8 @@ pub fn render_theme_list_dialog(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Select Theme ")
-        .border_style(Style::default().fg(theme.border));
+    let config = PopupConfig::full("Themes");
+    let block = config.to_block(theme);
     frame.render_widget(block, dialog_area);
 
     let inner = dialog_area.inner(Margin::new(1, 1));

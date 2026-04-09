@@ -7,6 +7,9 @@ use std::fs;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
+const MAX_PATTERN_LENGTH: usize = 1000;
+const MAX_QUANTIFIERS: usize = 25;
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GrepToolInput {
     /// Regex pattern to search for
@@ -20,6 +23,25 @@ pub struct GrepToolInput {
 }
 
 pub fn execute_grep_tool(input: &GrepToolInput, cwd: &PathBuf) -> Result<String, String> {
+    // ReDoS prevention: validate pattern complexity before compilation
+    if input.pattern.len() > MAX_PATTERN_LENGTH {
+        return Err(format!(
+            "Pattern too long (max {MAX_PATTERN_LENGTH} characters, got {})",
+            input.pattern.len()
+        ));
+    }
+
+    let quantifier_count = input
+        .pattern
+        .chars()
+        .filter(|c| matches!(c, '*' | '+' | '?' | '{'))
+        .count();
+    if quantifier_count > MAX_QUANTIFIERS {
+        return Err(format!(
+            "Pattern has too many quantifiers (max {MAX_QUANTIFIERS}, got {quantifier_count})"
+        ));
+    }
+
     let re = if input.case_insensitive {
         RegexBuilder::new(&input.pattern)
             .case_insensitive(true)

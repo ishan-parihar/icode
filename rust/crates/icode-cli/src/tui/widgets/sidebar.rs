@@ -204,8 +204,8 @@ impl Sidebar {
                         crate::tui::widgets::TodoStatus::Pending => (" ", state.theme.text_muted),
                     };
 
-                    let display_text = if item.text.len() > 35 {
-                        format!("{}...", &item.text[..32])
+                    let display_text = if item.text.chars().count() > 35 {
+                        format!("{}...", item.text.chars().take(32).collect::<String>())
                     } else {
                         item.text.clone()
                     };
@@ -289,8 +289,8 @@ impl Sidebar {
                         crate::tui::widgets::McpStatus::Error => ("\u{2717}", state.theme.error),
                     };
 
-                    let display_name = if server.name.len() > 25 {
-                        format!("{}...", &server.name[..22])
+                    let display_name = if server.name.chars().count() > 25 {
+                        format!("{}...", server.name.chars().take(22).collect::<String>())
                     } else {
                         server.name.clone()
                     };
@@ -383,8 +383,8 @@ impl Sidebar {
                         String::new()
                     };
 
-                    let display_name = if server.name.len() > 25 {
-                        format!("{}...", &server.name[..22])
+                    let display_name = if server.name.chars().count() > 25 {
+                        format!("{}...", server.name.chars().take(22).collect::<String>())
                     } else {
                         server.name.clone()
                     };

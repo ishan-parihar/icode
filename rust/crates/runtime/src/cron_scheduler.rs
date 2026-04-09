@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,6 +14,8 @@ pub struct CronScheduler {
     registry: Arc<CronRegistry>,
     callback: Option<CronCallback>,
     running: Arc<AtomicBool>,
+    is_spawned: Arc<AtomicBool>,
+    running_entries: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 /// Handle for a spawned cron scheduler task, allowing immediate cancellation
@@ -40,6 +43,8 @@ impl CronScheduler {
             registry,
             callback: None,
             running: Arc::new(AtomicBool::new(false)),
+            is_spawned: Arc::new(AtomicBool::new(false)),
+            running_entries: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
 
@@ -49,10 +54,19 @@ impl CronScheduler {
         self
     }
 
-    pub fn spawn(self) -> CronSchedulerHandle {
-        let registry = self.registry;
-        let callback = self.callback;
-        let running = self.running;
+    pub fn spawn(&self) -> Result<CronSchedulerHandle, String> {
+        if self
+            .is_spawned
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("CronScheduler::spawn() called more than once".to_string());
+        }
+
+        let registry = Arc::clone(&self.registry);
+        let callback = self.callback.clone();
+        let running = Arc::clone(&self.running);
+        let running_entries = Arc::clone(&self.running_entries);
         running.store(true, Ordering::SeqCst);
 
         let handle = tokio::spawn(async move {
@@ -98,6 +112,13 @@ impl CronScheduler {
                         };
 
                         if should_run {
+                            let mut executing = running_entries.lock().unwrap();
+                            if executing.contains(&entry.cron_id) {
+                                continue;
+                            }
+                            executing.insert(entry.cron_id.clone());
+                            drop(executing);
+
                             if let Some(ref cb) = callback {
                                 let cb_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     cb(entry);
@@ -109,6 +130,11 @@ impl CronScheduler {
                                     );
                                 }
                             }
+
+                            let mut executing = running_entries.lock().unwrap();
+                            executing.remove(&entry.cron_id);
+                            drop(executing);
+
                             if let Err(e) = registry.record_run(&entry.cron_id) {
                                 eprintln!(
                                     "cron_scheduler: failed to record run for {}: {e}",
@@ -121,7 +147,7 @@ impl CronScheduler {
             }
         });
 
-        CronSchedulerHandle { handle }
+        Ok(CronSchedulerHandle { handle })
     }
 
     pub fn stop(&self) {

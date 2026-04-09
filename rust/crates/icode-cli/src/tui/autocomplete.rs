@@ -9,7 +9,9 @@ use ratatui::Frame;
 use crate::tui::file_picker::{fuzzy_match, scan_files};
 use crate::tui::frecency::FrecencyStore;
 use crate::tui::input::InputState;
-use crate::tui::popup_utils::{anchored_popup, clear_area, left_border_block};
+use crate::tui::popup_utils::{
+    anchored_popup, anchored_popup_below, clear_area, left_border_block,
+};
 use crate::tui::theme::Theme;
 
 const KNOWN_AGENTS: &[&str] = &["build", "plan", "debug", "review", "test"];
@@ -94,16 +96,6 @@ fn char_to_byte(s: &str, char_offset: usize) -> usize {
         .map_or(s.len(), |(byte_idx, _)| byte_idx)
 }
 
-fn char_before_is_whitespace(input: &str, cursor: usize) -> bool {
-    if cursor == 0 {
-        return false;
-    }
-    input
-        .char_indices()
-        .nth(cursor - 1)
-        .is_some_and(|(_, ch)| ch.is_whitespace())
-}
-
 fn fuzzy_match_single(query: &str, target: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -123,6 +115,19 @@ fn fuzzy_match_single(query: &str, target: &str) -> bool {
     false
 }
 
+/// Returns true if `cursor` (in char offsets) is at the start of a line.
+///
+/// A position is start-of-line when:
+/// - `cursor == 0` (before any input), or
+/// - `cursor == 1` (first character), or
+/// - the character immediately before the cursor is `\n`.
+fn is_at_line_start(input: &str, cursor: usize) -> bool {
+    if cursor == 0 || cursor == 1 {
+        return true;
+    }
+    input.chars().nth(cursor.saturating_sub(2)) == Some('\n')
+}
+
 #[derive(Debug, Default)]
 pub struct AutocompleteState {
     pub open: bool,
@@ -136,6 +141,7 @@ pub struct AutocompleteState {
     pub anchor_width: u16,
     pub max_items: usize,
     pub mouse_hover: Option<usize>,
+    pub slash_command_selected: bool,
 }
 
 impl AutocompleteState {
@@ -152,6 +158,7 @@ impl AutocompleteState {
             anchor_width: 40,
             max_items: 10,
             mouse_hover: None,
+            slash_command_selected: false,
         }
     }
 
@@ -254,7 +261,13 @@ impl AutocompleteState {
                     .collect();
             }
             AutocompleteMode::Resource => {
-                self.entries.clear();
+                // MCP resource autocomplete — placeholder until MCP resource
+                // listing is wired into AppState (see sync.data.mcp_resource in opencode).
+                self.entries = vec![AutocompleteEntry {
+                    title: "No MCP resources available".to_string(),
+                    subtitle: "Configure MCP servers to use @resource".to_string(),
+                    kind: EntryKind::Resource,
+                }];
             }
         }
         self.idx = 0;
@@ -315,6 +328,7 @@ impl AutocompleteState {
                     .value
                     .replace_range(byte_start..byte_end, &replacement);
                 input.cursor = self.trigger_pos + replacement.chars().count();
+                self.slash_command_selected = true;
             }
             AutocompleteMode::File => {
                 let replacement = format!("@{} ", selected.title);
@@ -354,13 +368,20 @@ impl AutocompleteState {
             return;
         }
 
-        if c == '/' && cursor == 1 {
-            self.open(AutocompleteMode::Slash, 0);
+        if c == '/' && is_at_line_start(input, cursor) {
+            self.open(AutocompleteMode::Slash, cursor.saturating_sub(1));
             return;
         }
 
-        if c == '@' && (cursor == 1 || char_before_is_whitespace(input, cursor - 1)) {
-            self.open(AutocompleteMode::File, cursor - 1);
+        if c == '@' {
+            let trigger = is_at_line_start(input, cursor)
+                || input
+                    .chars()
+                    .nth(cursor.saturating_sub(2))
+                    .is_some_and(char::is_whitespace);
+            if trigger {
+                self.open(AutocompleteMode::File, cursor.saturating_sub(1));
+            }
         }
     }
 
@@ -381,14 +402,31 @@ pub fn render_autocomplete_overlay(
         return;
     }
 
-    let popup_rect = anchored_popup(
-        area,
-        state.anchor_x,
-        state.anchor_y,
-        state.anchor_width,
-        state.entries.len() as u16,
-        state.max_items as u16,
-    );
+    let space_below = area.height.saturating_sub(state.anchor_y);
+    let popup_height = (state.entries.len() as u16)
+        .min(state.max_items as u16)
+        .max(1);
+
+    // Need extra row for visual separation when rendering below
+    #[allow(clippy::int_plus_one)]
+    let popup_rect = if space_below >= popup_height + 1 {
+        anchored_popup_below(
+            area,
+            Rect::new(state.anchor_x, state.anchor_y, state.anchor_width, 1),
+            state.anchor_width,
+            state.entries.len() as u16,
+            state.max_items as u16,
+        )
+    } else {
+        anchored_popup(
+            area,
+            state.anchor_x,
+            state.anchor_y,
+            state.anchor_width,
+            state.entries.len() as u16,
+            state.max_items as u16,
+        )
+    };
 
     clear_area(frame, popup_rect);
 
@@ -601,12 +639,14 @@ mod tests {
     }
 
     #[test]
-    fn resource_mode_is_empty_stub() {
+    fn resource_mode_shows_placeholder() {
         let mut state = AutocompleteState::new();
         state.open(AutocompleteMode::Resource, 0);
         state.rebuild_entries("@", Path::new("."), None);
 
-        assert!(state.entries.is_empty());
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(state.entries[0].title, "No MCP resources available");
+        assert_eq!(state.entries[0].kind, EntryKind::Resource);
     }
 
     #[test]
@@ -789,5 +829,95 @@ mod tests {
         state.open(AutocompleteMode::Agent, 0);
         state.rebuild_entries("@xyz", Path::new("."), None);
         assert!(state.entries.is_empty());
+    }
+
+    #[test]
+    fn test_slash_trigger_at_line_start() {
+        let mut state = AutocompleteState::new();
+        state.on_char_insert('/', 1, "/");
+        assert!(state.open);
+        assert_eq!(state.mode, AutocompleteMode::Slash);
+        assert_eq!(state.trigger_pos, 0);
+    }
+
+    #[test]
+    fn test_slash_trigger_after_newline() {
+        let mut state = AutocompleteState::new();
+        state.on_char_insert('/', 7, "hello\n/");
+        assert!(state.open);
+        assert_eq!(state.mode, AutocompleteMode::Slash);
+        assert_eq!(state.trigger_pos, 6);
+    }
+
+    #[test]
+    fn test_slash_no_trigger_mid_line() {
+        let mut state = AutocompleteState::new();
+        state.on_char_insert('/', 6, "hello/");
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn test_at_trigger_after_whitespace() {
+        let mut state = AutocompleteState::new();
+        state.on_char_insert('@', 7, "hello @");
+        assert!(state.open);
+        assert_eq!(state.mode, AutocompleteMode::File);
+        assert_eq!(state.trigger_pos, 6);
+    }
+
+    #[test]
+    fn test_at_trigger_at_line_start() {
+        let mut state = AutocompleteState::new();
+        state.on_char_insert('@', 1, "@");
+        assert!(state.open);
+        assert_eq!(state.mode, AutocompleteMode::File);
+        assert_eq!(state.trigger_pos, 0);
+    }
+
+    #[test]
+    fn test_at_no_trigger_without_whitespace() {
+        let mut state = AutocompleteState::new();
+        state.on_char_insert('@', 6, "hello@");
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn test_autocomplete_closes_on_space() {
+        let mut state = AutocompleteState::new();
+        state.open(AutocompleteMode::Slash, 0);
+        state.on_char_insert(' ', 3, "/h ");
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn test_autocomplete_closes_on_backspace_before_trigger() {
+        let mut state = AutocompleteState::new();
+        state.on_char_insert('/', 1, "/");
+        assert!(state.open);
+        state.on_backspace(0);
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn is_at_line_start_returns_true_for_cursor_zero() {
+        assert!(is_at_line_start("", 0));
+    }
+
+    #[test]
+    fn is_at_line_start_returns_true_for_cursor_one() {
+        assert!(is_at_line_start("/", 1));
+        assert!(is_at_line_start("@", 1));
+    }
+
+    #[test]
+    fn is_at_line_start_true_after_newline() {
+        assert!(is_at_line_start("hello\n", 7));
+        assert!(is_at_line_start("a\nb\n", 5));
+    }
+
+    #[test]
+    fn is_at_line_start_false_mid_line() {
+        assert!(!is_at_line_start("hello", 3));
+        assert!(!is_at_line_start("hello/", 6));
     }
 }

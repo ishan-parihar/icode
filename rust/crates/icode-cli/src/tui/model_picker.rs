@@ -2,10 +2,11 @@ use api::providers::{list_all_models, ModelCapabilities, ProviderKind, RegistryE
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::model_state::ModelState;
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 60;
@@ -81,6 +82,15 @@ impl ModelPickerState {
         self.open = true;
         self.search.clear();
         self.cursor = 0;
+        self.entries = list_all_models()
+            .map(|e| ModelEntry {
+                alias: e.alias.to_string(),
+                canonical: e.canonical.to_string(),
+                provider: e.provider,
+                capabilities: e.capabilities,
+            })
+            .collect();
+        self.model_state = ModelState::load();
         self.rebuild_filtered();
     }
 
@@ -262,9 +272,8 @@ pub fn render_model_picker(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Select Model ");
+    let config = PopupConfig::full("Models");
+    let block = config.to_block(theme);
     frame.render_widget(block, dialog_area);
 
     let inner = dialog_area.inner(ratatui::layout::Margin::new(1, 1));

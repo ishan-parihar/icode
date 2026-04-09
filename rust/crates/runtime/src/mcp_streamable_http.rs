@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
 use tokio::sync::RwLock;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 use crate::mcp_stdio::{
-    JsonRpcError, JsonRpcId, JsonRpcRequest, McpInitializeParams,
-    McpInitializeResult, McpListResourcesResult, McpReadResourceParams, McpReadResourceResult,
-    McpToolCallParams, McpToolCallResult,
+    JsonRpcError, JsonRpcId, JsonRpcRequest, McpInitializeParams, McpInitializeResult,
+    McpListResourcesResult, McpReadResourceParams, McpReadResourceResult, McpToolCallParams,
+    McpToolCallResult,
 };
 
 // ── Timeouts ────────────────────────────────────────────────────────────────
@@ -87,10 +87,7 @@ impl fmt::Display for McpStreamableHttpError {
                 )
             }
             Self::Network { method, source } => {
-                write!(
-                    f,
-                    "StreamableHTTP network error during {method}: {source}"
-                )
+                write!(f, "StreamableHTTP network error during {method}: {source}")
             }
             Self::JsonRpc { method, error } => {
                 write!(
@@ -121,10 +118,7 @@ impl fmt::Display for McpStreamableHttpError {
                 )
             }
             Self::AuthRequired { method } => {
-                write!(
-                    f,
-                    "StreamableHTTP authentication required during {method}"
-                )
+                write!(f, "StreamableHTTP authentication required during {method}")
             }
         }
     }
@@ -200,7 +194,10 @@ impl McpStreamableHttpTransport {
             .client
             .post(&self.url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::ACCEPT, "application/json, text/event-stream");
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            );
 
         // Add custom headers
         for (key, value) in &self.headers {
@@ -256,22 +253,27 @@ impl McpStreamableHttpTransport {
             .get("Mcp-Session-Id")
             .and_then(|v| v.to_str().ok())
         {
-            self.session_id.write().await.replace(new_session.to_string());
+            self.session_id
+                .write()
+                .await
+                .replace(new_session.to_string());
         }
 
         // Parse JSON response
-        let json: JsonValue = response.json().await.map_err(|source| {
-            McpStreamableHttpError::Network { method, source }
-        })?;
+        let json: JsonValue = response
+            .json()
+            .await
+            .map_err(|source| McpStreamableHttpError::Network { method, source })?;
 
         // Check for JSON-RPC error
         if let Some(error) = json.get("error") {
-            let json_rpc_error: JsonRpcError = serde_json::from_value(error.clone()).map_err(|e| {
-                McpStreamableHttpError::InvalidResponse {
-                    method,
-                    details: format!("failed to parse error: {e}"),
-                }
-            })?;
+            let json_rpc_error: JsonRpcError =
+                serde_json::from_value(error.clone()).map_err(|e| {
+                    McpStreamableHttpError::InvalidResponse {
+                        method,
+                        details: format!("failed to parse error: {e}"),
+                    }
+                })?;
             return Err(McpStreamableHttpError::JsonRpc {
                 method,
                 error: json_rpc_error,
@@ -307,20 +309,17 @@ impl McpStreamableHttpTransport {
         &self,
         params: McpInitializeParams,
     ) -> Result<McpInitializeResult, McpStreamableHttpError> {
-        let json = serde_json::to_value(&params).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
+        let json =
+            serde_json::to_value(&params).map_err(|e| McpStreamableHttpError::InvalidResponse {
                 method: "initialize",
                 details: format!("failed to serialize params: {e}"),
-            }
-        })?;
+            })?;
         let response = self
             .post_request("initialize", json, INIT_TIMEOUT_MS)
             .await?;
-        serde_json::from_value(response).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
-                method: "initialize",
-                details: format!("failed to deserialize result: {e}"),
-            }
+        serde_json::from_value(response).map_err(|e| McpStreamableHttpError::InvalidResponse {
+            method: "initialize",
+            details: format!("failed to deserialize result: {e}"),
         })
     }
 
@@ -328,20 +327,17 @@ impl McpStreamableHttpTransport {
         &self,
     ) -> Result<crate::mcp_stdio::McpListToolsResult, McpStreamableHttpError> {
         let params = crate::mcp_stdio::McpListToolsParams { cursor: None };
-        let json = serde_json::to_value(&params).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
+        let json =
+            serde_json::to_value(&params).map_err(|e| McpStreamableHttpError::InvalidResponse {
                 method: "tools/list",
                 details: format!("failed to serialize params: {e}"),
-            }
-        })?;
+            })?;
         let response = self
             .post_request("tools/list", json, LIST_TOOLS_TIMEOUT_MS)
             .await?;
-        serde_json::from_value(response).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
-                method: "tools/list",
-                details: format!("failed to deserialize result: {e}"),
-            }
+        serde_json::from_value(response).map_err(|e| McpStreamableHttpError::InvalidResponse {
+            method: "tools/list",
+            details: format!("failed to deserialize result: {e}"),
         })
     }
 
@@ -349,41 +345,33 @@ impl McpStreamableHttpTransport {
         &self,
         params: McpToolCallParams,
     ) -> Result<McpToolCallResult, McpStreamableHttpError> {
-        let json = serde_json::to_value(&params).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
+        let json =
+            serde_json::to_value(&params).map_err(|e| McpStreamableHttpError::InvalidResponse {
                 method: "tools/call",
                 details: format!("failed to serialize params: {e}"),
-            }
-        })?;
+            })?;
         let response = self
             .post_request("tools/call", json, CALL_TOOL_TIMEOUT_MS)
             .await?;
-        serde_json::from_value(response).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
-                method: "tools/call",
-                details: format!("failed to deserialize result: {e}"),
-            }
+        serde_json::from_value(response).map_err(|e| McpStreamableHttpError::InvalidResponse {
+            method: "tools/call",
+            details: format!("failed to deserialize result: {e}"),
         })
     }
 
-    pub async fn list_resources(
-        &self,
-    ) -> Result<McpListResourcesResult, McpStreamableHttpError> {
+    pub async fn list_resources(&self) -> Result<McpListResourcesResult, McpStreamableHttpError> {
         let params = crate::mcp_stdio::McpListResourcesParams { cursor: None };
-        let json = serde_json::to_value(&params).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
+        let json =
+            serde_json::to_value(&params).map_err(|e| McpStreamableHttpError::InvalidResponse {
                 method: "resources/list",
                 details: format!("failed to serialize params: {e}"),
-            }
-        })?;
+            })?;
         let response = self
             .post_request("resources/list", json, LIST_RESOURCES_TIMEOUT_MS)
             .await?;
-        serde_json::from_value(response).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
-                method: "resources/list",
-                details: format!("failed to deserialize result: {e}"),
-            }
+        serde_json::from_value(response).map_err(|e| McpStreamableHttpError::InvalidResponse {
+            method: "resources/list",
+            details: format!("failed to deserialize result: {e}"),
         })
     }
 
@@ -391,20 +379,17 @@ impl McpStreamableHttpTransport {
         &self,
         params: McpReadResourceParams,
     ) -> Result<McpReadResourceResult, McpStreamableHttpError> {
-        let json = serde_json::to_value(&params).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
+        let json =
+            serde_json::to_value(&params).map_err(|e| McpStreamableHttpError::InvalidResponse {
                 method: "resources/read",
                 details: format!("failed to serialize params: {e}"),
-            }
-        })?;
+            })?;
         let response = self
             .post_request("resources/read", json, READ_RESOURCE_TIMEOUT_MS)
             .await?;
-        serde_json::from_value(response).map_err(|e| {
-            McpStreamableHttpError::InvalidResponse {
-                method: "resources/read",
-                details: format!("failed to deserialize result: {e}"),
-            }
+        serde_json::from_value(response).map_err(|e| McpStreamableHttpError::InvalidResponse {
+            method: "resources/read",
+            details: format!("failed to deserialize result: {e}"),
         })
     }
 }
@@ -590,7 +575,11 @@ mod tests {
         assert!(transport.session_id().await.is_none());
 
         // Simulate setting a session ID (internal mechanism)
-        transport.session_id.write().await.replace("test-session-123".to_string());
+        transport
+            .session_id
+            .write()
+            .await
+            .replace("test-session-123".to_string());
 
         assert_eq!(
             transport.session_id().await,

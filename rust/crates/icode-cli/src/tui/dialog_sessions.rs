@@ -1,11 +1,12 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 60;
@@ -363,17 +364,8 @@ pub fn render_sessions_dialog(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(Span::styled(
-            " Sessions ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(ratatui::layout::Alignment::Center);
+    let config = PopupConfig::full("Sessions");
+    let block = config.to_block(theme);
 
     frame.render_widget(block.clone(), dialog_area);
 
@@ -559,11 +551,11 @@ fn compute_scroll_offset(state: &SessionsDialogState, visible_lines: usize) -> u
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else if max_len <= 3 {
         "...".to_string()
     } else {
-        format!("{}...", &s[..max_len - 3])
+        format!("{}...", s.chars().take(max_len - 3).collect::<String>())
     }
 }

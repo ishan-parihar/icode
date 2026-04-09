@@ -689,7 +689,12 @@ fn permission_mode_from_label(mode: &str) -> PermissionMode {
         "read-only" => PermissionMode::ReadOnly,
         "workspace-write" => PermissionMode::WorkspaceWrite,
         "danger-full-access" => PermissionMode::DangerFullAccess,
-        other => panic!("unsupported permission mode label: {other}"),
+        other => {
+            eprintln!(
+                "warning: unsupported permission mode '{other}', defaulting to danger-full-access"
+            );
+            PermissionMode::DangerFullAccess
+        }
     }
 }
 
@@ -2822,7 +2827,9 @@ impl LiveCli {
 
             if let Ok(ref summary) = result {
                 if let Some(path) = runtime.session().persistence_path() {
-                    let _ = runtime.session().save_to_path(path);
+                    if let Err(e) = runtime.session().save_to_path(path) {
+                        eprintln!("[ERROR] Failed to persist session: {e}");
+                    }
                 }
                 let text = final_assistant_text(summary);
                 let tool_calls: Vec<TurnToolCallInfo> = summary

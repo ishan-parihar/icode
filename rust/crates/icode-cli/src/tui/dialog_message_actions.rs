@@ -1,9 +1,9 @@
-use crate::tui::popup_utils;
+use crate::tui::popup_utils::{PopupAccent, PopupConfig};
 use crate::tui::theme::Theme;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,16 +165,13 @@ pub fn render_message_action_dialog(
     let option_count = filtered.len() as u16;
     let content_height = 2 + option_count * 2;
 
-    let dialog_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
+    let dialog_area =
+        crate::tui::popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = popup_utils::left_border_block(
-        theme,
-        theme.warning,
-        "Message Actions",
-        Some(theme.background_panel),
-    );
+    let config = PopupConfig::left("Message Actions", PopupAccent::Warning);
+    let block = config.to_block(theme);
 
     frame.render_widget(block.clone(), dialog_area);
 
@@ -244,7 +241,7 @@ pub fn render_message_action_dialog(
     }
 
     // Hint bar
-    popup_utils::render_hint_bar(
+    crate::tui::popup_utils::render_hint_bar(
         frame,
         chunks[2],
         &[("1/2/3", "select"), ("enter", "confirm"), ("esc", "close")],

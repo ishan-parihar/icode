@@ -160,7 +160,8 @@ impl SessionReverter {
         Ok(!stdout.trim().is_empty())
     }
 
-    /// Create a git stash with the given message. Returns the stash index.
+    /// Create a git stash with the given message. Returns the stash index
+    /// by looking it up in the stash list (not assumed to be 0).
     fn create_stash(&self, message_id: &str) -> Result<i32, RevertError> {
         let stash_message = format!("iCode snapshot: {message_id}");
 
@@ -176,9 +177,26 @@ impl SessionReverter {
             )));
         }
 
-        // After creating the stash, it will be at index 0.
-        // We return 0 to indicate the newly created stash.
-        Ok(0)
+        // Look up the stash index by message, not by assumed position.
+        self.find_stash_index(message_id)
+            .ok_or_else(|| RevertError::GitError("Created stash but could not find it".into()))
+    }
+
+    /// Find a stash index by matching its message in the stash list.
+    fn find_stash_index(&self, message_id: &str) -> Option<i32> {
+        let stash_message = format!("iCode snapshot: {message_id}");
+        let output = Command::new("git")
+            .args(["stash", "list", "--format=%gd:%s"])
+            .current_dir(&self.workspace_root)
+            .output()
+            .ok()?;
+        let list = String::from_utf8_lossy(&output.stdout);
+        for (idx, line) in list.lines().enumerate() {
+            if line.contains(&stash_message) {
+                return Some(idx as i32);
+            }
+        }
+        None
     }
 
     /// Pop a specific stash by index.

@@ -3,6 +3,7 @@
 
 use crate::permissions::{PermissionMode, PermissionOutcome, PermissionPolicy};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome")]
@@ -136,102 +137,179 @@ impl PermissionEnforcer {
     }
 }
 
-/// Simple workspace boundary check via string prefix.
+/// Path-aware workspace boundary check using canonical path comparison.
 fn is_within_workspace(path: &str, workspace_root: &str) -> bool {
-    let normalized = if path.starts_with('/') {
-        path.to_owned()
+    // Build the full path if relative
+    let full_path = if path.starts_with('/') {
+        PathBuf::from(path)
     } else {
-        format!("{workspace_root}/{path}")
+        PathBuf::from(workspace_root).join(path)
     };
 
-    let root = if workspace_root.ends_with('/') {
-        workspace_root.to_owned()
-    } else {
-        format!("{workspace_root}/")
+    // Canonicalize workspace root (should exist)
+    let Ok(canonical_root) = PathBuf::from(workspace_root).canonicalize() else {
+        let root = workspace_root.strip_suffix('/').unwrap_or(workspace_root);
+        let root_slash = format!("{root}/");
+        return path == root
+            || path.starts_with(&root_slash)
+            || full_path.to_string_lossy() == root
+            || full_path.to_string_lossy().starts_with(&root_slash);
     };
 
-    normalized.starts_with(&root) || normalized == workspace_root.trim_end_matches('/')
+    // For the path, try canonicalizing; if it doesn't exist, traverse parents
+    let mut current = full_path.clone();
+    loop {
+        if let Ok(canonical_path) = current.canonicalize() {
+            return canonical_path.starts_with(&canonical_root);
+        }
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+
+    // Fallback: normalize path components and compare
+    let normalized_root = normalize_path(Path::new(workspace_root));
+    let normalized_path = normalize_path(&full_path);
+    normalized_path.starts_with(&normalized_root)
 }
 
-/// Conservative heuristic: is this bash command read-only?
-fn is_read_only_command(command: &str) -> bool {
-    let first_token = command
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .rsplit('/')
-        .next()
-        .unwrap_or("");
+/// Normalize a path by resolving `.` and `..` components without requiring existence.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    let mut has_root = false;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(c) => components.push(c),
+            std::path::Component::ParentDir => {
+                if components.is_empty() && has_root {
+                    continue;
+                }
+                if !components.is_empty() {
+                    components.pop();
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                has_root = true;
+            }
+            std::path::Component::CurDir => {}
+        }
+    }
+    let mut result = if has_root {
+        PathBuf::from("/")
+    } else {
+        PathBuf::new()
+    };
+    for c in components {
+        result.push(c);
+    }
+    result
+}
 
-    matches!(
-        first_token,
-        "cat"
-            | "head"
-            | "tail"
-            | "less"
-            | "more"
-            | "wc"
-            | "ls"
-            | "find"
-            | "grep"
-            | "rg"
-            | "awk"
-            | "sed"
-            | "echo"
-            | "printf"
-            | "which"
-            | "where"
-            | "whoami"
-            | "pwd"
-            | "env"
-            | "printenv"
-            | "date"
-            | "cal"
-            | "df"
-            | "du"
-            | "free"
-            | "uptime"
-            | "uname"
-            | "file"
-            | "stat"
-            | "diff"
-            | "sort"
-            | "uniq"
-            | "tr"
-            | "cut"
-            | "paste"
-            | "tee"
-            | "xargs"
-            | "test"
-            | "true"
-            | "false"
-            | "type"
-            | "readlink"
-            | "realpath"
-            | "basename"
-            | "dirname"
-            | "sha256sum"
-            | "md5sum"
-            | "b3sum"
-            | "xxd"
-            | "hexdump"
-            | "od"
-            | "strings"
-            | "tree"
-            | "jq"
-            | "yq"
-            | "python3"
-            | "python"
-            | "node"
-            | "ruby"
-            | "cargo"
-            | "rustc"
-            | "git"
-            | "gh"
-    ) && !command.contains("-i ")
-        && !command.contains("--in-place")
+/// Check whether a sed command uses in-place editing via any form of -i flag.
+/// Catches: -i , -i', -is, -i=, -i at end, --in-place
+pub(crate) fn sed_has_inplace_flag(command: &str) -> bool {
+    if command.contains("--in-place") {
+        return true;
+    }
+    let bytes = command.as_bytes();
+    for i in 0..bytes.len().saturating_sub(1) {
+        if bytes[i] == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'i' {
+            // -i at end of string
+            if i + 2 >= bytes.len() {
+                return true;
+            }
+            let next = bytes[i + 2];
+            // -i followed by space, quote, =, tab → in-place
+            if matches!(next, b' ' | b'\'' | b'"' | b'=' | b'\t') {
+                return true;
+            }
+            // -i followed by non-alpha character → in-place (excludes -iregex, -iname etc.)
+            if !next.is_ascii_alphabetic() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_read_only_command(command: &str) -> bool {
+    let all_cmds = crate::bash_validation::extract_all_commands(command);
+    if all_cmds.is_empty() {
+        return false;
+    }
+
+    for first_token in all_cmds {
+        let name = first_token.rsplit('/').next().unwrap_or("");
+        let is_allowed = matches!(
+            name,
+            "cat"
+                | "head"
+                | "tail"
+                | "less"
+                | "more"
+                | "wc"
+                | "ls"
+                | "find"
+                | "grep"
+                | "rg"
+                | "awk"
+                | "echo"
+                | "printf"
+                | "which"
+                | "where"
+                | "whoami"
+                | "pwd"
+                | "env"
+                | "printenv"
+                | "date"
+                | "cal"
+                | "df"
+                | "du"
+                | "free"
+                | "uptime"
+                | "uname"
+                | "file"
+                | "stat"
+                | "diff"
+                | "sort"
+                | "uniq"
+                | "tr"
+                | "cut"
+                | "paste"
+                | "xargs"
+                | "test"
+                | "true"
+                | "false"
+                | "type"
+                | "readlink"
+                | "realpath"
+                | "basename"
+                | "dirname"
+                | "sha256sum"
+                | "md5sum"
+                | "b3sum"
+                | "xxd"
+                | "hexdump"
+                | "od"
+                | "strings"
+                | "tree"
+                | "jq"
+                | "yq"
+                | "git"
+                | "gh"
+        );
+        if !is_allowed {
+            return false;
+        }
+    }
+
+    !command.contains("sudo")
+        && !sed_has_inplace_flag(command)
         && !command.contains(" > ")
         && !command.contains(" >> ")
+        && !command.contains(" | ")
 }
 
 #[cfg(test)]

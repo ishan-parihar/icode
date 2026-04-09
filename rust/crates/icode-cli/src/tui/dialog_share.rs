@@ -261,8 +261,13 @@ pub fn render_share_dialog(
 
     if let Some(ref url) = state.share_url {
         let max_len = (width.saturating_sub(4)) as usize;
-        let display_url = if url.len() > max_len {
-            format!("{}...", &url[..max_len.saturating_sub(3)])
+        let display_url = if url.chars().count() > max_len {
+            format!(
+                "{}...",
+                url.chars()
+                    .take(max_len.saturating_sub(3))
+                    .collect::<String>()
+            )
         } else {
             url.clone()
         };

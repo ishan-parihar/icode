@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 mod codesearch;
 mod file_edit;
 mod file_read;
@@ -1606,7 +1608,12 @@ fn run_remote_trigger(input: RemoteTriggerInput) -> Result<String, String> {
 fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
     let registry = global_mcp_registry();
     let args = input.arguments.unwrap_or(serde_json::json!({}));
-    match registry.call_tool(&input.server, &input.tool, &args) {
+    match registry.call_tool(
+        &input.server,
+        &input.tool,
+        &args,
+        PermissionMode::DangerFullAccess,
+    ) {
         Ok(result) => to_pretty_json(json!({
             "server": input.server,
             "tool": input.tool,

@@ -394,11 +394,13 @@ fn estimate_message_tokens(message: &ConversationMessage) -> usize {
         .blocks
         .iter()
         .map(|block| match block {
-            ContentBlock::Text { text } => text.len() / 4 + 1,
-            ContentBlock::ToolUse { name, input, .. } => (name.len() + input.len()) / 4 + 1,
+            ContentBlock::Text { text } => text.chars().count() / 4 + 1,
+            ContentBlock::ToolUse { name, input, .. } => {
+                (name.chars().count() + input.chars().count()) / 4 + 1
+            }
             ContentBlock::ToolResult {
                 tool_name, output, ..
-            } => (tool_name.len() + output.len()) / 4 + 1,
+            } => (tool_name.chars().count() + output.chars().count()) / 4 + 1,
         })
         .sum()
 }

@@ -72,6 +72,7 @@ dependencies = [
  "sha2",
  "telemetry",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -2591,6 +2592,7 @@ dependencies = [
  "glob",
  "hostname",
  "ignore",
+ "libc",
  "notify",
  "plugins",
  "portable-pty",
@@ -3391,6 +3393,7 @@ dependencies = [
  "chrono",
  "glob",
  "ignore",
+ "libc",
  "plugins",
  "portable-pty",
  "regex",

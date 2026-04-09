@@ -8,3 +8,5 @@ archive/
 /rust/.icoded-agents
 /.sisyphus
 /rust/.icode
+/rust/scripts/.icode
+/.icode

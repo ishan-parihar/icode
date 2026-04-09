@@ -1,9 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 60;
@@ -165,10 +166,8 @@ pub fn render_mcp_dialog(frame: &mut Frame, state: &McpDialogState, area: Rect, 
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" MCP Servers ")
-        .border_style(Style::default().fg(theme.border));
+    let config = PopupConfig::full("MCP Servers");
+    let block = config.to_block(theme);
     frame.render_widget(block, dialog_area);
 
     let inner = dialog_area.inner(Margin::new(1, 1));

@@ -71,6 +71,8 @@ pub struct InputState {
     pub cursor_x: u16,
     pub cursor_y: u16,
     pub cursor_width: u16,
+    pub scroll_offset: usize,
+    pub shell_mode: bool,
 }
 
 impl InputState {
@@ -93,6 +95,10 @@ impl InputState {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        if c == '!' && self.cursor == 0 && self.value.is_empty() {
+            self.shell_mode = !self.shell_mode;
+            return;
+        }
         let byte_idx = self.char_to_byte(self.cursor);
         self.value.insert(byte_idx, c);
         self.cursor += 1;
@@ -115,6 +121,9 @@ impl InputState {
             .map_or(0, |(idx, _)| idx);
         self.value.drain(prev_byte_idx..byte_idx);
         self.cursor -= 1;
+        if self.shell_mode && self.cursor == 0 && self.value.is_empty() {
+            self.shell_mode = false;
+        }
     }
 
     pub fn delete_word_left(&mut self) {
@@ -239,6 +248,9 @@ impl InputState {
         let target_row = row - 1;
         let target_col = col;
         self.cursor = self.char_offset_at_row_col(target_row, target_col, max_width);
+        if target_row < self.scroll_offset {
+            self.scroll_offset = target_row;
+        }
         true
     }
 
@@ -256,6 +268,9 @@ impl InputState {
         let target_row = row + 1;
         let target_col = col;
         self.cursor = self.char_offset_at_row_col(target_row, target_col, max_width);
+        if target_row < self.scroll_offset {
+            self.scroll_offset = target_row;
+        }
         true
     }
 
@@ -380,6 +395,15 @@ impl InputState {
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
+        self.shell_mode = false;
+    }
+
+    pub fn toggle_shell_mode(&mut self) {
+        self.shell_mode = !self.shell_mode;
+    }
+
+    pub fn is_shell_mode(&self) -> bool {
+        self.shell_mode
     }
 
     pub fn push_history(&mut self) {
@@ -456,22 +480,8 @@ impl InputState {
         self.cwd = cwd;
     }
 
-    pub fn set_completions(&mut self, _completions: Vec<String>) {}
-    pub fn complete_contextual(&mut self) -> bool {
-        false
-    }
-    pub fn cycle_completion_forward(&mut self) {}
-    pub fn cycle_completion_backward(&mut self) {}
-    pub fn slash_autocomplete_up(&mut self) {}
-    pub fn slash_autocomplete_down(&mut self) {}
-    pub fn slash_autocomplete_select(&mut self) -> bool {
-        false
-    }
-    pub fn selected_slash_completion(&self) -> Option<&str> {
-        None
-    }
-
     pub fn submit(&mut self) -> String {
+        self.shell_mode = false;
         let value = std::mem::take(&mut self.value);
         if let Some(ref mut frecency) = self.frecency {
             frecency.record(&value);
@@ -514,6 +524,28 @@ impl InputState {
         }
         count.max(1)
     }
+
+    /// Adjusts scroll_offset so the cursor is within the visible area.
+    /// Call after any cursor or content change that may move the cursor
+    /// outside the visible window.
+    pub fn ensure_cursor_visible(&mut self, max_width: usize, max_visible_lines: usize) {
+        if max_visible_lines == 0 {
+            return;
+        }
+        let (cursor_row, _) = self.cursor_position(max_width);
+        let total = self.total_rows(max_width);
+
+        if cursor_row < self.scroll_offset {
+            self.scroll_offset = cursor_row;
+        } else if cursor_row >= self.scroll_offset + max_visible_lines {
+            self.scroll_offset = cursor_row + 1 - max_visible_lines;
+        }
+
+        let max_scroll = total.saturating_sub(max_visible_lines);
+        if self.scroll_offset > max_scroll {
+            self.scroll_offset = max_scroll;
+        }
+    }
 }
 
 pub struct InputWidget {
@@ -538,13 +570,22 @@ impl StatefulWidget for InputWidget {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let text_color = self.theme.text;
         let muted_color = self.theme.text_muted;
+        let max_width = area.width as usize;
+        let max_visible_lines = area.height as usize;
+
+        state.ensure_cursor_visible(max_width, max_visible_lines);
 
         let bg_fill = Paragraph::new("").style(Style::default().bg(self.theme.background_element));
         bg_fill.render(area, buf);
 
-        let prompt = Span::styled(&state.prompt, Style::default().fg(self.theme.border_active));
+        let prompt_color = if state.shell_mode {
+            self.theme.warning
+        } else {
+            self.theme.border_active
+        };
+        let prompt = Span::styled(&state.prompt, Style::default().fg(prompt_color));
 
-        let lines: Vec<ratatui::text::Line<'_>> = if state.value.is_empty() {
+        let all_lines: Vec<ratatui::text::Line<'_>> = if state.value.is_empty() {
             let placeholder = Span::styled(
                 &state.placeholder,
                 Style::default()
@@ -615,16 +656,25 @@ impl StatefulWidget for InputWidget {
             result
         };
 
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false }).style(
-            Style::default()
-                .fg(text_color)
-                .bg(self.theme.background_element),
-        );
+        let visible_lines: Vec<_> = all_lines
+            .iter()
+            .skip(state.scroll_offset)
+            .take(max_visible_lines)
+            .cloned()
+            .collect();
+
+        let paragraph = Paragraph::new(visible_lines)
+            .wrap(Wrap { trim: false })
+            .style(
+                Style::default()
+                    .fg(text_color)
+                    .bg(self.theme.background_element),
+            );
         paragraph.render(area, buf);
 
         let prompt_w = state.prompt.width();
-        let first_line_avail = (area.width as usize).saturating_sub(prompt_w);
-        let subsequent_line_avail = area.width as usize;
+        let first_line_avail = max_width.saturating_sub(prompt_w);
+        let subsequent_line_avail = max_width;
 
         let byte_idx = state
             .value
@@ -656,18 +706,19 @@ impl StatefulWidget for InputWidget {
             }
         }
 
-        let cursor_x = if row == 0 {
-            area.x + prompt_w as u16 + col as u16
-        } else {
-            area.x + col as u16
+        let visible_row = row as isize - state.scroll_offset as isize;
+        let cursor_x = match visible_row.cmp(&0) {
+            std::cmp::Ordering::Equal => area.x + prompt_w as u16 + col as u16,
+            std::cmp::Ordering::Greater => area.x + col as u16,
+            std::cmp::Ordering::Less => 0,
         };
-        let cursor_y = area.y + row;
+        let cursor_y = area.y + visible_row.max(0) as u16;
 
         state.cursor_x = cursor_x;
         state.cursor_y = cursor_y;
         state.cursor_width = 1;
 
-        if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
+        if visible_row >= 0 && cursor_x < area.x + area.width && cursor_y < area.y + area.height {
             buf.cell_mut((cursor_x, cursor_y))
                 .unwrap()
                 .set_symbol("\u{2588}")
@@ -779,5 +830,193 @@ mod tests {
         assert!(!is_ref_char(' '));
         assert!(!is_ref_char('@'));
         assert!(!is_ref_char('\n'));
+    }
+
+    #[test]
+    fn scroll_offset_defaults_to_zero() {
+        let state = InputState::new("> ");
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn ensure_cursor_visible_scrolls_down_when_cursor_below_visible() {
+        let mut state = InputState::new("> ");
+        state.value = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8".to_string();
+        state.cursor = state.value.chars().count();
+        state.scroll_offset = 0;
+
+        let max_width = 80;
+        let max_visible_lines = 3;
+        state.ensure_cursor_visible(max_width, max_visible_lines);
+
+        assert!(
+            state.scroll_offset > 0,
+            "scroll_offset should increase when cursor is below visible area"
+        );
+        let (cursor_row, _) = state.cursor_position(max_width);
+        assert!(
+            cursor_row < state.scroll_offset + max_visible_lines,
+            "cursor row {} should be within visible window [{}, {})",
+            cursor_row,
+            state.scroll_offset,
+            state.scroll_offset + max_visible_lines
+        );
+    }
+
+    #[test]
+    fn ensure_cursor_visible_no_scroll_when_cursor_in_view() {
+        let mut state = InputState::new("> ");
+        state.value = "short text".to_string();
+        state.cursor = state.value.chars().count();
+        state.scroll_offset = 0;
+
+        let max_width = 80;
+        let max_visible_lines = 3;
+        state.ensure_cursor_visible(max_width, max_visible_lines);
+
+        assert_eq!(
+            state.scroll_offset, 0,
+            "scroll_offset should stay 0 when cursor fits"
+        );
+    }
+
+    #[test]
+    fn ensure_cursor_visible_scrolls_up_when_cursor_above_visible() {
+        let mut state = InputState::new("> ");
+        state.value = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8".to_string();
+        state.cursor = state.value.chars().count();
+        let max_width = 80;
+        let max_visible_lines = 3;
+        state.ensure_cursor_visible(max_width, max_visible_lines);
+        let scroll_after_fill = state.scroll_offset;
+        assert!(
+            scroll_after_fill > 0,
+            "should have scrolled down to see end"
+        );
+
+        state.move_home();
+        state.ensure_cursor_visible(max_width, max_visible_lines);
+        assert_eq!(
+            state.scroll_offset, 0,
+            "scroll_offset should return to 0 when cursor is at the top"
+        );
+    }
+
+    #[test]
+    fn move_up_decreases_scroll_offset_when_crossing_boundary() {
+        let mut state = InputState::new("> ");
+        state.value = "line1\nline2\nline3\nline4\nline5".to_string();
+        state.cursor = state.value.chars().count();
+        state.scroll_offset = 3;
+
+        let max_width = 80;
+        let moved = state.move_up(max_width);
+        assert!(moved);
+
+        let (cursor_row, _) = state.cursor_position(max_width);
+        assert!(
+            cursor_row >= state.scroll_offset,
+            "cursor row {} should not be above scroll_offset {}",
+            cursor_row,
+            state.scroll_offset
+        );
+    }
+
+    #[test]
+    fn multiline_text_produces_correct_row_count() {
+        let mut state = InputState::new("> ");
+        state.value = "line1\nline2\nline3".to_string();
+        state.cursor = state.value.chars().count();
+
+        let max_width = 80;
+        let total = state.total_rows(max_width);
+        assert_eq!(total, 3, "three explicit newlines should produce 3 rows");
+    }
+
+    #[test]
+    fn long_text_wraps_into_multiple_rows() {
+        let mut state = InputState::new("> ");
+        state.value = "a".repeat(200);
+        state.cursor = state.value.chars().count();
+
+        let max_width = 40;
+        let total = state.total_rows(max_width);
+        assert!(
+            total > 1,
+            "long text should wrap into multiple rows at width {max_width}"
+        );
+    }
+
+    #[test]
+    fn test_shell_mode_toggle_on_bang_at_start() {
+        let mut state = InputState::new("> ");
+        assert!(!state.shell_mode);
+        state.insert_char('!');
+        assert!(state.shell_mode);
+        assert!(state.value.is_empty());
+        state.insert_char('!');
+        assert!(!state.shell_mode);
+        assert!(state.value.is_empty());
+    }
+
+    #[test]
+    fn test_shell_mode_not_toggled_with_text() {
+        let mut state = InputState::new("> ");
+        state.value = "hello".to_string();
+        state.cursor = state.value.chars().count();
+        state.insert_char('!');
+        assert!(!state.shell_mode);
+        assert_eq!(state.value, "hello!");
+    }
+
+    #[test]
+    fn test_shell_mode_clears_on_clear() {
+        let mut state = InputState::new("> ");
+        state.insert_char('!');
+        assert!(state.shell_mode);
+        state.value = "some text".to_string();
+        state.cursor = state.value.chars().count();
+        state.clear();
+        assert!(!state.shell_mode);
+        assert!(state.value.is_empty());
+    }
+
+    #[test]
+    fn test_shell_mode_prompt_color() {
+        let mut state = InputState::new("> ");
+        assert!(!state.is_shell_mode());
+        state.toggle_shell_mode();
+        assert!(state.is_shell_mode());
+        state.toggle_shell_mode();
+        assert!(!state.is_shell_mode());
+    }
+
+    #[test]
+    fn test_shell_mode_clears_on_submit() {
+        let mut state = InputState::new("> ");
+        state.insert_char('!');
+        state.value = "echo hello".to_string();
+        state.cursor = state.value.chars().count();
+        let submitted = state.submit();
+        assert_eq!(submitted, "echo hello");
+        assert!(!state.shell_mode);
+    }
+
+    #[test]
+    fn test_shell_mode_not_toggled_by_non_bang() {
+        let mut state = InputState::new("> ");
+        state.insert_char('a');
+        assert!(!state.shell_mode);
+        assert_eq!(state.value, "a");
+    }
+
+    #[test]
+    fn test_bang_at_non_zero_position_does_not_toggle() {
+        let mut state = InputState::new("> ");
+        state.value = "test".to_string();
+        state.cursor = 2;
+        state.insert_char('!');
+        assert!(!state.shell_mode);
+        assert_eq!(state.value, "te!st");
     }
 }

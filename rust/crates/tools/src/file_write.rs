@@ -20,27 +20,34 @@ pub fn execute_write_file(input: &WriteFileInput) -> Result<String, String> {
         .canonicalize()
         .map_err(|e| format!("Failed to resolve workspace root: {e}"))?;
     let path = cwd.join(&input.path);
-    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
-    if canonical_path != path && !canonical_path.starts_with(&canonical_cwd) {
-        return Err(format!("Path '{}' escapes workspace boundary", input.path));
-    }
-    // For new files, verify the parent directory is within workspace
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            let canonical_parent = parent
-                .canonicalize()
-                .unwrap_or_else(|_| parent.to_path_buf());
-            if !canonical_parent.starts_with(&canonical_cwd) {
-                return Err(format!("Path '{}' escapes workspace boundary", input.path));
-            }
-        }
-    }
-    if let Some(parent) = path.parent() {
+
+    // Always write to the canonical path to prevent symlink-swap attacks.
+    let canonical_path = if path.exists() {
+        path.canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {e}"))?
+    } else if let Some(parent) = path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
         }
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve parent: {e}"))?;
+        if !canonical_parent.starts_with(&canonical_cwd) {
+            return Err(format!("Path '{}' escapes workspace boundary", input.path));
+        }
+        canonical_parent.join(
+            path.file_name()
+                .ok_or_else(|| format!("Path has no filename: {}", input.path))?,
+        )
+    } else {
+        return Err(format!("Path has no filename: {}", input.path));
+    };
+
+    if !canonical_path.starts_with(&canonical_cwd) {
+        return Err(format!("Path '{}' escapes workspace boundary", input.path));
     }
-    fs::write(&path, &input.content).map_err(|e| format!("Failed to write file: {e}"))?;
+
+    fs::write(&canonical_path, &input.content).map_err(|e| format!("Failed to write file: {e}"))?;
     Ok(format!(
         "Wrote {} ({} bytes)",
         input.path,

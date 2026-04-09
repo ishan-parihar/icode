@@ -280,6 +280,9 @@ mod tests {
             home_placeholder_idx: 0,
             home_placeholder_timer: std::time::Instant::now(),
             pending_file_refs: Vec::new(),
+            pending_slash_command: None,
+            permission_dialog: crate::tui::dialog_permission::PermissionDialogState::new(),
+            question_prompt: crate::tui::dialog_question::QuestionPromptState::new(),
         }
     }
 

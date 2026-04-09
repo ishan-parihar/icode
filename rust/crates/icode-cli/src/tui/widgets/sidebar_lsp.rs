@@ -133,8 +133,8 @@ pub fn render_lsp_panel(frame: &mut Frame, state: &AppState, area: Rect, theme: 
                 String::new()
             };
 
-            let display_name = if server.name.len() > 25 {
-                format!("{}...", &server.name[..22])
+            let display_name = if server.name.chars().count() > 25 {
+                format!("{}...", server.name.chars().take(22).collect::<String>())
             } else {
                 server.name.clone()
             };

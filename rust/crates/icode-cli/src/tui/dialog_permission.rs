@@ -1,7 +1,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use runtime::{PermissionMode, PermissionRequest};
@@ -48,7 +48,7 @@ pub struct PermissionDisplayInfo {
 
 /// Map a permission request to tool-specific display info.
 fn tool_display_info(req: &PermissionRequest) -> PermissionDisplayInfo {
-    let name = &req.tool_name;
+    let name = req.tool_name.as_str();
     let input = &req.input;
 
     // Try to extract filepath from JSON input for file-related tools
@@ -63,16 +63,12 @@ fn tool_display_info(req: &PermissionRequest) -> PermissionDisplayInfo {
         "edit" | "write_file" => PermissionDisplayInfo {
             icon: '\u{2192}',
             title: format!("Edit {}", filepath.as_deref().unwrap_or("file")),
-            body: filepath
-                .map(|p| vec![p])
-                .unwrap_or_else(|| vec![input.clone()]),
+            body: filepath.map_or_else(|| vec![input.clone()], |p| vec![p]),
         },
         "read" | "read_file" => PermissionDisplayInfo {
             icon: '\u{2192}',
             title: format!("Read {}", filepath.as_deref().unwrap_or("file")),
-            body: filepath
-                .map(|p| vec![p])
-                .unwrap_or_else(|| vec![input.clone()]),
+            body: filepath.map_or_else(|| vec![input.clone()], |p| vec![p]),
         },
         "glob_search" => PermissionDisplayInfo {
             icon: '\u{2731}',
@@ -108,7 +104,7 @@ fn tool_display_info(req: &PermissionRequest) -> PermissionDisplayInfo {
             let human = human_tool_name(name);
             PermissionDisplayInfo {
                 icon: '\u{2699}',
-                title: format!("Tool: {}", human),
+                title: format!("Tool: {human}"),
                 body: vec![input.clone()],
             }
         }
@@ -262,8 +258,8 @@ fn format_json_value(
                 }
                 match value {
                     serde_json::Value::String(s) => {
-                        let display = if s.len() > 60 {
-                            format!("{}...", &s[..57])
+                        let display = if s.chars().count() > 60 {
+                            format!("{}...", s.chars().take(57).collect::<String>())
                         } else {
                             s.clone()
                         };
@@ -346,8 +342,8 @@ fn format_json_value(
                     return lines;
                 }
                 if let serde_json::Value::String(s) = item {
-                    let display = if s.len() > 60 {
-                        format!("{}...", &s[..57])
+                    let display = if s.chars().count() > 60 {
+                        format!("{}...", s.chars().take(57).collect::<String>())
                     } else {
                         s.clone()
                     };
@@ -473,7 +469,7 @@ impl PermissionDialogState {
                 self.reject_message = String::new();
                 None
             }
-            crossterm::event::KeyCode::Char('a') | crossterm::event::KeyCode::Char('A') => {
+            crossterm::event::KeyCode::Char('a' | 'A') => {
                 // Transition to AlwaysConfirm stage
                 self.stage = PermissionStage::AlwaysConfirm;
                 None
@@ -638,8 +634,14 @@ fn render_permission_stage(
     // Reason (if any)
     if let Some(ref reason) = req.reason {
         let max_len = 60;
-        let reason_text = if reason.len() > max_len {
-            format!("{}...", &reason[..max_len.saturating_sub(3)])
+        let reason_text = if reason.chars().count() > max_len {
+            format!(
+                "{}...",
+                reason
+                    .chars()
+                    .take(max_len.saturating_sub(3))
+                    .collect::<String>()
+            )
         } else {
             reason.clone()
         };
@@ -667,13 +669,9 @@ fn render_permission_stage(
         lines.push(Line::from(prefixed));
     }
 
-    let content_height = lines.len() as u16 + 4u16; // +3 for buttons + 1 padding
+    let content_height = lines.len() as u16 + 3u16; // buttons (1) + gap (1) + hint (1)
 
     let popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
-
-    // Backdrop
-    let backdrop = Paragraph::new("").style(Style::default().bg(ratatui::style::Color::Black));
-    frame.render_widget(backdrop, area);
 
     // Block with left border
     let block =
@@ -817,9 +815,6 @@ fn render_always_stage(
 
     let popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
 
-    let backdrop = Paragraph::new("").style(Style::default().bg(ratatui::style::Color::Black));
-    frame.render_widget(backdrop, area);
-
     let block =
         popup_utils::left_border_block(theme, theme.primary, "", Some(theme.background_panel));
     popup_utils::clear_area(frame, popup_area);
@@ -929,9 +924,6 @@ fn render_reject_stage(
     let content_height = lines.len() as u16 + 3u16;
 
     let popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
-
-    let backdrop = Paragraph::new("").style(Style::default().bg(ratatui::style::Color::Black));
-    frame.render_widget(backdrop, area);
 
     let block =
         popup_utils::left_border_block(theme, theme.error, "", Some(theme.background_panel));

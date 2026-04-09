@@ -1,12 +1,14 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::tui::popup_utils::PopupConfig;
 
 const MIN_WIDTH: u16 = 50;
 const MIN_HEIGHT: u16 = 14;
@@ -411,17 +413,8 @@ pub fn render_prompt_stash_dialog(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(Span::styled(
-            " Prompt Stash ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(ratatui::layout::Alignment::Center);
+    let config = PopupConfig::full("Prompt Stash");
+    let block = config.to_block(theme);
 
     frame.render_widget(block.clone(), dialog_area);
 

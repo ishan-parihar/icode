@@ -1,11 +1,12 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 60;
@@ -268,17 +269,8 @@ pub fn render_session_branching(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(Span::styled(
-            " Session Branches ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(ratatui::layout::Alignment::Center);
+    let config = PopupConfig::full("Branch Session");
+    let block = config.to_block(theme);
 
     frame.render_widget(block.clone(), dialog_area);
 

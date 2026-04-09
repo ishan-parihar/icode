@@ -396,10 +396,16 @@ fn apply_usage_to_stats(
 }
 
 fn persist_state(inner: &PromptCacheInner) {
-    let _ = ensure_cache_dirs(&inner.paths);
-    let _ = write_json(&inner.paths.stats_path, &inner.stats);
+    if let Err(e) = ensure_cache_dirs(&inner.paths) {
+        tracing::warn!(error = %e, "failed to create cache directories");
+    }
+    if let Err(e) = write_json(&inner.paths.stats_path, &inner.stats) {
+        tracing::warn!(error = %e, path = %inner.paths.stats_path.display(), "failed to write cache stats");
+    }
     if let Some(previous) = &inner.previous {
-        let _ = write_json(&inner.paths.session_state_path, previous);
+        if let Err(e) = write_json(&inner.paths.session_state_path, previous) {
+            tracing::warn!(error = %e, "failed to write session state");
+        }
     }
 }
 
@@ -408,13 +414,18 @@ fn write_completion_entry(
     request_hash: &str,
     response: &MessageResponse,
 ) {
-    let _ = ensure_cache_dirs(paths);
+    if let Err(e) = ensure_cache_dirs(paths) {
+        tracing::warn!(error = %e, "failed to create cache directories for completion entry");
+    }
     let entry = CompletionCacheEntry {
         cached_at_unix_secs: now_unix_secs(),
         fingerprint_version: current_fingerprint_version(),
         response: response.clone(),
     };
-    let _ = write_json(&paths.completion_entry_path(request_hash), &entry);
+    let entry_path = paths.completion_entry_path(request_hash);
+    if let Err(e) = write_json(&entry_path, &entry) {
+        tracing::warn!(error = %e, path = %entry_path.display(), "failed to write completion entry");
+    }
 }
 
 fn ensure_cache_dirs(paths: &PromptCachePaths) -> std::io::Result<()> {

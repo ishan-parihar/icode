@@ -65,6 +65,7 @@ struct FileTarget {
 ///
 /// Parses the unified diff, applies each hunk to the target file, and returns
 /// a summary of applied changes.
+#[allow(clippy::too_many_lines)]
 pub fn execute_apply_patch(input: &ApplyPatchInput) -> Result<ApplyPatchOutput, String> {
     let dry_run = input.dry_run.unwrap_or(false);
     let strip = input.strip.unwrap_or(1);
@@ -89,6 +90,34 @@ pub fn execute_apply_patch(input: &ApplyPatchInput) -> Result<ApplyPatchOutput, 
 
     for target in &file_targets {
         let resolved_path = resolve_path(&target.new_path, strip, &base_dir)?;
+
+        if let Ok(canonical) = resolved_path.canonicalize() {
+            if let Ok(workspace) = base_dir.canonicalize() {
+                if !canonical.starts_with(&workspace) {
+                    all_success = false;
+                    details.push(format!(
+                        "SKIP: path '{}' is outside workspace '{}'",
+                        resolved_path.display(),
+                        base_dir.display()
+                    ));
+                    continue;
+                }
+            }
+        } else if let Some(parent) = resolved_path.parent() {
+            if let (Ok(canonical_parent), Ok(workspace)) =
+                (parent.canonicalize(), base_dir.canonicalize())
+            {
+                if !canonical_parent.starts_with(&workspace) {
+                    all_success = false;
+                    details.push(format!(
+                        "SKIP: path '{}' is outside workspace '{}'",
+                        resolved_path.display(),
+                        base_dir.display()
+                    ));
+                    continue;
+                }
+            }
+        }
 
         let is_new_file = target.old_path == "/dev/null";
 
@@ -464,17 +493,17 @@ fn resolve_path(raw_path: &str, strip: u32, base_dir: &Path) -> Result<PathBuf, 
         return Err("Path is /dev/null (no target file)".to_string());
     }
 
-    let mut path = raw_path;
+    let mut path: String = raw_path.to_string();
 
     if strip == 0 {
         if path.starts_with("a/") || path.starts_with("b/") {
-            path = &path[2..];
+            path = path[2..].to_string();
         }
     } else {
         let stripped_prefix = if path.starts_with("a/") || path.starts_with("b/") {
-            &path[2..]
+            path[2..].to_string()
         } else {
-            path
+            path.clone()
         };
 
         let remaining_strip =
@@ -488,9 +517,9 @@ fn resolve_path(raw_path: &str, strip: u32, base_dir: &Path) -> Result<PathBuf, 
         let components: Vec<&str> = path.split('/').collect();
 
         if remaining_strip as usize >= components.len() {
-            path = components.last().unwrap_or(&"");
+            path = components.last().unwrap_or(&"").to_string();
         } else {
-            path = components[remaining_strip as usize..].join("/").leak();
+            path = components[remaining_strip as usize..].join("/");
         }
     }
 

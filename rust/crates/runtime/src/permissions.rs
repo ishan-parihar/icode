@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::config::RuntimePermissionRuleConfig;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionMode {
     ReadOnly,
     WorkspaceWrite,
@@ -23,6 +23,27 @@ impl PermissionMode {
             Self::Prompt => "prompt",
             Self::Allow => "allow",
         }
+    }
+
+    fn level(self) -> u8 {
+        match self {
+            Self::ReadOnly | Self::Prompt => 0,
+            Self::WorkspaceWrite => 1,
+            Self::DangerFullAccess => 2,
+            Self::Allow => 3,
+        }
+    }
+}
+
+impl PartialOrd for PermissionMode {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PermissionMode {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.level().cmp(&other.level())
     }
 }
 

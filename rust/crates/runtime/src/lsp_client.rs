@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum number of diagnostics to keep per server (LRU eviction via FIFO truncation).
+const MAX_DIAGNOSTICS_PER_SERVER: usize = 1000;
+
 /// Supported LSP actions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -200,6 +203,10 @@ impl LspRegistry {
             .get_mut(language)
             .ok_or_else(|| format!("LSP server not found for language: {language}"))?;
         server.diagnostics.extend(diagnostics);
+        if server.diagnostics.len() > MAX_DIAGNOSTICS_PER_SERVER {
+            let excess = server.diagnostics.len() - MAX_DIAGNOSTICS_PER_SERVER;
+            server.diagnostics.drain(..excess);
+        }
         Ok(())
     }
 

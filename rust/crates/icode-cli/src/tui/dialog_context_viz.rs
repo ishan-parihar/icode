@@ -1,12 +1,11 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Bar, BarChart, BarGroup, Block, BorderType, Borders, Clear, Gauge, Paragraph,
-};
+use ratatui::widgets::{Bar, BarChart, BarGroup, Clear, Gauge, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::context_suggestions::{generate_suggestions, ContextVizData, SuggestionSeverity};
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 
 #[derive(Debug, Clone)]
@@ -74,17 +73,8 @@ pub fn render_context_viz_dialog(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_active))
-        .title(Span::styled(
-            " Context Window ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(Alignment::Center);
+    let config = PopupConfig::full("Context");
+    let block = config.to_block(theme);
 
     frame.render_widget(block.clone(), dialog_area);
     let inner = dialog_area.inner(Margin::new(1, 1));

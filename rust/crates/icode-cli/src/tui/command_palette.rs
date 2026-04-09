@@ -1,11 +1,12 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::frecency::FrecencyStore;
 use crate::tui::popup_utils;
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
 
 const MAX_VISIBLE_ENTRIES: usize = 20;
@@ -479,7 +480,8 @@ pub fn render_command_palette(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = popup_utils::dialog_block(theme, " Commands ");
+    let config = PopupConfig::full("Commands");
+    let block = config.to_block(theme);
     frame.render_widget(block, dialog_area);
 
     let inner = dialog_area.inner(Margin::new(1, 1));
@@ -621,6 +623,32 @@ fn compute_scroll_offset(state: &CommandPaletteState, visible_lines: usize) -> u
         return 0;
     }
     state.cursor.saturating_sub(visible_lines / 2)
+}
+
+/// Map a slash command string (e.g. "/help") to its corresponding CommandAction.
+/// Returns None if the command is not recognized or requires special handling.
+///
+/// Commands that require special handling (return None):
+/// - "/diff" -> show_diff_view() - handled in runner.rs
+/// - "/config" -> show_config_pager() - handled in runner.rs
+/// - "/memory" -> show_memory_pager() - handled in runner.rs
+/// - "/version" -> show_version_pager() - handled in runner.rs
+/// - "/theme" -> theme switching - handled in runner.rs
+/// - "/permissions" -> special handling needed
+pub fn find_slash_command_action(cmd: &str) -> Option<CommandAction> {
+    match cmd {
+        "/help" => Some(CommandAction::ShowHelp),
+        "/status" => Some(CommandAction::ShowStatus),
+        "/cost" => Some(CommandAction::ShowCost),
+        "/compact" => Some(CommandAction::CompactContext),
+        "/clear" => Some(CommandAction::ClearConversation),
+        "/model" => Some(CommandAction::SwitchModel),
+        "/export" => Some(CommandAction::ShowExportOptions),
+        "/session" => Some(CommandAction::SwitchSession),
+        "/undo" => Some(CommandAction::Undo),
+        "/redo" => Some(CommandAction::Redo),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -808,5 +836,66 @@ mod tests {
         state.confirm();
         assert!(state.selected.is_some());
         assert!(!state.open);
+    }
+
+    #[test]
+    fn test_find_slash_command_action_known() {
+        assert_eq!(
+            find_slash_command_action("/help"),
+            Some(CommandAction::ShowHelp)
+        );
+        assert_eq!(
+            find_slash_command_action("/status"),
+            Some(CommandAction::ShowStatus)
+        );
+        assert_eq!(
+            find_slash_command_action("/cost"),
+            Some(CommandAction::ShowCost)
+        );
+        assert_eq!(
+            find_slash_command_action("/compact"),
+            Some(CommandAction::CompactContext)
+        );
+        assert_eq!(
+            find_slash_command_action("/clear"),
+            Some(CommandAction::ClearConversation)
+        );
+        assert_eq!(
+            find_slash_command_action("/model"),
+            Some(CommandAction::SwitchModel)
+        );
+        assert_eq!(
+            find_slash_command_action("/export"),
+            Some(CommandAction::ShowExportOptions)
+        );
+        assert_eq!(
+            find_slash_command_action("/session"),
+            Some(CommandAction::SwitchSession)
+        );
+        assert_eq!(
+            find_slash_command_action("/undo"),
+            Some(CommandAction::Undo)
+        );
+        assert_eq!(
+            find_slash_command_action("/redo"),
+            Some(CommandAction::Redo)
+        );
+    }
+
+    #[test]
+    fn test_find_slash_command_action_special_handling() {
+        assert_eq!(find_slash_command_action("/diff"), None);
+        assert_eq!(find_slash_command_action("/config"), None);
+        assert_eq!(find_slash_command_action("/memory"), None);
+        assert_eq!(find_slash_command_action("/version"), None);
+        assert_eq!(find_slash_command_action("/permissions"), None);
+        assert_eq!(find_slash_command_action("/theme"), None);
+    }
+
+    #[test]
+    fn test_find_slash_command_action_unknown() {
+        assert_eq!(find_slash_command_action("/unknown"), None);
+        assert_eq!(find_slash_command_action(""), None);
+        assert_eq!(find_slash_command_action("help"), None);
     }
 }

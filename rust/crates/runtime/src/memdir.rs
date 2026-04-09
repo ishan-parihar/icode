@@ -147,7 +147,13 @@ fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .or_else(|| dirs::home_dir())
+        .unwrap_or_else(|| {
+            let uid = std::process::id();
+            let restricted = std::env::temp_dir().join(format!("icode-{uid}"));
+            let _ = std::fs::create_dir_all(&restricted);
+            restricted
+        })
 }
 
 fn find_git_root(start: &Path) -> Option<PathBuf> {
@@ -333,8 +339,11 @@ pub fn build_memory_prompt_content(memory_dir: &Path) -> Result<String, String> 
 
 pub fn memory_age_days(modified: SystemTime) -> u64 {
     let now = SystemTime::now();
-    let duration = now.duration_since(modified).unwrap_or(Duration::ZERO);
-    duration.as_secs() / 86_400
+    now.duration_since(modified)
+        // Future-dated files are "not yet old" — report age as 0.
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+        / 86_400
 }
 
 pub fn memory_freshness_note(modified: SystemTime) -> String {

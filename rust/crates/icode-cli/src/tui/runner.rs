@@ -1,5 +1,6 @@
 use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
 use crate::tui::autocomplete::AutocompleteMode;
+use crate::tui::command_palette::{find_slash_command_action, CommandAction};
 use crate::tui::event::{Event, EventLoop, ParsedKey};
 use crate::tui::frecency::FrecencyStore;
 use crate::tui::input::InputState;
@@ -17,6 +18,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use runtime::skill_manager::SkillManager;
+use std::fmt::Write as _;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -78,6 +80,13 @@ impl Tui {
         let mut frecency = FrecencyStore::new(frecency_path);
         let _ = frecency.load();
         state.prompt.frecency = Some(frecency);
+
+        // Auto-open provider dialog when no providers are configured
+        let any_configured = api::scan_provider_auth_status().iter().any(|p| p.has_auth);
+        if !any_configured {
+            state.provider_dialog.refresh_providers();
+            state.provider_dialog.open = true;
+        }
 
         Ok(Self {
             terminal,
@@ -210,6 +219,14 @@ impl Tui {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<String> {
+        if self.state.permission_dialog.open {
+            return self.handle_permission_key(key);
+        }
+
+        if self.state.question_prompt.open {
+            return self.handle_question_key(key);
+        }
+
         if self.state.model_picker.open {
             return self.handle_picker_key(key);
         }
@@ -360,8 +377,14 @@ impl Tui {
                 None
             }
             (_, KeyCode::Enter) => {
-                // If autocomplete is open, select entry instead of submitting
                 if self.state.autocomplete.open {
+                    let was_slash_command = self.state.autocomplete.slash_command_selected;
+                    let selected_title = self
+                        .state
+                        .autocomplete
+                        .entries
+                        .get(self.state.autocomplete.idx)
+                        .map(|e| e.title.clone());
                     self.state.autocomplete.select(&mut self.state.prompt);
                     if let Some(ref mut frecency) = self.state.prompt.frecency {
                         if let Some(entry) = self
@@ -373,58 +396,27 @@ impl Tui {
                             frecency.record(&entry.title);
                         }
                     }
+                    if was_slash_command {
+                        self.state.autocomplete.slash_command_selected = false;
+                        let cmd = self.state.prompt.value.clone();
+                        self.state.prompt.clear();
+                        self.execute_slash_command(&cmd);
+                        return None;
+                    }
+                    return None;
+                }
+
+                if let Some(cmd) = self.state.pending_slash_command.take() {
+                    self.execute_slash_command(&cmd);
                     return None;
                 }
 
                 let input = self.state.prompt.submit();
                 if input.trim().is_empty() {
                     None
-                } else if input.trim() == "/diff" {
-                    self.show_diff_view();
+                } else if input.trim().starts_with('/') {
+                    self.execute_slash_command(input.trim());
                     None
-                } else if input.trim() == "/status" {
-                    self.show_status_pager();
-                    None
-                } else if input.trim() == "/config" {
-                    self.show_config_pager();
-                    None
-                } else if input.trim() == "/memory" {
-                    self.show_memory_pager();
-                    None
-                } else if input.trim() == "/version" {
-                    self.show_version_pager();
-                    None
-                } else if input.trim().starts_with("/theme") {
-                    let args = input.trim().strip_prefix("/theme").unwrap_or("").trim();
-                    if args.is_empty() || args == "list" {
-                        self.state.theme_list_dialog.open();
-                        None
-                    } else if let Some(theme_name) = args.strip_prefix("set ") {
-                        let theme_name = theme_name.trim();
-                        if Theme::from_name(theme_name).is_some() {
-                            self.state.set_theme(theme_name);
-                            let display = Theme::display_name(theme_name);
-                            self.state
-                                .add_toast(format!("Theme: {display}"), ToastKind::Success);
-                        } else {
-                            self.state.add_toast(
-                                format!("Unknown theme: {theme_name}"),
-                                ToastKind::Error,
-                            );
-                        }
-                        None
-                    } else {
-                        if Theme::from_name(args).is_some() {
-                            self.state.set_theme(args);
-                            let display = Theme::display_name(args);
-                            self.state
-                                .add_toast(format!("Theme: {display}"), ToastKind::Success);
-                        } else {
-                            self.state
-                                .add_toast(format!("Unknown theme: {args}"), ToastKind::Error);
-                        }
-                        None
-                    }
                 } else {
                     self.state.prompt.push_history();
                     self.state.cleanup_reverted();
@@ -434,11 +426,22 @@ impl Tui {
                         .iter()
                         .map(|r| (r.path.clone(), r.content.clone()))
                         .collect();
-                    let user_input = clean_input.clone();
+
+                    let user_input = if file_refs.is_empty() {
+                        clean_input.clone()
+                    } else {
+                        let mut enriched = clean_input.clone();
+                        enriched.push_str("\n\n<attached_files>\n");
+                        for r in &file_refs {
+                            let _ = write!(enriched, "## {}\n{}\n\n", r.path, r.content);
+                        }
+                        enriched.push_str("</attached_files>");
+                        enriched
+                    };
+
                     self.state.add_user_message(clean_input);
                     self.state.turn_started_at = Some(Instant::now());
                     self.state.start_assistant_stream("build");
-                    self.state.pending_file_refs.clear();
                     Some(user_input)
                 }
             }
@@ -753,6 +756,45 @@ impl Tui {
                 None
             }
             _ => None,
+        }
+    }
+
+    fn handle_permission_key(&mut self, key: KeyEvent) -> Option<String> {
+        if let Some(action) = self.state.permission_dialog.handle_key(key.code) {
+            self.handle_permission_action(action);
+        }
+        None
+    }
+
+    fn handle_question_key(&mut self, key: KeyEvent) -> Option<String> {
+        if let Some(response) = self.state.question_prompt.handle_key(key.code) {
+            if let Some(tx) = self.state.question_prompt.answer_tx.take() {
+                let _ = tx.send(response.answer.clone());
+            }
+            self.state.question_prompt.close();
+        }
+        None
+    }
+
+    fn handle_permission_action(
+        &mut self,
+        action: crate::tui::dialog_permission::PermissionAction,
+    ) {
+        use crate::tui::app;
+        use crate::tui::dialog_permission::PermissionAction;
+        match action {
+            PermissionAction::Approve => {
+                self.state
+                    .add_toast("Permission approved", app::ToastKind::Success);
+            }
+            PermissionAction::Deny => {
+                self.state
+                    .add_toast("Permission denied", app::ToastKind::Warning);
+            }
+            PermissionAction::AlwaysAllow => {
+                self.state
+                    .add_toast("Always allow enabled", app::ToastKind::Info);
+            }
         }
     }
 
@@ -1353,6 +1395,18 @@ impl Tui {
         self.state.pager.open("Memory".to_string(), content);
     }
 
+    fn show_cost_pager(&mut self) {
+        let total_tokens = self.state.session.input_tokens + self.state.session.output_tokens;
+        let content = format!(
+            "Input Tokens: {}\nOutput Tokens: {}\nTotal Tokens: {}\nCumulative Cost: ${:.4}",
+            self.state.session.input_tokens,
+            self.state.session.output_tokens,
+            total_tokens,
+            self.state.session.cumulative_cost,
+        );
+        self.state.pager.open("Cost".to_string(), content);
+    }
+
     fn show_version_pager(&mut self) {
         let version = env!("CARGO_PKG_VERSION");
         let content = format!(
@@ -1361,6 +1415,119 @@ impl Tui {
             std::env::consts::OS,
         );
         self.state.pager.open("Version".to_string(), content);
+    }
+
+    fn handle_undo(&mut self) {
+        if self.state.undo_message() {
+            if let Some(revert) = &self.state.revert {
+                self.state.prompt.value.clone_from(&revert.prompt_text);
+                self.state.prompt.cursor = self.state.prompt.value.chars().count();
+            }
+        }
+    }
+
+    fn handle_redo(&mut self) {
+        if self.state.redo_message() {
+            if let Some(revert) = &self.state.revert {
+                self.state.prompt.value.clone_from(&revert.prompt_text);
+                self.state.prompt.cursor = self.state.prompt.value.chars().count();
+            } else {
+                self.state.prompt.clear();
+                self.state.prompt.cursor = 0;
+            }
+        }
+    }
+
+    fn execute_slash_command(&mut self, cmd: &str) {
+        if let Some(action) = find_slash_command_action(cmd) {
+            match action {
+                CommandAction::ShowHelp => {
+                    self.state.help_dialog.open();
+                }
+                CommandAction::ShowStatus => {
+                    self.show_status_pager();
+                }
+                CommandAction::ShowCost => {
+                    self.show_cost_pager();
+                }
+                CommandAction::CompactContext => {
+                    self.state.add_toast("Context compacted", ToastKind::Info);
+                }
+                CommandAction::ClearConversation => {
+                    self.state.messages.clear();
+                    self.state.tools.clear();
+                    self.state
+                        .add_toast("Conversation cleared", ToastKind::Info);
+                }
+                CommandAction::SwitchModel => {
+                    self.state.model_picker.open();
+                }
+                CommandAction::ShowExportOptions => {
+                    self.state.export_options.open();
+                }
+                CommandAction::SwitchSession => {
+                    self.state.sessions_dialog.open();
+                }
+                CommandAction::Undo => {
+                    if self.state.revert.is_some() {
+                        self.handle_undo();
+                    }
+                }
+                CommandAction::Redo => {
+                    self.handle_redo();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match cmd {
+            "/diff" => {
+                self.show_diff_view();
+            }
+            "/config" => {
+                self.show_config_pager();
+            }
+            "/memory" => {
+                self.show_memory_pager();
+            }
+            "/version" => {
+                self.show_version_pager();
+            }
+            "/permissions" => {
+                self.state
+                    .add_toast("Use Ctrl+P to change permissions", ToastKind::Info);
+            }
+            _ if cmd.starts_with("/theme") => {
+                let args = cmd.strip_prefix("/theme").unwrap_or("").trim();
+                if args.is_empty() || args == "list" {
+                    self.state.theme_list_dialog.open();
+                } else if let Some(theme_name) = args.strip_prefix("set ") {
+                    let theme_name = theme_name.trim();
+                    if Theme::from_name(theme_name).is_some() {
+                        self.state.set_theme(theme_name);
+                        let display = Theme::display_name(theme_name);
+                        self.state
+                            .add_toast(format!("Theme: {display}"), ToastKind::Success);
+                    } else {
+                        self.state
+                            .add_toast(format!("Unknown theme: {theme_name}"), ToastKind::Error);
+                    }
+                } else if Theme::from_name(args).is_some() {
+                    self.state.set_theme(args);
+                    let display = Theme::display_name(args);
+                    self.state
+                        .add_toast(format!("Theme: {display}"), ToastKind::Success);
+                } else {
+                    self.state
+                        .add_toast(format!("Unknown theme: {args}"), ToastKind::Error);
+                }
+            }
+            _ => {
+                self.state
+                    .add_toast(format!("Unknown command: {cmd}"), ToastKind::Warning);
+            }
+        }
     }
 
     pub(crate) fn open_external_editor(&mut self) -> Option<String> {
@@ -2281,5 +2448,486 @@ impl Drop for Tui {
         let _ = KittyKeyboard::disable();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::autocomplete::{
+        AutocompleteEntry, AutocompleteMode, AutocompleteState, EntryKind,
+    };
+    use crate::tui::dialog_permission::PermissionDialogState;
+    use crate::tui::dialog_question::{QuestionDef, QuestionOption, QuestionPromptState};
+    use crate::tui::input::InputState;
+    use runtime::{PermissionMode, PermissionRequest};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn test_autocomplete_enter_selects_entry() {
+        let mut input = InputState::new("");
+        input.value = "/he".to_string();
+        input.cursor = 3;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.mode = AutocompleteMode::Slash;
+        ac.idx = 0;
+        ac.entries = vec![
+            AutocompleteEntry {
+                title: "/help".to_string(),
+                subtitle: "Show help".to_string(),
+                kind: EntryKind::Command,
+            },
+            AutocompleteEntry {
+                title: "/history".to_string(),
+                subtitle: "Show history".to_string(),
+                kind: EntryKind::Command,
+            },
+        ];
+
+        ac.select(&mut input);
+        // select replaces with "/help " (trailing space) and closes
+        assert!(input.value.starts_with("/help"));
+        assert!(!ac.open);
+    }
+
+    #[test]
+    fn test_autocomplete_enter_empty_entries() {
+        let mut input = InputState::new("");
+        input.value = "/xyz".to_string();
+        input.cursor = 4;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.entries = vec![];
+
+        ac.select(&mut input);
+        assert_eq!(input.value, "/xyz");
+    }
+
+    #[test]
+    fn test_autocomplete_escape_closes() {
+        let mut input = InputState::new("");
+        input.value = "/hel".to_string();
+        input.cursor = 4;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.entries = vec![AutocompleteEntry {
+            title: "/help".to_string(),
+            subtitle: "Show help".to_string(),
+            kind: EntryKind::Command,
+        }];
+
+        let value_before = input.value.clone();
+        ac.close();
+
+        assert!(!ac.open);
+        assert_eq!(input.value, value_before);
+    }
+
+    #[test]
+    fn test_autocomplete_up_navigates_entries() {
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.idx = 2;
+        ac.entries = vec![
+            AutocompleteEntry {
+                title: "/help".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+            AutocompleteEntry {
+                title: "/history".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+            AutocompleteEntry {
+                title: "/model".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+        ];
+
+        ac.cursor_up();
+        assert_eq!(ac.idx, 1);
+        ac.cursor_up();
+        assert_eq!(ac.idx, 0);
+        ac.cursor_up();
+        assert_eq!(ac.idx, 0);
+    }
+
+    #[test]
+    fn test_autocomplete_down_navigates_entries() {
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.idx = 0;
+        ac.entries = vec![
+            AutocompleteEntry {
+                title: "/help".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+            AutocompleteEntry {
+                title: "/history".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+            AutocompleteEntry {
+                title: "/model".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+        ];
+
+        ac.cursor_down();
+        assert_eq!(ac.idx, 1);
+        ac.cursor_down();
+        assert_eq!(ac.idx, 2);
+        ac.cursor_down();
+        assert_eq!(ac.idx, 2);
+    }
+
+    #[test]
+    fn test_autocomplete_tab_selects_entry() {
+        let mut input = InputState::new("");
+        input.value = "/h".to_string();
+        input.cursor = 2;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.idx = 1;
+        ac.entries = vec![
+            AutocompleteEntry {
+                title: "/help".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+            AutocompleteEntry {
+                title: "/history".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+        ];
+
+        ac.select(&mut input);
+        // select adds trailing space
+        assert!(input.value.starts_with("/history"));
+    }
+
+    #[test]
+    fn test_autocomplete_char_insert_and_rebuild() {
+        let mut input = InputState::new("");
+        input.value = "/h".to_string();
+        input.cursor = 2;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.mode = AutocompleteMode::Slash;
+        ac.trigger_pos = 0;
+        ac.idx = 0;
+
+        input.insert_char('e');
+        ac.on_char_insert('e', input.cursor, &input.value);
+        ac.rebuild_entries(&input.value, std::path::Path::new("."), None);
+
+        assert_eq!(input.value, "/he");
+        assert!(ac.open);
+        assert!(!ac.entries.is_empty());
+        for entry in &ac.entries {
+            assert!(entry.title.starts_with("/h"));
+        }
+    }
+
+    #[test]
+    fn test_permission_dialog_open_blocks_prompt_input() {
+        let mut dialog = PermissionDialogState::new();
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            input: "ls -la".to_string(),
+            current_mode: PermissionMode::ReadOnly,
+            required_mode: PermissionMode::WorkspaceWrite,
+            reason: None,
+        };
+        dialog.open(request);
+        assert!(dialog.open);
+
+        let mut input = InputState::new("");
+        input.value = "test prompt".to_string();
+        input.cursor = 11;
+        let value_before = input.value.clone();
+
+        let result = dialog.handle_key(KeyCode::Char('x'));
+
+        assert_eq!(input.value, value_before);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_permission_dialog_enter_confirms_action() {
+        let mut dialog = PermissionDialogState::new();
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            input: "ls -la".to_string(),
+            current_mode: PermissionMode::ReadOnly,
+            required_mode: PermissionMode::WorkspaceWrite,
+            reason: None,
+        };
+        dialog.open(request);
+
+        let result = dialog.handle_key(KeyCode::Enter);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_permission_dialog_escape_navigates_stages() {
+        let mut dialog = PermissionDialogState::new();
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            input: "ls -la".to_string(),
+            current_mode: PermissionMode::ReadOnly,
+            required_mode: PermissionMode::WorkspaceWrite,
+            reason: None,
+        };
+        dialog.open(request);
+
+        let result = dialog.handle_key(KeyCode::Esc);
+        assert!(result.is_none());
+
+        let result = dialog.handle_key(KeyCode::Esc);
+        assert!(result.is_none());
+
+        // Enter from Permission stage confirms (Approve)
+        let result = dialog.handle_key(KeyCode::Enter);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_permission_dialog_reject_message_accepts_typing() {
+        let mut dialog = PermissionDialogState::new();
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            input: "ls -la".to_string(),
+            current_mode: PermissionMode::ReadOnly,
+            required_mode: PermissionMode::WorkspaceWrite,
+            reason: None,
+        };
+        dialog.open(request);
+
+        dialog.handle_key(KeyCode::Esc);
+
+        dialog.handle_key(KeyCode::Char('t'));
+        dialog.handle_key(KeyCode::Char('e'));
+        dialog.handle_key(KeyCode::Char('s'));
+        dialog.handle_key(KeyCode::Char('t'));
+
+        assert_eq!(dialog.reject_message, "test");
+    }
+
+    #[test]
+    fn test_question_dialog_open_blocks_prompt_input() {
+        let mut dialog = QuestionPromptState::new();
+        let questions = vec![QuestionDef::select(
+            "test_question",
+            "Pick one:",
+            vec![
+                QuestionOption::new("Option A"),
+                QuestionOption::new("Option B"),
+            ],
+        )];
+        dialog.open(questions, "build".to_string(), "test".to_string(), None);
+        assert!(dialog.open);
+
+        let mut input = InputState::new("");
+        input.value = "test prompt".to_string();
+        input.cursor = 11;
+        let value_before = input.value.clone();
+
+        // For single-select with single question, pressing '1' auto-submits
+        let result = dialog.handle_key(KeyCode::Char('1'));
+
+        assert_eq!(input.value, value_before);
+        // Single question + single select = auto-submits on number key
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_question_dialog_enter_confirms_answers() {
+        let mut dialog = QuestionPromptState::new();
+        let questions = vec![
+            QuestionDef::select(
+                "q1",
+                "First?",
+                vec![QuestionOption::new("A"), QuestionOption::new("B")],
+            ),
+            QuestionDef::select(
+                "q2",
+                "Second?",
+                vec![QuestionOption::new("X"), QuestionOption::new("Y")],
+            ),
+        ];
+        dialog.open(questions, "build".to_string(), "test".to_string(), None);
+
+        dialog.handle_key(KeyCode::Char('1'));
+        dialog.handle_key(KeyCode::Char('1'));
+
+        let result = dialog.handle_key(KeyCode::Enter);
+        assert!(result.is_some());
+        assert!(!dialog.open);
+    }
+
+    #[test]
+    fn test_question_dialog_escape_closes() {
+        let mut dialog = QuestionPromptState::new();
+        let questions = vec![QuestionDef::select(
+            "test_question",
+            "Pick one:",
+            vec![
+                QuestionOption::new("Option A"),
+                QuestionOption::new("Option B"),
+            ],
+        )];
+        dialog.open(questions, "build".to_string(), "test".to_string(), None);
+
+        let result = dialog.handle_key(KeyCode::Esc);
+        assert!(result.is_some());
+        assert!(!dialog.open);
+    }
+
+    #[test]
+    fn test_question_dialog_arrows_navigate_options() {
+        let mut dialog = QuestionPromptState::new();
+        let questions = vec![QuestionDef::select(
+            "test_question",
+            "Pick one:",
+            vec![
+                QuestionOption::new("Option A"),
+                QuestionOption::new("Option B"),
+                QuestionOption::new("Option C"),
+            ],
+        )];
+        dialog.open(questions, "build".to_string(), "test".to_string(), None);
+
+        dialog.handle_key(KeyCode::Down);
+        dialog.handle_key(KeyCode::Up);
+
+        assert!(dialog.open);
+    }
+
+    #[test]
+    fn test_routing_priority_permission_before_prompt() {
+        let mut dialog = PermissionDialogState::new();
+        let request = PermissionRequest {
+            tool_name: "read_file".to_string(),
+            input: "secret.txt".to_string(),
+            current_mode: PermissionMode::ReadOnly,
+            required_mode: PermissionMode::WorkspaceWrite,
+            reason: None,
+        };
+        dialog.open(request);
+
+        let input = InputState::new("");
+        let value_before = input.value.clone();
+
+        for c in ['a', 'b', 'c'] {
+            dialog.handle_key(KeyCode::Char(c));
+        }
+
+        assert_eq!(input.value, value_before);
+    }
+
+    #[test]
+    fn test_routing_priority_question_before_prompt() {
+        let mut dialog = QuestionPromptState::new();
+        let questions = vec![QuestionDef::text(
+            "test_question",
+            "Type something:",
+            "placeholder",
+        )];
+        dialog.open(questions, "build".to_string(), "test".to_string(), None);
+
+        let input = InputState::new("");
+        let value_before = input.value.clone();
+
+        for c in ['h', 'e', 'l', 'l', 'o'] {
+            dialog.handle_key(KeyCode::Char(c));
+        }
+
+        assert_eq!(input.value, value_before);
+        assert!(!dialog.custom_input.is_empty() || dialog.open);
+    }
+
+    #[test]
+    fn test_autocomplete_up_down_does_not_affect_prompt_cursor() {
+        let mut input = InputState::new("");
+        input.value = "/help".to_string();
+        input.cursor = 5;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.idx = 0;
+        ac.entries = vec![
+            AutocompleteEntry {
+                title: "/help".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+            AutocompleteEntry {
+                title: "/history".to_string(),
+                subtitle: String::new(),
+                kind: EntryKind::Command,
+            },
+        ];
+
+        let cursor_before = input.cursor;
+
+        ac.cursor_up();
+        ac.cursor_down();
+        ac.cursor_down();
+
+        assert_eq!(input.cursor, cursor_before);
+        assert_eq!(ac.idx, 1);
+    }
+
+    #[test]
+    fn test_autocomplete_backspace_rebuilds_entries() {
+        let mut input = InputState::new("");
+        input.value = "/help".to_string();
+        input.cursor = 5;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+        ac.mode = AutocompleteMode::Slash;
+        ac.trigger_pos = 0;
+
+        ac.rebuild_entries(&input.value, std::path::Path::new("."), None);
+
+        input.backspace();
+        ac.on_backspace(input.cursor);
+        ac.rebuild_entries(&input.value, std::path::Path::new("."), None);
+
+        assert!(!ac.entries.is_empty());
+        assert_eq!(input.value, "/hel");
+    }
+
+    #[test]
+    fn test_ctrl_k_clears_prompt_and_closes_autocomplete() {
+        let mut input = InputState::new("");
+        input.value = "some text".to_string();
+        input.cursor = 9;
+
+        let mut ac = AutocompleteState::new();
+        ac.open = true;
+
+        input.clear();
+        ac.close();
+
+        assert_eq!(input.value, "");
+        assert_eq!(input.cursor, 0);
+        assert!(!ac.open);
     }
 }

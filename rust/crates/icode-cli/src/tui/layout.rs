@@ -7,9 +7,11 @@ use crate::tui::dialog_export_options::render_export_options_dialog;
 use crate::tui::dialog_help::render_help_dialog;
 use crate::tui::dialog_mcp::render_mcp_dialog;
 use crate::tui::dialog_message_actions::render_message_action_dialog;
+use crate::tui::dialog_permission::render_permission_dialog;
 use crate::tui::dialog_plugins::render_plugins_dialog;
 use crate::tui::dialog_prompt_stash::render_prompt_stash_dialog;
 use crate::tui::dialog_providers::render_provider_dialog;
+use crate::tui::dialog_question::render_question_prompt;
 use crate::tui::dialog_session_branching::render_session_branching;
 use crate::tui::dialog_sessions::render_sessions_dialog;
 use crate::tui::dialog_skills::render_skills_dialog;
@@ -45,33 +47,26 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     let prompt_lines = state.prompt.line_count(content_width as usize).clamp(1, 6);
     let prompt_height = (prompt_lines as u16) + 3;
 
-    let constraints = if is_welcome {
-        vec![Constraint::Min(1), Constraint::Length(1)]
-    } else {
-        vec![
-            Constraint::Min(1),
-            Constraint::Length(prompt_height),
-            Constraint::Length(1),
-        ]
-    };
+    let constraints = vec![
+        Constraint::Min(1),
+        Constraint::Length(prompt_height),
+        Constraint::Length(1),
+    ];
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    let main_area = chunks[0];
-    let (prompt_area, footer_area) = if is_welcome {
-        (None, chunks[1])
-    } else {
-        (Some(chunks[1]), chunks[2])
-    };
+    let content_area = chunks[0];
+    let prompt_area = chunks[1];
+    let footer_area = chunks[2];
 
     if has_sidebar {
         let main_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(40), Constraint::Length(42)])
-            .split(main_area);
+            .split(content_area);
 
         render_messages_panel(frame, state, main_chunks[0], theme);
         Sidebar::render(frame, state, main_chunks[1]);
@@ -81,7 +76,7 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             let buf_area = frame.area();
             let col = main_chunks[0].x + divider_x;
             if col < buf_area.width {
-                for y in main_area.top()..main_area.bottom() {
+                for y in content_area.top()..content_area.bottom() {
                     if y < buf_area.height {
                         if let Some(cell) = frame.buffer_mut().cell_mut((col, y)) {
                             cell.set_char('\u{2502}')
@@ -92,28 +87,36 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             }
         }
     } else if is_welcome {
-        render_home_content(frame, main_area, &state.home_screen, theme);
-        PromptBar::new(PromptBarMode::Welcome, theme).render(frame, state, main_area);
+        render_home_content(frame, content_area, &state.home_screen, theme);
+        let tips_height = 1u16;
+        let tips_y = content_area.y + 1;
+        let tips_rect = Rect {
+            x: content_area.x,
+            y: tips_y,
+            width: content_area.width,
+            height: tips_height,
+        };
+        PromptBar::render_welcome_tips(frame, state, tips_rect);
     } else {
-        render_messages_panel(frame, state, main_area, theme);
+        render_messages_panel(frame, state, content_area, theme);
     }
 
-    if let Some(pa) = prompt_area {
-        PromptBar::new(
-            PromptBarMode::Active {
-                is_streaming: state.is_streaming,
-                leader_active: state.leader_active,
-                interrupt_count: state.interrupt_count,
-            },
-            theme,
-        )
-        .render(frame, state, pa);
-        state.autocomplete.set_anchor(
-            state.prompt.cursor_x,
-            state.prompt.cursor_y,
-            state.prompt.cursor_width,
-        );
-    }
+    let prompt_mode = if is_welcome {
+        PromptBarMode::Welcome
+    } else {
+        PromptBarMode::Active {
+            is_streaming: state.is_streaming,
+            leader_active: state.leader_active,
+            interrupt_count: state.interrupt_count,
+        }
+    };
+    PromptBar::new(prompt_mode, theme).render(frame, state, prompt_area);
+    state.autocomplete.set_anchor(
+        state.prompt.cursor_x,
+        state.prompt.cursor_y,
+        state.prompt.cursor_width,
+    );
+
     render_footer(frame, state, footer_area);
     render_toasts(frame, state, area);
 
@@ -217,6 +220,16 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     if state.autocomplete.open {
         render_autocomplete_overlay(frame, &state.autocomplete, area, state.theme);
     }
+
+    // Permission dialog — MODAL, renders on top of everything
+    if state.permission_dialog.open {
+        render_permission_dialog(frame, &mut state.permission_dialog, area, state.theme);
+    }
+
+    // Question prompt — MODAL, renders on top of everything
+    if state.question_prompt.open {
+        render_question_prompt(frame, area, &mut state.question_prompt, &state.theme);
+    }
 }
 
 fn render_messages_panel(frame: &mut Frame, state: &mut AppState, area: Rect, theme: Theme) {
@@ -231,7 +244,11 @@ fn render_messages_panel(frame: &mut Frame, state: &mut AppState, area: Rect, th
 
     if state.messages.is_empty() {
         render_home_content(frame, inner, &state.home_screen, theme);
-        PromptBar::new(PromptBarMode::Welcome, theme).render(frame, state, inner);
+        state.autocomplete.set_anchor(
+            state.prompt.cursor_x,
+            state.prompt.cursor_y,
+            state.prompt.cursor_width,
+        );
         return;
     }
 

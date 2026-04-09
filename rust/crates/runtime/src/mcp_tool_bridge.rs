@@ -5,11 +5,12 @@
 //! connect to MCP servers and invoke their capabilities.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::mcp::mcp_tool_name;
 use crate::mcp_stdio::McpServerManager;
+use crate::permissions::PermissionMode;
 use serde::{Deserialize, Serialize};
 
 const MAX_CONCURRENT_MCP_CALLS: usize = 8;
@@ -69,7 +70,7 @@ pub struct McpServerState {
 pub struct McpToolRegistry {
     inner: Arc<Mutex<HashMap<String, McpServerState>>>,
     manager: Arc<OnceLock<Arc<TokioMutex<McpServerManager>>>>,
-    concurrency_limiter: Arc<(Mutex<usize>, Condvar)>,
+    concurrency_limiter: Arc<tokio::sync::Semaphore>,
 }
 
 impl Default for McpToolRegistry {
@@ -77,7 +78,7 @@ impl Default for McpToolRegistry {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             manager: Arc::new(OnceLock::new()),
-            concurrency_limiter: Arc::new((Mutex::new(0), Condvar::new())),
+            concurrency_limiter: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MCP_CALLS)),
         }
     }
 }
@@ -186,18 +187,9 @@ impl McpToolRegistry {
         manager: Arc<TokioMutex<McpServerManager>>,
         qualified_tool_name: String,
         arguments: Option<serde_json::Value>,
-        limiter: &Arc<(Mutex<usize>, Condvar)>,
+        limiter: &Arc<tokio::sync::Semaphore>,
     ) -> Result<serde_json::Value, String> {
-        let (lock, cvar) = &**limiter;
-        let mut active = lock.lock().expect("limiter lock poisoned");
-        while *active >= MAX_CONCURRENT_MCP_CALLS {
-            active = cvar.wait(active).expect("limiter condvar poisoned");
-        }
-        *active += 1;
-        drop(active);
-
-        let limiter_for_thread = Arc::clone(limiter);
-        let limiter_for_panic = Arc::clone(limiter);
+        let limiter = Arc::clone(limiter);
         let join_handle = std::thread::Builder::new()
             .name(format!("mcp-tool-call-{qualified_tool_name}"))
             .spawn(move || {
@@ -207,6 +199,11 @@ impl McpToolRegistry {
                     .map_err(|error| format!("failed to create MCP tool runtime: {error}"))?;
 
                 let result = runtime.block_on(async move {
+                    let _permit = limiter
+                        .acquire()
+                        .await
+                        .map_err(|e| format!("semaphore closed: {e}"))?;
+
                     let response = {
                         let mut manager = manager.lock().await;
                         manager
@@ -240,21 +237,11 @@ impl McpToolRegistry {
                         .map_err(|error| format!("failed to serialize MCP tool result: {error}"))
                 });
 
-                let (lock, cvar): &(Mutex<usize>, Condvar) = &limiter_for_thread;
-                let mut active = lock.lock().expect("limiter lock poisoned");
-                *active -= 1;
-                cvar.notify_one();
-
                 result
             })
             .map_err(|error| format!("failed to spawn MCP tool call thread: {error}"))?;
 
         join_handle.join().map_err(|panic_payload| {
-            let (lock, cvar): &(Mutex<usize>, Condvar) = &limiter_for_panic;
-            let mut active = lock.lock().expect("limiter lock poisoned");
-            *active -= 1;
-            cvar.notify_one();
-
             if let Some(message) = panic_payload.downcast_ref::<&str>() {
                 format!("MCP tool call thread panicked: {message}")
             } else if let Some(message) = panic_payload.downcast_ref::<String>() {
@@ -270,7 +257,16 @@ impl McpToolRegistry {
         server_name: &str,
         tool_name: &str,
         arguments: &serde_json::Value,
+        permission_mode: PermissionMode,
     ) -> Result<serde_json::Value, String> {
+        if permission_mode == PermissionMode::ReadOnly {
+            return Err("MCP tool calls are not permitted in read-only mode".to_string());
+        }
+
+        if permission_mode == PermissionMode::Prompt {
+            return Err("MCP tool calls require confirmation in prompt mode".to_string());
+        }
+
         let inner = self.inner.lock().expect("mcp registry lock poisoned");
         let state = inner
             .get(server_name)
@@ -352,6 +348,7 @@ mod tests {
     use crate::config::{
         ConfigSource, McpServerConfig, McpStdioServerConfig, ScopedMcpServerConfig,
     };
+    use crate::permissions::PermissionMode;
 
     fn temp_dir() -> PathBuf {
         static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
@@ -587,13 +584,23 @@ mod tests {
         );
 
         let error = registry
-            .call_tool("srv", "greet", &serde_json::json!({"name": "world"}))
+            .call_tool(
+                "srv",
+                "greet",
+                &serde_json::json!({"name": "world"}),
+                PermissionMode::DangerFullAccess,
+            )
             .expect_err("should require a configured manager");
         assert!(error.contains("MCP server manager is not configured"));
 
         // Unknown tool should fail
         assert!(registry
-            .call_tool("srv", "missing", &serde_json::json!({}))
+            .call_tool(
+                "srv",
+                "missing",
+                &serde_json::json!({}),
+                PermissionMode::DangerFullAccess
+            )
             .is_err());
     }
 
@@ -629,7 +636,12 @@ mod tests {
             .expect("manager should only be set once");
 
         let result = registry
-            .call_tool("alpha", "echo", &serde_json::json!({"text": "hello"}))
+            .call_tool(
+                "alpha",
+                "echo",
+                &serde_json::json!({"text": "hello"}),
+                PermissionMode::DangerFullAccess,
+            )
             .expect("should return live MCP result");
 
         assert_eq!(
@@ -670,7 +682,12 @@ mod tests {
         );
 
         assert!(registry
-            .call_tool("srv", "greet", &serde_json::json!({}))
+            .call_tool(
+                "srv",
+                "greet",
+                &serde_json::json!({}),
+                PermissionMode::DangerFullAccess
+            )
             .is_err());
     }
 
@@ -703,7 +720,12 @@ mod tests {
         assert!(registry.read_resource("missing", "uri").is_err());
         assert!(registry.list_tools("missing").is_err());
         assert!(registry
-            .call_tool("missing", "tool", &serde_json::json!({}))
+            .call_tool(
+                "missing",
+                "tool",
+                &serde_json::json!({}),
+                PermissionMode::DangerFullAccess
+            )
             .is_err());
         assert!(registry
             .set_auth_status("missing", McpConnectionStatus::Connected)
@@ -855,7 +877,7 @@ mod tests {
             .expect("manager should only be set once");
 
         let result = registry
-            .call_tool("srv", "echo", &arguments)
+            .call_tool("srv", "echo", &arguments, PermissionMode::DangerFullAccess)
             .expect("tool should return live payload");
 
         assert_eq!(result["structuredContent"]["server"], "srv");

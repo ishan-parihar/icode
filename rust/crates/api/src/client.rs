@@ -49,32 +49,42 @@ impl ProviderClient {
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        match providers::detect_provider_kind(&resolved_model) {
-            ProviderKind::Anthropic => Ok(Self::Anthropic(match anthropic_auth {
-                Some(auth) => AnthropicClient::from_auth(auth),
-                None => AnthropicClient::from_env()?,
-            })),
-            ProviderKind::Xai => Ok(Self::Xai(OpenAiCompatClient::from_env(
-                OpenAiCompatConfig::xai(),
-            )?)),
-            ProviderKind::OpenAi => Ok(Self::OpenAi(OpenAiCompatClient::from_env(
-                OpenAiCompatConfig::openai(),
-            )?)),
+        let result = match providers::detect_provider_kind(&resolved_model) {
+            ProviderKind::Anthropic => match anthropic_auth {
+                Some(auth) => Ok(Self::Anthropic(AnthropicClient::from_auth(auth))),
+                None => AnthropicClient::from_env().map(Self::Anthropic),
+            },
+            ProviderKind::Xai => OpenAiCompatClient::from_env(OpenAiCompatConfig::xai())
+                .map(Self::Xai),
+            ProviderKind::OpenAi => OpenAiCompatClient::from_env(OpenAiCompatConfig::openai())
+                .map(Self::OpenAi),
             ProviderKind::QwenProxy => {
                 let config = OpenAiCompatConfig::qwen_proxy();
-                let api_key = std::env::var(config.api_key_env).unwrap_or_default();
-                Ok(Self::QwenProxy(
-                    OpenAiCompatClient::new(api_key, config)
-                        .with_base_url(read_qwen_proxy_base_url()),
-                ))
+                match std::env::var("QWEN_PROXY_API_KEY") {
+                    Ok(api_key) => Ok(Self::QwenProxy(
+                        OpenAiCompatClient::new(api_key, config)
+                            .with_base_url(read_qwen_proxy_base_url()),
+                    )),
+                    Err(_) => Err(ApiError::missing_credentials(
+                        "qwen-proxy",
+                        &["QWEN_PROXY_API_KEY"],
+                    )),
+                }
             }
-            ProviderKind::Azure => Ok(Self::Azure(AzureClient::from_env()?)),
-            ProviderKind::Gemini => Ok(Self::Gemini(GeminiClient::from_env()?)),
-            ProviderKind::Bedrock => Ok(Self::Bedrock(BedrockClient::from_env()?)),
-            ProviderKind::OpenRouter => Ok(Self::OpenRouter(OpenRouterClient::from_env()?)),
-            ProviderKind::Mistral => Ok(Self::Mistral(MistralClient::from_env()?)),
-            ProviderKind::Groq => Ok(Self::Groq(GroqClient::from_env()?)),
+            ProviderKind::Azure => AzureClient::from_env().map(Self::Azure),
+            ProviderKind::Gemini => GeminiClient::from_env().map(Self::Gemini),
+            ProviderKind::Bedrock => BedrockClient::from_env().map(Self::Bedrock),
+            ProviderKind::OpenRouter => OpenRouterClient::from_env().map(Self::OpenRouter),
+            ProviderKind::Mistral => MistralClient::from_env().map(Self::Mistral),
+            ProviderKind::Groq => GroqClient::from_env().map(Self::Groq),
             ProviderKind::Unconfigured => Ok(Self::Unconfigured),
+        };
+        // If credentials are missing, return Unconfigured instead of erroring.
+        // This allows the TUI to start and lets users configure providers interactively.
+        // The actual error is deferred until an API call is made.
+        match result {
+            Err(ApiError::MissingCredentials { .. } | ApiError::Auth(_)) => Ok(Self::Unconfigured),
+            other => other,
         }
     }
 

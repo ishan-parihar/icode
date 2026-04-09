@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use std::{fmt, io};
 
 const RING_BUFFER_MAX: usize = 65_536;
@@ -64,12 +65,14 @@ type PtyResult<T> = Result<T, PtyError>;
 
 /// Internal state for an active PTY session.
 struct PtySessionInner {
-    master: Box<dyn MasterPty>,
+    master: Option<Box<dyn MasterPty>>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send>,
     output_ring: Arc<Mutex<std::collections::VecDeque<u8>>>,
     reader_thread: Option<std::thread::JoinHandle<()>>,
     reader_stop: Arc<AtomicBool>,
+    command: String,
+    cwd: std::path::PathBuf,
 }
 
 impl Drop for PtySessionInner {
@@ -77,12 +80,17 @@ impl Drop for PtySessionInner {
         // Signal reader thread to stop
         self.reader_stop.store(true, Ordering::Release);
 
+        // Drop the master before joining the reader thread. This closes the
+        // PTY master file descriptor, causing the blocked reader.read() call
+        // to return an error or EOF so the thread can observe reader_stop and exit.
+        drop(self.master.take());
+
         // Join reader thread with timeout to avoid hanging Drop
         if let Some(handle) = self.reader_thread.take() {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while std::time::Instant::now() < deadline {
                 if handle.try_join().is_ok() {
-                    break;
+                    return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -197,12 +205,14 @@ impl PtyManager {
         self.sessions.insert(
             session_id.clone(),
             PtySessionInner {
-                master: pair.master,
+                master: Some(pair.master),
                 writer,
                 child,
                 output_ring,
                 reader_thread: Some(reader_thread),
                 reader_stop,
+                command: program.to_string(),
+                cwd: cwd.to_path_buf(),
             },
         );
 
@@ -236,8 +246,11 @@ impl PtyManager {
             pixel_height: 0,
         };
 
-        session
+        let master = session
             .master
+            .as_mut()
+            .ok_or_else(|| PtyError::PtyError("master already dropped".to_string()))?;
+        master
             .resize(size)
             .map_err(|e| PtyError::PtyError(e.to_string()))
     }
@@ -253,7 +266,9 @@ impl PtyManager {
             .ok_or_else(|| PtyError::SessionNotFound(session_id.to_string()))?;
 
         session.reader_stop.store(true, Ordering::Release);
-        let _ = session.child.kill();
+        if let Err(e) = session.child.kill() {
+            tracing::warn!(session_id, error = %e, "PTY child kill failed, process may leak");
+        }
 
         if let Some(handle) = session.reader_thread.take() {
             // Give the reader thread a brief window to observe the stop flag
@@ -314,8 +329,8 @@ impl PtyManager {
 
         Ok(PtySession {
             id: session_id.to_string(),
-            command: String::new(),
-            cwd: std::path::PathBuf::new(),
+            command: session.command.clone(),
+            cwd: session.cwd.clone(),
             pid,
             status,
         })

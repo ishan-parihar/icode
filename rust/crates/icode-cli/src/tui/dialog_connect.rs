@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::tui::popup_utils;
+use crate::tui::popup_utils::{render_hint_bar, PopupConfig};
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 48;
@@ -144,7 +144,7 @@ pub fn render_connect_dialog(
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = popup_utils::dialog_block(theme, &format!(" Connect to {} ", state.provider_name));
+    let block = PopupConfig::full(&format!("Connect to {}", state.provider_name)).to_block(theme);
     frame.render_widget(block.clone(), dialog_area);
 
     let inner = block.inner(dialog_area);
@@ -226,7 +226,7 @@ pub fn render_connect_dialog(
     frame.render_widget(Paragraph::new(status_text), chunks[2]);
 
     let hints = vec![("enter", "confirm"), ("esc", "cancel")];
-    popup_utils::render_hint_bar(frame, chunks[3], &hints, theme);
+    render_hint_bar(frame, chunks[3], &hints, theme);
 }
 
 #[cfg(test)]

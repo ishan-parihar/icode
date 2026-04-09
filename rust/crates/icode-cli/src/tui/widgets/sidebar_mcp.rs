@@ -129,8 +129,8 @@ pub fn render_mcp_panel(
                 McpStatus::Error => ("\u{2717}", theme.error),
             };
 
-            let display_name = if server.name.len() > 25 {
-                format!("{}...", &server.name[..22])
+            let display_name = if server.name.chars().count() > 25 {
+                format!("{}...", server.name.chars().take(22).collect::<String>())
             } else {
                 server.name.clone()
             };

@@ -211,8 +211,8 @@ pub fn render_todo_panel(frame: &mut Frame, state: &AppState, area: Rect, theme:
                 TodoStatus::Pending => (" ", theme.text_muted),
             };
 
-            let display_text = if item.text.len() > 35 {
-                format!("{}...", &item.text[..32])
+            let display_text = if item.text.chars().count() > 35 {
+                format!("{}...", item.text.chars().take(32).collect::<String>())
             } else {
                 item.text.clone()
             };
@@ -336,6 +336,9 @@ mod tests {
             home_placeholder_idx: 0,
             home_placeholder_timer: std::time::Instant::now(),
             pending_file_refs: Vec::new(),
+            pending_slash_command: None,
+            permission_dialog: crate::tui::dialog_permission::PermissionDialogState::new(),
+            question_prompt: crate::tui::dialog_question::QuestionPromptState::new(),
         }
     }
 

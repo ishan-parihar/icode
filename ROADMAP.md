@@ -1,5 +1,3 @@
-# ROADMAP.md
-
 # Clawable Coding Harness Roadmap
 
 ## Goal

@@ -181,7 +181,10 @@ pub fn read_file_content(path: &str) -> String {
                     "[File too large: {} bytes (max {})]\n{}\n... (truncated)",
                     content.len(),
                     MAX_CONTENT_SIZE,
-                    &content[..MAX_CONTENT_SIZE]
+                    content
+                        .char_indices()
+                        .nth(MAX_CONTENT_SIZE)
+                        .map_or(content.clone(), |(i, _)| content[..i].to_string())
                 )
             } else {
                 content

@@ -9,6 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 
+const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 /// Rotating placeholder suggestions for the home/welcome prompt.
 const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
     "Ask anything... 'Fix a TODO in the codebase'",
@@ -27,6 +29,15 @@ fn get_dynamic_placeholder() -> &'static str {
     PLACEHOLDER_SUGGESTIONS[secs as usize % PLACEHOLDER_SUGGESTIONS.len()]
 }
 
+/// Get the current spinner character based on time.
+fn get_spinner_char() -> char {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as usize;
+    SPINNER_CHARS[ms % SPINNER_CHARS.len()]
+}
+
 /// Display mode for the prompt bar.
 pub enum PromptBarMode {
     /// Welcome screen: centered prompt with logo above, tips below.
@@ -37,8 +48,6 @@ pub enum PromptBarMode {
         leader_active: bool,
         interrupt_count: u8,
     },
-    /// Home screen: centered prompt input box with info bar — no logo, no tips.
-    Home,
 }
 
 /// Unified prompt bar component replacing fragmented layout.rs functions.
@@ -57,13 +66,12 @@ impl PromptBar {
     pub fn render(&self, frame: &mut Frame, state: &mut AppState, area: Rect) {
         match &self.mode {
             PromptBarMode::Welcome => self.render_welcome(frame, state, area),
-            PromptBarMode::Home => self.render_home_prompt(frame, state, area),
             PromptBarMode::Active { .. } => self.render_active(frame, state, area),
         }
     }
 
     fn render_welcome(&self, frame: &mut Frame, state: &mut AppState, area: Rect) {
-        if area.width < 40 || area.height < 5 {
+        if area.width < 40 || area.height < 3 {
             let minimal = Paragraph::new(Line::from(Span::styled(
                 "Type a message...",
                 Style::default().fg(state.theme.text_muted),
@@ -73,191 +81,85 @@ impl PromptBar {
             return;
         }
 
-        let prompt_preview_width = area.width.min(75);
-        let prompt_height = 4u16;
-        let tips_height = 3u16;
-        let total_height = prompt_height + tips_height + 1;
+        self.render_welcome_prompt_box(frame, state, area);
+    }
 
-        let prompt_y = area.bottom().saturating_sub(total_height);
-        let tips_y = prompt_y + prompt_height + 1;
+    /// Render the welcome screen tips (keyboard shortcuts) in the given area.
+    pub fn render_welcome_tips(frame: &mut Frame, state: &AppState, area: Rect) {
+        let tips = [
+            ("Use ", "Ctrl+P", " to open the command palette"),
+            ("Press ", "Ctrl+M", " to switch models"),
+            ("Type ", "/help", " to see all available commands"),
+            ("Use ", "Alt+S", " to toggle the sidebar"),
+        ];
+        let tip = tips[state.session.turns as usize % tips.len()];
 
-        let prompt_rect = Rect {
-            x: area.x + (area.width.saturating_sub(prompt_preview_width)) / 2,
-            y: prompt_y,
-            width: prompt_preview_width,
-            height: prompt_height,
-        };
-        self.render_welcome_prompt_box(frame, state, prompt_rect);
+        let line = Line::from(vec![
+            Span::styled(
+                "\u{25cf} Tip ",
+                Style::default()
+                    .fg(state.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(tip.0, Style::default().fg(state.theme.text_muted)),
+            Span::styled(
+                tip.1,
+                Style::default()
+                    .fg(state.theme.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(tip.2, Style::default().fg(state.theme.text_muted)),
+        ]);
 
-        let tips_rect = Rect {
-            x: area.x + (area.width.saturating_sub(prompt_preview_width)) / 2,
-            y: tips_y,
-            width: prompt_preview_width,
-            height: tips_height,
-        };
-        self.render_welcome_tips(frame, state, tips_rect);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(state.theme.background)),
+            area,
+        );
     }
 
     fn render_welcome_prompt_box(&self, frame: &mut Frame, state: &mut AppState, area: Rect) {
         let agent_color = state.theme.agent_color("build");
 
+        let border_color = if state.prompt.shell_mode {
+            state.theme.warning
+        } else {
+            agent_color
+        };
+
+        // Unified border style matching Active mode — ALL borders, rounded
         let border_block = Block::default()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(agent_color))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .border_type(BorderType::Rounded)
+            .padding(Padding::horizontal(1))
             .style(Style::default().bg(state.theme.background));
 
         let inner = border_block.inner(area);
-        frame.render_widget(border_block.clone(), area);
+        frame.render_widget(border_block, area);
 
-        if inner.width > 0 && inner.height > 0 {
-            state.prompt.placeholder = get_dynamic_placeholder().to_string();
-            InputWidget::new(self.theme).render(inner, frame.buffer_mut(), &mut state.prompt);
-        }
-
-        let info_y = area.bottom().saturating_sub(1);
-        let info_area = Rect {
-            x: area.x + 1,
-            y: info_y,
-            width: area.width.saturating_sub(1),
-            height: 1,
-        };
-
-        render_info_bar(frame, state, info_area, &self.mode);
-    }
-
-    fn render_home_prompt(&self, frame: &mut Frame, state: &mut AppState, area: Rect) {
-        if area.width < 40 || area.height < 6 {
-            let minimal = Paragraph::new(Line::from(Span::styled(
-                "icode",
-                Style::default()
-                    .fg(state.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .style(Style::default().bg(state.theme.background));
-            frame.render_widget(minimal, area);
+        if inner.height < 2 || inner.width < 10 {
             return;
         }
 
-        let prompt_preview_width = area.width.min(75);
-        let prompt_height = 4u16;
-
-        let total_content = prompt_height + 1;
-        let top_spacer = if area.height > total_content + 2 {
-            (area.height - total_content) / 2
-        } else {
-            1
+        let input_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: inner.height.saturating_sub(1),
+        };
+        let bar_area = Rect {
+            x: inner.x,
+            y: inner.bottom().saturating_sub(1),
+            width: inner.width,
+            height: 1,
         };
 
-        let prompt_y = area.top() + top_spacer;
-
-        let prompt_area = Rect {
-            x: area.x + (area.width.saturating_sub(prompt_preview_width)) / 2,
-            y: prompt_y,
-            width: prompt_preview_width,
-            height: prompt_height,
-        };
-
-        let agent_color = state.theme.agent_color("build");
-
-        let border_block = Block::default()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(agent_color))
-            .style(Style::default().bg(state.theme.background));
-
-        let inner = border_block.inner(prompt_area);
-        frame.render_widget(border_block.clone(), prompt_area);
-
-        if inner.width > 0 && inner.height > 0 {
+        if input_area.width > 0 && input_area.height > 0 {
             state.prompt.placeholder = get_dynamic_placeholder().to_string();
-            InputWidget::new(self.theme).render(inner, frame.buffer_mut(), &mut state.prompt);
+            InputWidget::new(self.theme).render(input_area, frame.buffer_mut(), &mut state.prompt);
         }
 
-        let info_y = prompt_area.bottom();
-        let tips_y = info_y + 1;
-
-        if info_y < area.bottom() {
-            let info_area = Rect {
-                x: prompt_area.x + 1,
-                y: info_y,
-                width: prompt_area.width.saturating_sub(1),
-                height: 1,
-            };
-            render_info_bar(frame, state, info_area, &self.mode);
-        }
-
-        if tips_y < area.bottom() {
-            let tips_area = Rect {
-                x: prompt_area.x,
-                y: tips_y,
-                width: prompt_area.width,
-                height: 1,
-            };
-            self.render_home_tips(frame, state, tips_area);
-        }
-    }
-
-    fn render_home_tips(&self, frame: &mut Frame, state: &AppState, area: Rect) {
-        let tips = [
-            ("Use ", "Ctrl+P", " to open the command palette"),
-            ("Press ", "Ctrl+M", " to switch models"),
-            ("Type ", "/help", " to see all available commands"),
-            ("Use ", "Alt+S", " to toggle the sidebar"),
-        ];
-        let tip = tips[state.session.turns as usize % tips.len()];
-
-        let line = Line::from(vec![
-            Span::styled(
-                "\u{25cf} Tip ",
-                Style::default()
-                    .fg(state.theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(tip.0, Style::default().fg(state.theme.text_muted)),
-            Span::styled(
-                tip.1,
-                Style::default()
-                    .fg(state.theme.text)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(tip.2, Style::default().fg(state.theme.text_muted)),
-        ]);
-
-        frame.render_widget(
-            Paragraph::new(line).style(Style::default().bg(state.theme.background)),
-            area,
-        );
-    }
-
-    fn render_welcome_tips(&self, frame: &mut Frame, state: &AppState, area: Rect) {
-        let tips = [
-            ("Use ", "Ctrl+P", " to open the command palette"),
-            ("Press ", "Ctrl+M", " to switch models"),
-            ("Type ", "/help", " to see all available commands"),
-            ("Use ", "Alt+S", " to toggle the sidebar"),
-        ];
-        let tip = tips[state.session.turns as usize % tips.len()];
-
-        let line = Line::from(vec![
-            Span::styled(
-                "\u{25cf} Tip ",
-                Style::default()
-                    .fg(state.theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(tip.0, Style::default().fg(state.theme.text_muted)),
-            Span::styled(
-                tip.1,
-                Style::default()
-                    .fg(state.theme.text)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(tip.2, Style::default().fg(state.theme.text_muted)),
-        ]);
-
-        frame.render_widget(
-            Paragraph::new(line).style(Style::default().bg(state.theme.background)),
-            area,
-        );
+        render_info_bar(frame, state, bar_area, &self.mode);
     }
 
     fn render_active(&self, frame: &mut Frame, state: &mut AppState, area: Rect) {
@@ -269,7 +171,9 @@ impl PromptBar {
             }
         );
 
-        let prompt_border_color = if is_streaming {
+        let prompt_border_color = if state.prompt.shell_mode {
+            state.theme.warning
+        } else if is_streaming {
             state.theme.warning
         } else {
             state.theme.border_active
@@ -335,19 +239,47 @@ fn tint_color(base: Color, into: Color, factor: f32) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Render the info bar (permission mode, model, usage/hints).
+/// Render the info bar (agent, model, provider on left; usage/hints on right).
 fn render_info_bar(frame: &mut Frame, state: &AppState, area: Rect, mode: &PromptBarMode) {
     let agent_color = state.theme.agent_color("build");
 
-    let left_spans = vec![
-        Span::styled(
-            format!("{} ", state.session.permission_mode),
-            Style::default()
-                .fg(agent_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(&state.session.model, Style::default().fg(state.theme.text)),
-    ];
+    let is_streaming = matches!(
+        mode,
+        PromptBarMode::Active {
+            is_streaming: true,
+            ..
+        }
+    );
+
+    let left_spans: Vec<Span<'_>> = if is_streaming {
+        let spinner = get_spinner_char();
+        vec![
+            Span::styled(
+                format!("{spinner} "),
+                Style::default().fg(state.theme.warning),
+            ),
+            Span::styled(
+                "build ",
+                Style::default()
+                    .fg(agent_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else {
+        vec![
+            Span::styled(
+                "build ",
+                Style::default()
+                    .fg(agent_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(&state.session.model, Style::default().fg(state.theme.text)),
+            Span::styled(
+                " \u{00b7} anthropic",
+                Style::default().fg(state.theme.text_muted),
+            ),
+        ]
+    };
 
     let total_tokens = state.session.input_tokens as u64 + state.session.output_tokens as u64;
     let caps = capabilities_for_model(&state.session.model);
@@ -358,18 +290,23 @@ fn render_info_bar(frame: &mut Frame, state: &AppState, area: Rect, mode: &Promp
     };
 
     let right_spans = match mode {
-        PromptBarMode::Welcome | PromptBarMode::Home => {
+        PromptBarMode::Welcome => {
             vec![Span::styled(
                 "Ctrl+P commands",
                 Style::default().fg(state.theme.text_muted),
             )]
         }
         PromptBarMode::Active {
-            is_streaming: _,
+            is_streaming,
             leader_active,
             interrupt_count,
         } => {
-            if total_tokens > 0 {
+            if *is_streaming {
+                vec![Span::styled(
+                    "esc interrupt",
+                    Style::default().fg(state.theme.text_muted),
+                )]
+            } else if total_tokens > 0 {
                 let usage_color = if usage_pct < 50 {
                     state.theme.success
                 } else if usage_pct < 80 {
@@ -377,13 +314,10 @@ fn render_info_bar(frame: &mut Frame, state: &AppState, area: Rect, mode: &Promp
                 } else {
                     state.theme.error
                 };
-                vec![
-                    Span::styled(
-                        " \u{00b7} anthropic",
-                        Style::default().fg(state.theme.text_muted),
-                    ),
-                    Span::styled(format!(" ({usage_pct}%)"), Style::default().fg(usage_color)),
-                ]
+                vec![Span::styled(
+                    format!("context ({usage_pct}%)"),
+                    Style::default().fg(usage_color),
+                )]
             } else if *leader_active {
                 vec![Span::styled(
                     "u:undo  r:redo  m:model  n:new",
@@ -391,7 +325,7 @@ fn render_info_bar(frame: &mut Frame, state: &AppState, area: Rect, mode: &Promp
                 )]
             } else if *interrupt_count > 0 {
                 vec![Span::styled(
-                    "Esc again to cancel",
+                    format!("interrupt ({interrupt_count})"),
                     Style::default()
                         .fg(state.theme.primary)
                         .add_modifier(Modifier::BOLD),
@@ -471,7 +405,7 @@ mod tests {
         // Verify both variants can be constructed and matched
         match welcome {
             PromptBarMode::Welcome => {}
-            PromptBarMode::Active { .. } | PromptBarMode::Home => panic!("expected Welcome"),
+            PromptBarMode::Active { .. } => panic!("expected Welcome"),
         }
         match active {
             PromptBarMode::Active {
@@ -483,7 +417,7 @@ mod tests {
                 assert!(!leader_active);
                 assert_eq!(interrupt_count, 0);
             }
-            PromptBarMode::Welcome | PromptBarMode::Home => panic!("expected Active"),
+            PromptBarMode::Welcome => panic!("expected Active"),
         }
     }
 

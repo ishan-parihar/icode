@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 
@@ -9,6 +9,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::event_bus::{Envelope, IpcTransport};
 use crate::persistence::SqliteStore;
+
+/// Maximum concurrent client threads to prevent OOM from connection floods.
+const MAX_CLIENTS: usize = 100;
+
+/// Maximum events to buffer from the IPC socket receiver.
+/// Older events are dropped when the buffer is full to prevent unbounded growth.
+const MAX_RECEIVE_BUFFER: usize = 10_000;
 
 fn default_socket_path() -> PathBuf {
     std::env::var("ICODE_EVENT_SOCKET").ok().map_or_else(
@@ -43,6 +50,47 @@ enum ProtocolMessage {
     },
 }
 
+// ── Client Guard ─────────────────────────────────────────────────────
+
+struct ClientGuard<'a> {
+    clients: &'a AtomicUsize,
+    handles: &'a std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl<'a> ClientGuard<'a> {
+    fn new(
+        clients: &'a AtomicUsize,
+        handles: &'a std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+    ) -> Self {
+        clients.fetch_add(1, Ordering::SeqCst);
+        Self { clients, handles }
+    }
+}
+
+impl Drop for ClientGuard<'_> {
+    fn drop(&mut self) {
+        self.clients.fetch_sub(1, Ordering::SeqCst);
+        let mut handles = self.handles.lock().expect("client_handles lock poisoned");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut finished = Vec::new();
+        let mut still_running = Vec::new();
+        for h in handles.drain(..) {
+            if h.is_finished() {
+                finished.push(h);
+            } else {
+                still_running.push(h);
+            }
+        }
+        for h in finished {
+            let _ = h.join();
+        }
+        *handles = still_running
+            .into_iter()
+            .filter(|_h| std::time::Instant::now() < deadline)
+            .collect();
+    }
+}
+
 // ── UnixSocketServer ──────────────────────────────────────────────────
 
 pub struct UnixSocketServer {
@@ -51,6 +99,8 @@ pub struct UnixSocketServer {
     socket_path: PathBuf,
     running: Arc<AtomicBool>,
     accept_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+    active_clients: Arc<AtomicUsize>,
+    client_handles: Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>,
 }
 
 impl UnixSocketServer {
@@ -61,6 +111,8 @@ impl UnixSocketServer {
             socket_path: default_socket_path(),
             running: Arc::new(AtomicBool::new(true)),
             accept_handle: std::sync::Mutex::new(None),
+            active_clients: Arc::new(AtomicUsize::new(0)),
+            client_handles: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -75,6 +127,8 @@ impl UnixSocketServer {
             socket_path,
             running: Arc::new(AtomicBool::new(true)),
             accept_handle: std::sync::Mutex::new(None),
+            active_clients: Arc::new(AtomicUsize::new(0)),
+            client_handles: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -84,13 +138,19 @@ impl UnixSocketServer {
     }
 
     pub fn accept_loop(&self) -> std::io::Result<()> {
-        let _ = std::fs::remove_file(&self.socket_path);
+        if let Err(e) = std::fs::remove_file(&self.socket_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("ipc_socket: stale socket cleanup failed: {e}");
+            }
+        }
 
         let listener = UnixListener::bind(&self.socket_path)?;
 
         let running = self.running.clone();
         let instance_id = self.instance_id.clone();
         let store = self.store.clone();
+        let active_clients = self.active_clients.clone();
+        let client_handles = self.client_handles.clone();
 
         let handle = thread::spawn(move || {
             for stream in listener.incoming() {
@@ -99,13 +159,26 @@ impl UnixSocketServer {
                 }
                 match stream {
                     Ok(stream) => {
+                        if active_clients.load(Ordering::SeqCst) >= MAX_CLIENTS {
+                            eprintln!(
+                                "ipc_socket: max clients ({MAX_CLIENTS}) reached, rejecting connection"
+                            );
+                            continue;
+                        }
                         let iid = instance_id.clone();
                         let s = store.clone();
-                        thread::spawn(move || {
+                        let clients = active_clients.clone();
+                        let handles_for_thread = client_handles.clone();
+                        let client_handle = thread::spawn(move || {
+                            let _guard = ClientGuard::new(&clients, &handles_for_thread);
                             if let Err(e) = handle_client(stream, &iid, &s) {
                                 eprintln!("ipc_socket: client error: {e}");
                             }
                         });
+                        client_handles
+                            .lock()
+                            .expect("client_handles lock poisoned")
+                            .push(client_handle);
                     }
                     Err(e) => {
                         eprintln!("ipc_socket: accept error: {e}");
@@ -141,6 +214,27 @@ impl UnixSocketServer {
                 eprintln!("ipc_socket: accept thread did not exit within 2s, detaching");
             }
             let _ = handle.join();
+        }
+
+        let mut client_handles = self
+            .client_handles
+            .lock()
+            .expect("client_handles lock poisoned");
+        let shutdown_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        for client_handle in client_handles.drain(..) {
+            let remaining = shutdown_deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                eprintln!("ipc_socket: shutdown timeout for client threads, detaching remaining");
+                break;
+            }
+            let mut waited = std::time::Duration::ZERO;
+            while !client_handle.is_finished() && waited < remaining {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                waited += std::time::Duration::from_millis(10);
+            }
+            if client_handle.is_finished() {
+                let _ = client_handle.join();
+            }
         }
     }
 
@@ -357,6 +451,10 @@ impl UnixSocketClient {
                                 serde_json::from_str(&line)
                             {
                                 if let Ok(mut buf) = buffer.lock() {
+                                    if buf.len() >= MAX_RECEIVE_BUFFER {
+                                        let drop_count = buf.len() / 4;
+                                        buf.drain(..drop_count);
+                                    }
                                     buf.push(envelope);
                                 }
                             } else if let Ok(ProtocolMessage::HandshakeAck { .. }) =

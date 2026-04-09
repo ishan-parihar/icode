@@ -11,9 +11,11 @@ use crate::tui::dialog_export_options::ExportOptionsState;
 use crate::tui::dialog_help::HelpDialogState;
 use crate::tui::dialog_mcp::McpDialogState;
 use crate::tui::dialog_message_actions::MessageActionDialogState;
+use crate::tui::dialog_permission::PermissionDialogState;
 use crate::tui::dialog_plugins::PluginsDialogState;
 use crate::tui::dialog_prompt_stash::PromptStashState;
 use crate::tui::dialog_providers::ProviderDialogState;
+use crate::tui::dialog_question::QuestionPromptState;
 use crate::tui::dialog_session_branching::SessionBranchingState;
 use crate::tui::dialog_sessions::SessionsDialogState;
 use crate::tui::dialog_skills::SkillsDialogState;
@@ -215,6 +217,9 @@ pub struct AppState {
     pub home_placeholder_idx: usize,
     pub home_placeholder_timer: Instant,
     pub pending_file_refs: Vec<(String, String)>,
+    pub pending_slash_command: Option<String>,
+    pub permission_dialog: PermissionDialogState,
+    pub question_prompt: QuestionPromptState,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +362,9 @@ impl AppState {
             home_placeholder_idx: 0,
             home_placeholder_timer: Instant::now(),
             pending_file_refs: Vec::new(),
+            pending_slash_command: None,
+            permission_dialog: PermissionDialogState::new(),
+            question_prompt: QuestionPromptState::new(),
         }
     }
 

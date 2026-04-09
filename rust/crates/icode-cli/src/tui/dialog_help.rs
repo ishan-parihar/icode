@@ -1,8 +1,9 @@
+use crate::tui::popup_utils::PopupConfig;
 use crate::tui::theme::Theme;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 #[derive(Debug, Clone)]
@@ -171,17 +172,8 @@ pub fn render_help_dialog(frame: &mut Frame, state: &HelpDialogState, area: Rect
 
     frame.render_widget(Clear, dialog_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_active))
-        .title(Span::styled(
-            " Keybindings ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(Alignment::Center);
+    let config = PopupConfig::full("Help");
+    let block = config.to_block(theme);
 
     frame.render_widget(block.clone(), dialog_area);
     let inner = dialog_area.inner(Margin::new(1, 1));

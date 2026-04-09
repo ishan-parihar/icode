@@ -716,13 +716,18 @@ mod tests {
     #[test]
     fn restart_and_terminate_reset_or_finish_worker() {
         let registry = WorkerRegistry::new();
-        let worker = registry.create("/tmp/repo-e", &[], true);
+        let worker = registry.create("/tmp/repo-e", &[], false);
         registry
             .observe(&worker.worker_id, "Ready for input\n>")
             .expect("ready observe should succeed");
         registry
             .send_prompt(&worker.worker_id, Some("Run tests"))
             .expect("prompt send should succeed");
+
+        // Force a misdelivery so the worker transitions to Blocked (auto_recover is false).
+        registry
+            .observe(&worker.worker_id, "Run tests\n zsh: command not found: Run tests")
+            .expect("observe should succeed");
 
         let restarted = registry
             .restart(&worker.worker_id)
