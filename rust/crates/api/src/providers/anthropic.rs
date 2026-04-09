@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use runtime::format_usd;
@@ -655,9 +655,14 @@ fn client_runtime_block_on<F, T>(future: F) -> Result<T, ApiError>
 where
     F: std::future::Future<Output = Result<T, ApiError>>,
 {
-    tokio::runtime::Runtime::new()
-        .map_err(ApiError::from)?
-        .block_on(future)
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let rt = RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build OAuth runtime")
+    });
+    rt.block_on(future)
 }
 
 fn load_saved_oauth_token() -> Result<Option<OAuthTokenSet>, ApiError> {

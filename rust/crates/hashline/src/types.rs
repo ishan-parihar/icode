@@ -24,6 +24,10 @@ pub struct HashlineEditOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditError {
     FileNotFound(String),
+    IoError {
+        path: String,
+        message: String,
+    },
     HashMismatch {
         line: usize,
         expected: String,
@@ -40,6 +44,7 @@ impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EditError::FileNotFound(path) => write!(f, "File not found: {path}"),
+            EditError::IoError { path, message } => write!(f, "IO error reading {path}: {message}"),
             EditError::HashMismatch {
                 line,
                 expected,

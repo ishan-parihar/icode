@@ -72,6 +72,24 @@ struct PtySessionInner {
     reader_stop: Arc<AtomicBool>,
 }
 
+impl Drop for PtySessionInner {
+    fn drop(&mut self) {
+        // Signal reader thread to stop
+        self.reader_stop.store(true, Ordering::Release);
+
+        // Join reader thread with timeout to avoid hanging Drop
+        if let Some(handle) = self.reader_thread.take() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if handle.try_join().is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// Manages multiple PTY sessions.
 pub struct PtyManager {
     pty_system: Box<dyn PtySystem + Send>,

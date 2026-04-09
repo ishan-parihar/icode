@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::mcp::mcp_tool_name;
 use crate::mcp_stdio::McpServerManager;
@@ -67,7 +68,7 @@ pub struct McpServerState {
 #[derive(Debug, Clone)]
 pub struct McpToolRegistry {
     inner: Arc<Mutex<HashMap<String, McpServerState>>>,
-    manager: Arc<OnceLock<Arc<Mutex<McpServerManager>>>>,
+    manager: Arc<OnceLock<Arc<TokioMutex<McpServerManager>>>>,
     concurrency_limiter: Arc<(Mutex<usize>, Condvar)>,
 }
 
@@ -89,8 +90,8 @@ impl McpToolRegistry {
 
     pub fn set_manager(
         &self,
-        manager: Arc<Mutex<McpServerManager>>,
-    ) -> Result<(), Arc<Mutex<McpServerManager>>> {
+        manager: Arc<TokioMutex<McpServerManager>>,
+    ) -> Result<(), Arc<TokioMutex<McpServerManager>>> {
         self.manager.set(manager)
     }
 
@@ -181,9 +182,8 @@ impl McpToolRegistry {
         }
     }
 
-    #[allow(clippy::await_holding_lock)]
     fn spawn_tool_call(
-        manager: Arc<Mutex<McpServerManager>>,
+        manager: Arc<TokioMutex<McpServerManager>>,
         qualified_tool_name: String,
         arguments: Option<serde_json::Value>,
         limiter: &Arc<(Mutex<usize>, Condvar)>,
@@ -207,11 +207,8 @@ impl McpToolRegistry {
                     .map_err(|error| format!("failed to create MCP tool runtime: {error}"))?;
 
                 let result = runtime.block_on(async move {
-                    #[allow(clippy::await_holding_lock)]
                     let response = {
-                        let mut manager = manager
-                            .lock()
-                            .map_err(|_| "mcp server manager lock poisoned".to_string())?;
+                        let mut manager = manager.lock().await;
                         manager
                             .discover_tools()
                             .await
@@ -609,7 +606,7 @@ mod tests {
             "alpha".to_string(),
             manager_server_config(&script_path, "alpha", &log_path),
         )]);
-        let manager = Arc::new(Mutex::new(McpServerManager::from_servers(&servers)));
+        let manager = Arc::new(TokioMutex::new(McpServerManager::from_servers(&servers)));
 
         let registry = McpToolRegistry::new();
         registry.register_server(
@@ -852,7 +849,7 @@ mod tests {
             None,
         );
         registry
-            .set_manager(Arc::new(Mutex::new(McpServerManager::from_servers(
+            .set_manager(Arc::new(TokioMutex::new(McpServerManager::from_servers(
                 &servers,
             ))))
             .expect("manager should only be set once");

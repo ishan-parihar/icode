@@ -457,7 +457,7 @@ fn compute_scroll_offset(state: &SkillsDialogState, visible_lines: usize) -> usi
 }
 
 fn shorten_source(source: &str, max_len: usize) -> String {
-    if source.len() <= max_len {
+    if max_len < 3 || source.len() <= max_len {
         return source.to_string();
     }
     format!("...{}", &source[source.len() - max_len + 3..])

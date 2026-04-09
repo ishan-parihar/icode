@@ -143,6 +143,7 @@ fn make_task(status: BackgroundTaskStatus, completed_at: Option<SystemTime>) -> 
         session_id: "s1".into(),
         status,
         created_at: SystemTime::now(),
+        started_at: None,
         completed_at,
         result: None,
         error: None,

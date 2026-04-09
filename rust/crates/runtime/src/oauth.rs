@@ -327,8 +327,7 @@ fn credentials_home_dir() -> io::Result<PathBuf> {
     if let Some(path) = std::env::var_os("CLAW_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
+    let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is not set"))?;
     Ok(PathBuf::from(home).join(".icode"))
 }
 

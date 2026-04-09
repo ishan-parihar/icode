@@ -178,7 +178,7 @@ fn validate_missing_file() {
     };
     assert!(matches!(
         validate_edit("/nonexistent/path.txt", &edit),
-        Err(EditError::FileNotFound(_))
+        Err(EditError::IoError { .. })
     ));
 }
 
@@ -246,7 +246,7 @@ fn get_hashlines_roundtrip() {
 fn get_hashlines_missing_file() {
     assert!(matches!(
         get_current_hashlines("/no/such/file"),
-        Err(EditError::FileNotFound(_))
+        Err(EditError::IoError { .. })
     ));
 }
 

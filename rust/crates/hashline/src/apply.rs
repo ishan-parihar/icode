@@ -6,16 +6,20 @@ use crate::validate::{validate_all_with_content, validate_edit_with_content};
 
 /// Validates and applies a single edit to a file, returning new content.
 pub fn apply_edit(file_path: &str, edit: &HashlineEditOp) -> Result<String, EditError> {
-    let content = fs::read_to_string(file_path)
-        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    let content = fs::read_to_string(file_path).map_err(|e| EditError::IoError {
+        path: file_path.to_string(),
+        message: e.to_string(),
+    })?;
     validate_edit_with_content(&content, edit)?;
     apply_edit_to_content(&content, std::slice::from_ref(edit))
 }
 
 /// Validates and applies multiple edits to a file, returning new content.
 pub fn apply_edits(file_path: &str, edits: &[HashlineEditOp]) -> Result<String, EditError> {
-    let content = fs::read_to_string(file_path)
-        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    let content = fs::read_to_string(file_path).map_err(|e| EditError::IoError {
+        path: file_path.to_string(),
+        message: e.to_string(),
+    })?;
     validate_all_with_content(&content, edits)?;
     apply_edit_to_content(&content, edits)
 }
@@ -50,8 +54,10 @@ pub fn apply_edit_to_content(content: &str, edits: &[HashlineEditOp]) -> Result<
 /// Writes new content to a file after applying edits.
 pub fn apply_edit_and_write(file_path: &str, edit: &HashlineEditOp) -> Result<String, EditError> {
     let new_content = apply_edit(file_path, edit)?;
-    fs::write(file_path, &new_content)
-        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    fs::write(file_path, &new_content).map_err(|e| EditError::IoError {
+        path: file_path.to_string(),
+        message: e.to_string(),
+    })?;
     Ok(new_content)
 }
 
@@ -61,7 +67,9 @@ pub fn apply_edits_and_write(
     edits: &[HashlineEditOp],
 ) -> Result<String, EditError> {
     let new_content = apply_edits(file_path, edits)?;
-    fs::write(file_path, &new_content)
-        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    fs::write(file_path, &new_content).map_err(|e| EditError::IoError {
+        path: file_path.to_string(),
+        message: e.to_string(),
+    })?;
     Ok(new_content)
 }

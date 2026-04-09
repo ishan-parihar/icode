@@ -22,12 +22,10 @@ pub fn cleanup_expired<S: std::hash::BuildHasher>(
                 }
             }
             BackgroundTaskStatus::Running => {
-                if now
-                    .duration_since(task.created_at)
-                    .unwrap_or(Duration::ZERO)
-                    > ttl * 3
-                {
-                    to_remove.push(id.clone());
+                if let Some(started_at) = task.started_at {
+                    if now.duration_since(started_at).unwrap_or(Duration::ZERO) > ttl * 3 {
+                        to_remove.push(id.clone());
+                    }
                 }
             }
             BackgroundTaskStatus::Pending => {

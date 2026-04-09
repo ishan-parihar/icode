@@ -63,68 +63,39 @@ impl PromptBar {
     }
 
     fn render_welcome(&self, frame: &mut Frame, state: &mut AppState, area: Rect) {
-        if area.width < 40 || area.height < 10 {
+        if area.width < 40 || area.height < 5 {
             let minimal = Paragraph::new(Line::from(Span::styled(
-                "icode",
-                Style::default()
-                    .fg(state.theme.primary)
-                    .add_modifier(Modifier::BOLD),
+                "Type a message...",
+                Style::default().fg(state.theme.text_muted),
             )))
             .style(Style::default().bg(state.theme.background));
             frame.render_widget(minimal, area);
             return;
         }
 
-        let logo_lines = build_logo_lines(state);
-        let logo_height = logo_lines.len() as u16;
-
         let prompt_preview_width = area.width.min(75);
         let prompt_height = 4u16;
         let tips_height = 3u16;
+        let total_height = prompt_height + tips_height + 1;
 
-        let total_content = 4 + logo_height + 1 + prompt_height + tips_height;
-        let top_spacer = if area.height > total_content + 2 {
-            (area.height - total_content) / 2
-        } else {
-            1
-        };
-
-        let logo_start_y = area.top() + top_spacer + 4;
-        let prompt_y = logo_start_y + logo_height + 1;
+        let prompt_y = area.bottom().saturating_sub(total_height);
         let tips_y = prompt_y + prompt_height + 1;
 
-        // Render ASCII logo
-        for (i, line) in logo_lines.iter().enumerate() {
-            let line_width = line.width() as u16;
-            let x = area.x + (area.width.saturating_sub(line_width)) / 2;
-            frame.render_widget(
-                Paragraph::new(line.clone()).style(Style::default().bg(state.theme.background)),
-                Rect {
-                    x,
-                    y: logo_start_y + i as u16,
-                    width: line_width,
-                    height: 1,
-                },
-            );
-        }
-
-        // Render prompt box
-        let prompt_area = Rect {
+        let prompt_rect = Rect {
             x: area.x + (area.width.saturating_sub(prompt_preview_width)) / 2,
             y: prompt_y,
             width: prompt_preview_width,
             height: prompt_height,
         };
-        self.render_welcome_prompt_box(frame, state, prompt_area);
+        self.render_welcome_prompt_box(frame, state, prompt_rect);
 
-        // Render tips
-        let tips_area = Rect {
+        let tips_rect = Rect {
             x: area.x + (area.width.saturating_sub(prompt_preview_width)) / 2,
             y: tips_y,
             width: prompt_preview_width,
             height: tips_height,
         };
-        self.render_welcome_tips(frame, state, tips_area);
+        self.render_welcome_tips(frame, state, tips_rect);
     }
 
     fn render_welcome_prompt_box(&self, frame: &mut Frame, state: &mut AppState, area: Rect) {
@@ -364,52 +335,6 @@ fn tint_color(base: Color, into: Color, factor: f32) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Build the 9-row ASCII art logo with colored spans.
-fn build_logo_lines(state: &AppState) -> Vec<Line<'static>> {
-    let rows = [
-        "__   ______                   __           ",
-        "|  \\ /      \\                 |  \\          ",
-        " \\$$|  $$$$$$\\  ______    ____| $$  ______  ",
-        "| $$| $$   \\$$ /      \\  /      $$ /      \\ ",
-        "| $$| $$      |  $$$$$$\\|  $$$$$$$|  $$$$$$\\",
-        "| $$| $$   __ | $$  | $$| $$  | $$| $$    $$",
-        "| $$| $$__/  \\| $$__/ $$| $$__| $$| $$$$$$$$",
-        "| $$ \\$$    $$ \\$$    $$ \\$$    $$ \\$$     \\",
-        " \\$$  \\$$$$$$   \\$$$$$$   \\$$$$$$$  \\$$$$$$$ ",
-    ];
-
-    let fg = state.theme.text;
-    let _shadow = tint_color(state.theme.background, fg, 0.25);
-
-    let mut lines = Vec::new();
-    for row_text in &rows {
-        let mut row_spans = Vec::new();
-        let mut current_text = String::new();
-        for ch in row_text.chars() {
-            if ch == '$' {
-                if !current_text.is_empty() {
-                    row_spans.push(Span::styled(
-                        std::mem::take(&mut current_text),
-                        Style::default().fg(state.theme.text_muted),
-                    ));
-                }
-                row_spans.push(Span::styled(ch.to_string(), Style::default().fg(fg)));
-            } else {
-                current_text.push(ch);
-            }
-        }
-        if !current_text.is_empty() {
-            row_spans.push(Span::styled(
-                current_text,
-                Style::default().fg(state.theme.text_muted),
-            ));
-        }
-        lines.push(Line::from(row_spans));
-    }
-
-    lines
-}
-
 /// Render the info bar (permission mode, model, usage/hints).
 fn render_info_bar(frame: &mut Frame, state: &AppState, area: Rect, mode: &PromptBarMode) {
     let agent_color = state.theme.agent_color("build");
@@ -584,22 +509,6 @@ mod tests {
         assert!(matches!(result, Color::Rgb(r, g, b) if r > 100 && r < 150));
         assert!(matches!(result, Color::Rgb(r, g, b) if g > 100 && g < 150));
         assert!(matches!(result, Color::Rgb(r, g, b) if b > 100 && b < 150));
-    }
-
-    #[test]
-    fn test_build_logo_lines_count() {
-        let rows: &[&str] = &[
-            "__   ______                   __           ",
-            "|  \\ /      \\                 |  \\          ",
-            " \\$$|  $$$$$$\\  ______    ____| $$  ______  ",
-            "| $$| $$   \\$$ /      \\  /      $$ /      \\ ",
-            "| $$| $$      |  $$$$$$\\|  $$$$$$$|  $$$$$$\\",
-            "| $$| $$   __ | $$  | $$| $$  | $$| $$    $$",
-            "| $$| $$__/  \\| $$__/ $$| $$__| $$| $$$$$$$$",
-            "| $$ \\$$    $$ \\$$    $$ \\$$    $$ \\$$     \\",
-            " \\$$  \\$$$$$$   \\$$$$$$   \\$$$$$$$  \\$$$$$$$ ",
-        ];
-        assert_eq!(rows.len(), 9);
     }
 
     #[test]

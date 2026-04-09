@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tokio::time::{timeout, Duration};
 
 use crate::config::McpOAuthConfig;
 
@@ -540,12 +541,21 @@ impl McpOAuthFlow {
 
 pub struct CallbackHandle {
     port: u16,
-    rx: oneshot::Receiver<Result<(String, String), McpOAuthError>>,
+    rx: Option<oneshot::Receiver<Result<(String, String), McpOAuthError>>>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for CallbackHandle {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 impl CallbackHandle {
-    pub async fn wait_for_callback(self) -> Result<(String, String), McpOAuthError> {
-        self.rx.await.map_err(|_| {
+    pub async fn wait_for_callback(mut self) -> Result<(String, String), McpOAuthError> {
+        let rx = std::mem::take(&mut self.rx);
+        let rx = rx.expect("rx already taken");
+        rx.await.map_err(|_| {
             McpOAuthError::AuthorizationFailed("callback channel closed".to_string())
         })?
     }
@@ -576,7 +586,7 @@ fn start_callback_server(
 ) -> CallbackHandle {
     let (tx, rx) = oneshot::channel();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let listener = match TcpListener::bind(("127.0.0.1", port)).await {
             Ok(l) => l,
             Err(error) => {
@@ -587,10 +597,11 @@ fn start_callback_server(
             }
         };
 
-        if let Ok((mut stream, _)) = listener.accept().await {
+        let accept_result = timeout(Duration::from_secs(300), listener.accept()).await;
+        if let Ok(Ok((mut stream, _))) = accept_result {
             let mut buffer = vec![0u8; 8192];
-            match stream.read(&mut buffer).await {
-                Ok(n) => {
+            match timeout(Duration::from_secs(30), stream.read(&mut buffer)).await {
+                Ok(Ok(n)) => {
                     let request = String::from_utf8_lossy(&buffer[..n]);
                     let (method, path) = parse_request_line(&request);
 
@@ -616,16 +627,33 @@ fn start_callback_server(
                     let _ = stream.write_all(response_body.as_bytes()).await;
                     let _ = stream.flush().await;
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     let _ = tx.send(Err(McpOAuthError::AuthorizationFailed(format!(
                         "failed to read callback: {error}"
                     ))));
                 }
+                Err(_) => {
+                    let _ = tx.send(Err(McpOAuthError::AuthorizationFailed(
+                        "callback server timed out waiting for OAuth redirect".to_string(),
+                    )));
+                }
             }
+        } else if let Ok(Err(error)) = accept_result {
+            let _ = tx.send(Err(McpOAuthError::AuthorizationFailed(format!(
+                "failed to accept callback connection: {error}"
+            ))));
+        } else {
+            let _ = tx.send(Err(McpOAuthError::AuthorizationFailed(
+                "callback server timed out waiting for OAuth redirect".to_string(),
+            )));
         }
     });
 
-    CallbackHandle { port, rx }
+    CallbackHandle {
+        port,
+        rx: Some(rx),
+        handle,
+    }
 }
 
 fn process_callback(

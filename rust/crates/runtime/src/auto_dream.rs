@@ -120,25 +120,50 @@ const DREAM_LOCK_STALE_SECS: u64 = 3600; // 1 hour
 pub fn acquire_dream_lock() -> Result<(), String> {
     let lock_path = dream_lock_path();
 
-    if lock_path.exists() {
-        if let Ok(contents) = fs::read_to_string(&lock_path) {
-            if !is_lock_stale(&contents) {
-                return Err("dream lock already held by active process".to_string());
-            }
-            // Stale lock — remove it.
-            let _ = fs::remove_file(&lock_path);
+    // Try atomic create first (O_EXCL semantics — fails if file exists)
+    let lock_contents = build_lock_contents();
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(lock_contents.as_bytes())
+                .map_err(|e| format!("auto_dream: failed to write lock file: {e}"))?;
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // File exists — check if stale
+        }
+        Err(e) => {
+            return Err(format!("auto_dream: failed to create lock file: {e}"));
         }
     }
 
-    let pid = std::process::id();
-    let timestamp = current_epoch_secs();
-    let hostname = current_hostname();
-    let lock_contents = format!("{pid}:{timestamp}:{hostname}");
+    // Read and check staleness
+    if let Ok(contents) = fs::read_to_string(&lock_path) {
+        if !is_lock_stale(&contents) {
+            return Err("auto_dream: dream lock already held by another process".to_string());
+        }
+        // Stale — remove it
+        let _ = fs::remove_file(&lock_path);
+    }
 
-    fs::write(&lock_path, &lock_contents)
-        .map_err(|e| format!("failed to write dream lock: {e}"))?;
-
-    Ok(())
+    // Retry atomic create (at most once after stale removal)
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(lock_contents.as_bytes())
+                .map_err(|e| format!("auto_dream: failed to write lock file: {e}"))?;
+            Ok(())
+        }
+        Err(_) => Err("auto_dream: dream lock is held by another process".to_string()),
+    }
 }
 
 /// Release the dream lock by removing the lock file.

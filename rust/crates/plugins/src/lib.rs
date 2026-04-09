@@ -35,6 +35,7 @@ pub(crate) fn wait_with_output_timeout(
         }
         if start.elapsed() > timeout {
             let _ = child.kill();
+            let _ = child.wait_with_output();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!("{context} timed out after {:.1}s", timeout.as_secs_f64()),

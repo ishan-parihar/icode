@@ -1643,10 +1643,6 @@ fn run_repl(
 
     let mut turn_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
-    let mut completion_candidates = cli.repl_completion_candidates().unwrap_or_default();
-    tui.state_mut()
-        .set_completions(completion_candidates.clone());
-
     loop {
         match tui.run() {
             Ok(input) => {
@@ -1832,7 +1828,9 @@ fn run_repl(
                         continue;
                     }
                     _ if trimmed.starts_with("__session_switch__") => {
-                        let path_str = trimmed.strip_prefix("__session_switch__").unwrap();
+                        let path_str = trimmed
+                            .strip_prefix("__session_switch__")
+                            .expect("session_switch prefix must be present after guard check");
                         let switch_path = PathBuf::from(path_str);
                         match runtime::Session::load_from_path(&switch_path) {
                             Ok(new_session) => {
@@ -1886,7 +1884,9 @@ fn run_repl(
                         continue;
                     }
                     _ if trimmed.starts_with("__session_open__") => {
-                        let session_id = trimmed.strip_prefix("__session_open__").unwrap();
+                        let session_id = trimmed
+                            .strip_prefix("__session_open__")
+                            .expect("session_open prefix must be present after guard check");
                         let sessions_dir = sessions_dir()?;
                         let mut session_path = None;
                         for ext in &["jsonl", "json"] {
@@ -2137,10 +2137,6 @@ fn run_repl(
                         if cli.handle_repl_command(command)? {
                             cli.persist_session()?;
                         }
-                        completion_candidates =
-                            cli.repl_completion_candidates().unwrap_or_default();
-                        tui.state_mut()
-                            .set_completions(completion_candidates.clone());
                         continue;
                     }
                     Ok(None) => {}
@@ -2161,9 +2157,6 @@ fn run_repl(
 
                 let handle = cli.spawn_turn(input_clone, tx, rt.handle().clone());
                 turn_handles.push(handle);
-                completion_candidates = cli.repl_completion_candidates().unwrap_or_default();
-                tui.state_mut()
-                    .set_completions(completion_candidates.clone());
             }
             Err(e) => {
                 tui.state_mut().show_error(format!("TUI error: {e}"));

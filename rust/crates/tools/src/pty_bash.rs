@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write as IoWrite};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(windows)]
 use std::thread;
@@ -43,6 +44,19 @@ pub fn global_bg_task_registry() -> Arc<Mutex<BgTaskMap>> {
     static REG: OnceLock<Arc<Mutex<BgTaskMap>>> = OnceLock::new();
     REG.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone()
+}
+
+/// Remove a completed background task from the global registry to prevent memory leaks.
+/// Returns the task result if it existed.
+///
+/// Callers should invoke this after reading a background task's result to avoid unbounded
+/// growth of the registry.
+#[allow(dead_code)]
+pub fn cleanup_bg_task(task_id: &str) -> Option<Result<PtyBashOutput, String>> {
+    global_bg_task_registry()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(task_id))
 }
 
 #[cfg(windows)]
@@ -226,9 +240,9 @@ fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> 
     let _ = writer.write_all(b"\n");
     let _ = writer.flush();
 
-    let handle = tokio::runtime::Handle::current();
+    let (tx, rx) = mpsc::channel();
 
-    let bg_task = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut stdout = String::new();
         let mut buf = vec![0u8; 8192];
         loop {
@@ -245,16 +259,12 @@ fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> 
             }
         }
         let exit_status = child.wait();
-        (exit_status, stdout)
+        let _ = tx.send((exit_status, stdout));
     });
 
-    let result = handle
-        .block_on(tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            async move { bg_task.join() },
-        ))
-        .map_err(|_| "command timed out".to_string())?
-        .map_err(|_| "blocking task panicked".to_string())?;
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(timeout_secs))
+        .map_err(|_| "command timed out".to_string())?;
 
     let (exit_result, raw_output) = result;
 
@@ -515,5 +525,34 @@ mod tests {
         let r1 = global_bg_task_registry();
         let r2 = global_bg_task_registry();
         assert!(Arc::ptr_eq(&r1, &r2));
+    }
+
+    #[test]
+    fn cleanup_bg_task_removes_entry() {
+        let registry = global_bg_task_registry();
+        let test_id = "__test_cleanup__";
+
+        {
+            let mut map = registry.lock().unwrap();
+            map.insert(
+                test_id.to_string(),
+                Ok(PtyBashOutput {
+                    stdout: "test".into(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    interrupted: false,
+                    background_task_id: Some(test_id.to_string()),
+                }),
+            );
+        }
+
+        assert!(registry.lock().unwrap().contains_key(test_id));
+
+        let result = cleanup_bg_task(test_id);
+        assert!(result.is_some());
+
+        assert!(!registry.lock().unwrap().contains_key(test_id));
+
+        assert!(cleanup_bg_task("nonexistent").is_none());
     }
 }

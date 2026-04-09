@@ -1222,6 +1222,15 @@ impl McpStdioProcess {
     }
 }
 
+impl Drop for McpStdioProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.start_kill();
+            let _ = self.child.try_wait();
+        }
+    }
+}
+
 pub fn spawn_mcp_stdio_process(bootstrap: &McpClientBootstrap) -> io::Result<McpStdioProcess> {
     match &bootstrap.transport {
         McpClientTransport::Stdio(transport) => McpStdioProcess::spawn(transport),

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::tui::autocomplete::AutocompleteState;
 use crate::tui::command_palette::CommandPaletteState;
 use crate::tui::debug_panel::DebugPanelState;
 use crate::tui::dialog_context_viz::ContextVizDialogState;
@@ -174,6 +175,7 @@ pub struct AppState {
     pub git_dirty: bool,
     pub model_picker: ModelPickerState,
     pub command_palette: CommandPaletteState,
+    pub autocomplete: AutocompleteState,
     pub mcp_dialog: McpDialogState,
     pub skills_dialog: SkillsDialogState,
     pub theme_list_dialog: ThemeListDialogState,
@@ -212,6 +214,7 @@ pub struct AppState {
     pub plugin_routes: Vec<PluginRoute>,
     pub home_placeholder_idx: usize,
     pub home_placeholder_timer: Instant,
+    pub pending_file_refs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -314,6 +317,7 @@ impl AppState {
             git_dirty: false,
             model_picker: ModelPickerState::new(),
             command_palette: CommandPaletteState::new(),
+            autocomplete: AutocompleteState::new(),
             mcp_dialog: McpDialogState::new(),
             skills_dialog: SkillsDialogState::new(skill_manager),
             theme_list_dialog: ThemeListDialogState::new(&load_theme_id()),
@@ -352,6 +356,7 @@ impl AppState {
             plugin_routes: Vec::new(),
             home_placeholder_idx: 0,
             home_placeholder_timer: Instant::now(),
+            pending_file_refs: Vec::new(),
         }
     }
 
@@ -543,10 +548,6 @@ impl AppState {
         self.scroll_offset = 0;
     }
 
-    pub fn set_completions(&mut self, completions: Vec<String>) {
-        self.prompt.set_completions(completions);
-    }
-
     /// Display an error message inline and set mode to Error.
     /// The error is also appended to messages as a visible error block.
     pub fn show_error(&mut self, msg: String) {
@@ -643,6 +644,8 @@ impl AppState {
         self.leader_active = false;
         self.leader_activated_at = None;
     }
+
+    pub fn set_completions(&mut self, _completions: Vec<String>) {}
 
     pub fn check_leader_timeout(&mut self) {
         if self.leader_active {

@@ -5,8 +5,10 @@ use crate::types::{EditError, Hashline, HashlineEditOp};
 
 /// Validates a single edit operation against a file.
 pub fn validate_edit(file_path: &str, edit: &HashlineEditOp) -> Result<(), EditError> {
-    let content = fs::read_to_string(file_path)
-        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    let content = fs::read_to_string(file_path).map_err(|e| EditError::IoError {
+        path: file_path.to_string(),
+        message: e.to_string(),
+    })?;
     validate_edit_with_content(&content, edit)
 }
 
@@ -36,8 +38,10 @@ pub fn validate_edit_with_content(content: &str, edit: &HashlineEditOp) -> Resul
 
 /// Validates all edit operations in sequence against a file.
 pub fn validate_all(file_path: &str, edits: &[HashlineEditOp]) -> Result<(), EditError> {
-    let content = fs::read_to_string(file_path)
-        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    let content = fs::read_to_string(file_path).map_err(|e| EditError::IoError {
+        path: file_path.to_string(),
+        message: e.to_string(),
+    })?;
     for edit in edits {
         validate_edit_with_content(&content, edit)?;
     }
@@ -54,8 +58,10 @@ pub fn validate_all_with_content(content: &str, edits: &[HashlineEditOp]) -> Res
 
 /// Reads a file and returns its hashlines.
 pub fn get_current_hashlines(file_path: &str) -> Result<Vec<Hashline>, EditError> {
-    let content = fs::read_to_string(file_path)
-        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    let content = fs::read_to_string(file_path).map_err(|e| EditError::IoError {
+        path: file_path.to_string(),
+        message: e.to_string(),
+    })?;
 
     Ok(enhance_with_hashlines(&content))
 }

@@ -65,6 +65,13 @@ if $UNINSTALL; then
     else
         warn "${BINARY_NAME} not found at ${BIN_PATH}"
     fi
+
+    CARGO_BIN="${HOME}/.cargo/bin/${BINARY_NAME}"
+    if [[ -f "$CARGO_BIN" ]]; then
+        rm -v "$CARGO_BIN"
+        ok "Removed stale cargo install at ${CARGO_BIN}"
+    fi
+
     exit 0
 fi
 
@@ -108,6 +115,12 @@ fi
 ok "Binary built: $(du -h "$BIN_SOURCE" | cut -f1)"
 
 log "Installing to ${INSTALL_DIR}..."
+
+CARGO_BIN="${HOME}/.cargo/bin/${BINARY_NAME}"
+if [[ -f "$CARGO_BIN" ]] && [[ "$(realpath "$CARGO_BIN")" != "$(realpath "$BIN_SOURCE")" ]]; then
+    rm -v "$CARGO_BIN"
+    ok "Removed stale cargo install at ${CARGO_BIN}"
+fi
 
 mkdir -p "$INSTALL_DIR"
 cp -f "$BIN_SOURCE" "${INSTALL_DIR}/${BINARY_NAME}"

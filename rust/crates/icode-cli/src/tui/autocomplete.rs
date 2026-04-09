@@ -195,7 +195,7 @@ impl AutocompleteState {
     pub fn rebuild_entries(&mut self, input: &str, cwd: &Path, frecency: Option<&FrecencyStore>) {
         match self.mode {
             AutocompleteMode::Slash => {
-                let query = &input[self.trigger_pos..input.len()];
+                let query = input.get(self.trigger_pos..).unwrap_or("");
                 let filtered: Vec<&&str> = SLASH_COMMANDS
                     .iter()
                     .filter(|cmd| fuzzy_match_single(query, cmd))

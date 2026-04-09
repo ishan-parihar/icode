@@ -239,6 +239,7 @@ mod tests {
             git_dirty: false,
             model_picker: crate::tui::model_picker::ModelPickerState::new(),
             command_palette: crate::tui::command_palette::CommandPaletteState::new(),
+            autocomplete: crate::tui::autocomplete::AutocompleteState::new(),
             mcp_dialog: crate::tui::dialog_mcp::McpDialogState::new(),
             skills_dialog: crate::tui::dialog_skills::SkillsDialogState::new(None),
             theme_list_dialog: crate::tui::dialog_theme_list::ThemeListDialogState::new("opencode"),
@@ -278,6 +279,7 @@ mod tests {
             todo_panel: crate::tui::widgets::TodoPanelState::new(),
             home_placeholder_idx: 0,
             home_placeholder_timer: std::time::Instant::now(),
+            pending_file_refs: Vec::new(),
         }
     }
 

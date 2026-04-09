@@ -1,4 +1,5 @@
 use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
+use crate::tui::autocomplete::AutocompleteMode;
 use crate::tui::event::{Event, EventLoop, ParsedKey};
 use crate::tui::frecency::FrecencyStore;
 use crate::tui::input::InputState;
@@ -18,6 +19,7 @@ use ratatui::Terminal;
 use runtime::skill_manager::SkillManager;
 use std::io;
 use std::io::Write;
+use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
@@ -298,6 +300,10 @@ impl Tui {
         }
 
         if key.code == KeyCode::Esc {
+            if self.state.autocomplete.open {
+                self.state.autocomplete.close();
+                return None;
+            }
             if self.state.is_streaming {
                 if self.state.interrupt_count >= 1 {
                     self.state.is_streaming = false;
@@ -354,6 +360,22 @@ impl Tui {
                 None
             }
             (_, KeyCode::Enter) => {
+                // If autocomplete is open, select entry instead of submitting
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.select(&mut self.state.prompt);
+                    if let Some(ref mut frecency) = self.state.prompt.frecency {
+                        if let Some(entry) = self
+                            .state
+                            .autocomplete
+                            .entries
+                            .get(self.state.autocomplete.idx)
+                        {
+                            frecency.record(&entry.title);
+                        }
+                    }
+                    return None;
+                }
+
                 let input = self.state.prompt.submit();
                 if input.trim().is_empty() {
                     None
@@ -406,55 +428,45 @@ impl Tui {
                 } else {
                     self.state.prompt.push_history();
                     self.state.cleanup_reverted();
-                    let user_input = input.clone();
-                    self.state.add_user_message(input);
+                    let (clean_input, file_refs) =
+                        crate::tui::file_picker::parse_file_references(&input, &self.state.cwd);
+                    self.state.pending_file_refs = file_refs
+                        .iter()
+                        .map(|r| (r.path.clone(), r.content.clone()))
+                        .collect();
+                    let user_input = clean_input.clone();
+                    self.state.add_user_message(clean_input);
                     self.state.turn_started_at = Some(Instant::now());
                     self.state.start_assistant_stream("build");
+                    self.state.pending_file_refs.clear();
                     Some(user_input)
                 }
             }
             (_, KeyCode::Tab) => {
-                if self.state.prompt.show_slash_autocomplete {
-                    self.state.prompt.slash_autocomplete_select();
-                } else {
-                    let input = self.state.prompt.value.clone();
-                    if input.starts_with('/') {
-                        if self.state.prompt.complete_contextual() {
-                            self.state.prompt.cycle_completion_forward();
-                        } else {
-                            let completions = self.get_command_completions(&input);
-                            if !completions.is_empty() {
-                                self.state.prompt.set_completions(completions);
-                                self.state.prompt.cycle_completion_forward();
-                            }
-                        }
-                    } else if !input.trim().is_empty() {
-                        let suggestions = self.state.prompt.history_suggestions(&input, 20);
-                        if !suggestions.is_empty() {
-                            self.state.prompt.set_completions(suggestions);
-                            self.state.prompt.cycle_completion_forward();
-                        }
-                    } else {
-                        let top = self.state.prompt.frecency_top_entries(20);
-                        if !top.is_empty() {
-                            self.state.prompt.set_completions(top);
-                            self.state.prompt.cycle_completion_forward();
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.select(&mut self.state.prompt);
+                    if let Some(ref mut frecency) = self.state.prompt.frecency {
+                        if let Some(entry) = self
+                            .state
+                            .autocomplete
+                            .entries
+                            .get(self.state.autocomplete.idx)
+                        {
+                            frecency.record(&entry.title);
                         }
                     }
                 }
                 None
             }
             (_, KeyCode::BackTab) => {
-                if self.state.prompt.show_slash_autocomplete {
-                    self.state.prompt.slash_autocomplete_up();
-                } else {
-                    self.state.prompt.cycle_completion_backward();
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.cursor_up();
                 }
                 None
             }
             (_, KeyCode::Up) => {
-                if self.state.prompt.show_slash_autocomplete {
-                    self.state.prompt.slash_autocomplete_up();
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.cursor_up();
                 } else {
                     let (visual_row, _) = self.state.prompt.cursor_position(input_width);
                     let total_rows = self.state.prompt.total_rows(input_width);
@@ -475,8 +487,8 @@ impl Tui {
                 None
             }
             (_, KeyCode::Down) => {
-                if self.state.prompt.show_slash_autocomplete {
-                    self.state.prompt.slash_autocomplete_down();
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.cursor_down();
                 } else {
                     let (visual_row, _) = self.state.prompt.cursor_position(input_width);
                     let total_rows = self.state.prompt.total_rows(input_width);
@@ -500,6 +512,7 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
                 self.state.prompt.clear();
+                self.state.autocomplete.close();
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('x')) => {
@@ -586,6 +599,13 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
                 self.state.prompt.delete_word_left();
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.rebuild_entries(
+                        &self.state.prompt.value,
+                        Path::new(&self.state.cwd),
+                        self.state.prompt.frecency.as_ref(),
+                    );
+                }
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
@@ -598,6 +618,7 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
                 self.state.prompt.delete_to_start();
+                self.state.autocomplete.close();
                 None
             }
             (KeyModifiers::ALT, KeyCode::Char('d')) => {
@@ -676,14 +697,43 @@ impl Tui {
                     };
                 }
                 self.state.prompt.insert_char(c);
+                self.state.autocomplete.on_char_insert(
+                    c,
+                    self.state.prompt.cursor,
+                    &self.state.prompt.value,
+                );
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.rebuild_entries(
+                        &self.state.prompt.value,
+                        Path::new(&self.state.cwd),
+                        self.state.prompt.frecency.as_ref(),
+                    );
+                }
                 None
             }
             (_, KeyCode::Backspace) => {
                 self.state.prompt.backspace();
+                self.state
+                    .autocomplete
+                    .on_backspace(self.state.prompt.cursor);
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.rebuild_entries(
+                        &self.state.prompt.value,
+                        Path::new(&self.state.cwd),
+                        self.state.prompt.frecency.as_ref(),
+                    );
+                }
                 None
             }
             (_, KeyCode::Delete) => {
                 self.state.prompt.delete();
+                if self.state.autocomplete.open {
+                    self.state.autocomplete.rebuild_entries(
+                        &self.state.prompt.value,
+                        Path::new(&self.state.cwd),
+                        self.state.prompt.frecency.as_ref(),
+                    );
+                }
                 None
             }
             (_, KeyCode::Left) => {
@@ -1362,32 +1412,6 @@ impl Tui {
         enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {e}"))?;
 
         result
-    }
-
-    fn get_command_completions(&self, input: &str) -> Vec<String> {
-        let commands = [
-            "/help",
-            "/status",
-            "/compact",
-            "/clear",
-            "/model",
-            "/permissions",
-            "/config",
-            "/memory",
-            "/diff",
-            "/export",
-            "/session",
-            "/version",
-            "/cost",
-            "/theme",
-            "/context",
-            "/revert",
-        ];
-        commands
-            .iter()
-            .filter(|cmd| cmd.starts_with(input))
-            .map(std::string::ToString::to_string)
-            .collect()
     }
 
     pub fn append_to_stream(&mut self, delta: &str) {

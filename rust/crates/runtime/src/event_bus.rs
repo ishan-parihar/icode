@@ -306,7 +306,9 @@ async fn poll_ipc_once(
     instance_id: &str,
 ) -> Event {
     loop {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Sleep between IPC poll cycles. 1s interval reduces CPU usage 10x
+        // vs 100ms aggressive polling. Tradeoff: ~1s latency for cross-instance events.
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         let transports = ipc_transports.lock().await;
         for transport in transports.iter() {
             let envelopes = transport.poll_events();

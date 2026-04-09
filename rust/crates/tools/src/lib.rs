@@ -817,7 +817,8 @@ pub fn enforce_permission_check(
     tool_name: &str,
     input: &Value,
 ) -> Result<(), String> {
-    let input_str = serde_json::to_string(input).unwrap_or_default();
+    let input_str = serde_json::to_string(input)
+        .map_err(|e| format!("failed to serialize tool input for {tool_name}: {e}"))?;
     let result = enforcer.check(tool_name, &input_str);
 
     match result {
@@ -981,7 +982,8 @@ fn maybe_apply_truncation(name: &str, result: Result<String, String>) -> Result<
     let policy = TruncationPolicy::from_env().unwrap_or_default();
     let truncated = policy.apply(&output);
     if truncated.metadata.truncated {
-        let metadata_json = serde_json::to_string(&truncated.metadata).unwrap_or_default();
+        let metadata_json = serde_json::to_string(&truncated.metadata)
+            .unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
         Ok(format!("{}\n\n{metadata_json}", truncated.text))
     } else {
         Ok(output)
@@ -4768,7 +4770,7 @@ fn execute_shell_command(
     run_in_background: Option<bool>,
 ) -> std::io::Result<runtime::BashCommandOutput> {
     if run_in_background.unwrap_or(false) {
-        let child = std::process::Command::new(shell)
+        let mut child = std::process::Command::new(shell)
             .arg("-NoProfile")
             .arg("-NonInteractive")
             .arg("-Command")
@@ -4777,13 +4779,17 @@ fn execute_shell_command(
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
+        let task_id = child.id().to_string();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
         return Ok(runtime::BashCommandOutput {
             stdout: String::new(),
             stderr: String::new(),
             raw_output_path: None,
             interrupted: false,
             is_image: None,
-            background_task_id: Some(child.id().to_string()),
+            background_task_id: Some(task_id),
             backgrounded_by_user: Some(true),
             assistant_auto_backgrounded: Some(false),
             dangerously_disable_sandbox: None,

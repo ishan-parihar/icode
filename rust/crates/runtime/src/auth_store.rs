@@ -29,7 +29,13 @@ impl AuthStore {
         let path = Self::config_dir().join("auth.json");
         if path.exists() {
             match std::fs::read_to_string(&path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(store) => store,
+                    Err(e) => {
+                        eprintln!("auth_store: failed to parse auth.json: {e}, using empty store");
+                        Self::default()
+                    }
+                },
                 Err(_) => Self::default(),
             }
         } else {

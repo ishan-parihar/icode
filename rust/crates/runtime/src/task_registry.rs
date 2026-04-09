@@ -198,6 +198,18 @@ impl TaskRegistry {
             .tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task not found: {task_id}"))?;
+
+        // Prevent transitions FROM terminal states
+        match task.status {
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped => {
+                return Err(format!(
+                    "cannot transition from terminal state {} to {}",
+                    task.status, status
+                ));
+            }
+            _ => {}
+        }
+
         task.status = status;
         task.updated_at = now_secs();
         Ok(())

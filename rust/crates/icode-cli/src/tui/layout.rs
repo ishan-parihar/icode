@@ -1,4 +1,5 @@
 use crate::tui::app::{AppMode, AppState, ToastKind};
+use crate::tui::autocomplete::render_autocomplete_overlay;
 use crate::tui::command_palette::render_command_palette;
 use crate::tui::debug_panel::render_debug_panel;
 use crate::tui::dialog_context_viz::render_context_viz_dialog;
@@ -14,6 +15,7 @@ use crate::tui::dialog_sessions::render_sessions_dialog;
 use crate::tui::dialog_skills::render_skills_dialog;
 use crate::tui::dialog_theme_list::render_theme_list_dialog;
 use crate::tui::dialog_workspaces::render_workspace_dialog;
+use crate::tui::home_screen::render_home_content;
 use crate::tui::model_picker::render_model_picker;
 use crate::tui::prompt_bar::{PromptBar, PromptBarMode};
 use crate::tui::widgets::{render_pager, DiffView, MessageList, Sidebar};
@@ -90,6 +92,7 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             }
         }
     } else if is_welcome {
+        render_home_content(frame, main_area, &state.home_screen, theme);
         PromptBar::new(PromptBarMode::Welcome, theme).render(frame, state, main_area);
     } else {
         render_messages_panel(frame, state, main_area, theme);
@@ -105,9 +108,11 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             theme,
         )
         .render(frame, state, pa);
-        if state.prompt.show_slash_autocomplete && !state.prompt.slash_completions.is_empty() {
-            render_slash_autocomplete(frame.buffer_mut(), &state.prompt, pa, theme);
-        }
+        state.autocomplete.set_anchor(
+            state.prompt.cursor_x,
+            state.prompt.cursor_y,
+            state.prompt.cursor_width,
+        );
     }
     render_footer(frame, state, footer_area);
     render_toasts(frame, state, area);
@@ -208,6 +213,10 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             )
         });
     }
+
+    if state.autocomplete.open {
+        render_autocomplete_overlay(frame, &state.autocomplete, area, state.theme);
+    }
 }
 
 fn render_messages_panel(frame: &mut Frame, state: &mut AppState, area: Rect, theme: Theme) {
@@ -221,10 +230,7 @@ fn render_messages_panel(frame: &mut Frame, state: &mut AppState, area: Rect, th
     frame.render_widget(panel, area);
 
     if state.messages.is_empty() {
-        frame.render_widget(
-            Paragraph::new("").style(Style::default().bg(state.theme.background)),
-            inner,
-        );
+        render_home_content(frame, inner, &state.home_screen, theme);
         PromptBar::new(PromptBarMode::Welcome, theme).render(frame, state, inner);
         return;
     }
@@ -482,80 +488,6 @@ fn format_duration(d: std::time::Duration) -> String {
         let mins = total_secs / 60;
         let secs = total_secs % 60;
         format!("{mins}:{secs:02}")
-    }
-}
-
-fn render_slash_autocomplete(
-    buf: &mut ratatui::buffer::Buffer,
-    state: &crate::tui::input::InputState,
-    prompt_area: Rect,
-    theme: Theme,
-) {
-    let completions = &state.slash_completions;
-    let selected = state.slash_completion_idx;
-    let max_items = 5;
-    let visible: Vec<_> = completions.iter().take(max_items).collect();
-    if visible.is_empty() {
-        return;
-    }
-
-    let max_len = visible.iter().map(|s| s.len()).max().unwrap_or(0) + 4;
-    let width = (max_len as u16)
-        .min(prompt_area.width.saturating_sub(2))
-        .max(12);
-    let height = (visible.len() as u16 + 2).min(prompt_area.height.saturating_sub(1).max(1));
-
-    let dropdown_y = prompt_area.bottom().min(prompt_area.y + prompt_area.height);
-    let dropdown_area = Rect {
-        x: prompt_area.x + 1,
-        y: dropdown_y,
-        width,
-        height,
-    };
-
-    let screen_bottom = prompt_area.y + prompt_area.height + 4;
-    if dropdown_area.y >= screen_bottom {
-        return;
-    }
-    let clamped_height = height.min(screen_bottom.saturating_sub(dropdown_area.y));
-    let dropdown_area = Rect {
-        height: clamped_height,
-        ..dropdown_area
-    };
-    if dropdown_area.height < 2 {
-        return;
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border_active));
-    block.render(dropdown_area, buf);
-
-    let selected_style = Style::default().fg(theme.primary).bold();
-    let normal_style = Style::default().fg(theme.text);
-
-    for (i, cmd) in visible.iter().enumerate() {
-        let line_y = dropdown_area.y + 1 + i as u16;
-        if line_y >= dropdown_area.y + dropdown_area.height {
-            break;
-        }
-        let (prefix, style) = if i == selected {
-            ("\u{25b8} ", &selected_style)
-        } else {
-            ("  ", &normal_style)
-        };
-        let text = format!("{prefix}{cmd}");
-        let text_width = (width as usize).saturating_sub(2);
-        for (j, ch) in text.chars().enumerate() {
-            if j >= text_width {
-                break;
-            }
-            let cell_x = dropdown_area.x + 1 + j as u16;
-            if let Some(cell) = buf.cell_mut((cell_x, line_y)) {
-                cell.set_char(ch);
-                cell.set_style(*style);
-            }
-        }
     }
 }
 

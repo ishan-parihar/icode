@@ -70,10 +70,15 @@ pub async fn poll_for_token(
                 .map_err(|e| format!("Failed to parse token response: {e}"))?;
             return Ok(token);
         }
-        // Handle authorization_pending (continue polling) vs other errors
+        // Handle 400 Bad Request: parse body to distinguish terminal vs retriable errors (RFC 8628)
         if status == reqwest::StatusCode::BAD_REQUEST {
-            // Could parse error body to check for authorization_pending vs slow_down
-            // For now, just continue polling
+            if let Ok(body) = resp.text().await {
+                // Terminal errors — fail immediately
+                if body.contains("\"expired_token\"") || body.contains("\"access_denied\"") {
+                    return Err(format!("Device authorization failed: {body}"));
+                }
+                // authorization_pending and slow_down — continue polling
+            }
             continue;
         }
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {

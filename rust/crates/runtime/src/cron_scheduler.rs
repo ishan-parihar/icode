@@ -15,6 +15,24 @@ pub struct CronScheduler {
     running: Arc<AtomicBool>,
 }
 
+/// Handle for a spawned cron scheduler task, allowing immediate cancellation
+/// or graceful waiting for completion.
+pub struct CronSchedulerHandle {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl CronSchedulerHandle {
+    /// Immediately abort the running cron scheduler task.
+    pub fn abort(&self) {
+        self.handle.abort();
+    }
+
+    /// Wait for the cron scheduler task to complete.
+    pub async fn join(self) {
+        let _ = self.handle.await;
+    }
+}
+
 impl CronScheduler {
     #[must_use]
     pub fn new(registry: Arc<CronRegistry>) -> Self {
@@ -31,18 +49,23 @@ impl CronScheduler {
         self
     }
 
-    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+    pub fn spawn(self) -> CronSchedulerHandle {
         let registry = self.registry;
         let callback = self.callback;
         let running = self.running;
         running.store(true, Ordering::SeqCst);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             while running.load(Ordering::SeqCst) {
                 interval.tick().await;
+
+                // Check running flag immediately after tick to enable faster shutdown
+                if !running.load(Ordering::SeqCst) {
+                    break;
+                }
 
                 let now = chrono::Utc::now();
                 let entries = registry.list(false);
@@ -76,7 +99,15 @@ impl CronScheduler {
 
                         if should_run {
                             if let Some(ref cb) = callback {
-                                cb(entry);
+                                let cb_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    cb(entry);
+                                }));
+                                if let Err(err) = cb_result {
+                                    eprintln!(
+                                        "cron_scheduler: callback panicked for {}: {:?}",
+                                        entry.cron_id, err
+                                    );
+                                }
                             }
                             if let Err(e) = registry.record_run(&entry.cron_id) {
                                 eprintln!(
@@ -88,7 +119,9 @@ impl CronScheduler {
                     }
                 }
             }
-        })
+        });
+
+        CronSchedulerHandle { handle }
     }
 
     pub fn stop(&self) {

@@ -144,7 +144,7 @@ pub fn list_directory(
     // Validate that the path is a directory
     if !resolved.is_dir() {
         return Err(io::Error::new(
-            io::ErrorKind::NotFound,
+            io::ErrorKind::NotADirectory,
             format!("{} is not a directory", resolved.display()),
         ));
     }

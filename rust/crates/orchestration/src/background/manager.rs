@@ -50,6 +50,7 @@ impl BackgroundManager {
 
     /// Update task status.
     pub fn update_status(&self, task_id: &str, status: BackgroundTaskStatus) -> Result<(), String> {
+        let is_running = matches!(status, BackgroundTaskStatus::Running);
         let mut tasks = self
             .tasks
             .write()
@@ -58,6 +59,9 @@ impl BackgroundManager {
             .get_mut(task_id)
             .ok_or_else(|| format!("task {task_id} not found"))?;
         task.status = status;
+        if is_running {
+            task.started_at = Some(std::time::SystemTime::now());
+        }
         Ok(())
     }
 

@@ -360,6 +360,17 @@ impl WorkerRegistry {
             .workers
             .get_mut(worker_id)
             .ok_or_else(|| format!("worker not found: {worker_id}"))?;
+
+        if !matches!(
+            worker.status,
+            WorkerStatus::Blocked | WorkerStatus::Failed | WorkerStatus::Finished
+        ) {
+            return Err(format!(
+                "worker cannot be restarted from state: {:?}",
+                worker.status
+            ));
+        }
+
         worker.status = WorkerStatus::Spawning;
         worker.trust_gate_cleared = false;
         worker.last_prompt = None;

@@ -7,64 +7,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const KNOWN_AGENTS: &[&str] = &["build", "plan", "debug", "review", "test"];
 
-const SLASH_COMMANDS: &[&str] = &[
-    "/help",
-    "/status",
-    "/cost",
-    "/compact",
-    "/clear",
-    "/model",
-    "/permissions",
-    "/config",
-    "/memory",
-    "/diff",
-    "/export",
-    "/session",
-    "/version",
-    "/undo",
-    "/redo",
-];
-
-fn complete_file_path(cwd: &str, partial: &str) -> Vec<String> {
-    let (dir, file_prefix) = if partial.is_empty() || partial.ends_with('/') {
-        (partial.to_string(), String::new())
-    } else {
-        let path = std::path::Path::new(partial);
-        let parent = path
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        (parent, file_name)
-    };
-
-    let dir_path = if dir.is_empty() { cwd } else { &dir };
-    std::fs::read_dir(dir_path)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&file_prefix) {
-                let is_dir = entry.file_type().ok()?.is_dir();
-                let full = if dir.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{dir}/{name}")
-                };
-                Some(if is_dir { format!("{full}/") } else { full })
-            } else {
-                None
-            }
-        })
-        .take(20)
-        .collect()
-}
-
 #[derive(Debug, Clone)]
 enum InputSegment {
     Text(String),
@@ -117,14 +59,8 @@ fn is_ref_char(c: char) -> bool {
 pub struct InputState {
     pub value: String,
     pub cursor: usize,
-    pub completions: Vec<String>,
-    pub show_completions: bool,
-    pub completion_idx: usize,
     pub prompt: String,
     pub placeholder: String,
-    pub show_slash_autocomplete: bool,
-    pub slash_completions: Vec<String>,
-    pub slash_completion_idx: usize,
     pub history: Vec<String>,
     pub history_idx: usize,
     pub history_temp: Option<String>,
@@ -132,6 +68,9 @@ pub struct InputState {
     available_models: Vec<String>,
     available_sessions: Vec<String>,
     cwd: String,
+    pub cursor_x: u16,
+    pub cursor_y: u16,
+    pub cursor_width: u16,
 }
 
 impl InputState {
@@ -139,6 +78,9 @@ impl InputState {
         Self {
             prompt: prompt.into(),
             placeholder: "Ask icode to do anything...".into(),
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_width: 1,
             ..Default::default()
         }
     }
@@ -154,16 +96,12 @@ impl InputState {
         let byte_idx = self.char_to_byte(self.cursor);
         self.value.insert(byte_idx, c);
         self.cursor += 1;
-        self.show_completions = false;
-        self.update_slash_autocomplete();
     }
 
     pub fn insert_str(&mut self, s: &str) {
         let byte_idx = self.char_to_byte(self.cursor);
         self.value.insert_str(byte_idx, s);
         self.cursor += s.chars().count();
-        self.show_completions = false;
-        self.update_slash_autocomplete();
     }
 
     pub fn backspace(&mut self) {
@@ -177,7 +115,6 @@ impl InputState {
             .map_or(0, |(idx, _)| idx);
         self.value.drain(prev_byte_idx..byte_idx);
         self.cursor -= 1;
-        self.update_slash_autocomplete();
     }
 
     pub fn delete_word_left(&mut self) {
@@ -203,7 +140,6 @@ impl InputState {
         let byte_end = self.char_to_byte(self.cursor);
         self.value.drain(byte_start..byte_end);
         self.cursor = delete_start;
-        self.update_slash_autocomplete();
     }
 
     pub fn delete(&mut self) {
@@ -215,7 +151,6 @@ impl InputState {
                 self.value.drain(byte_idx + start..byte_idx + end);
             }
         }
-        self.update_slash_autocomplete();
     }
 
     pub fn move_word_left(&mut self) {
@@ -253,13 +188,11 @@ impl InputState {
         let byte_idx = self.char_to_byte(self.cursor);
         self.value.drain(..byte_idx);
         self.cursor = 0;
-        self.update_slash_autocomplete();
     }
 
     pub fn delete_to_end(&mut self) {
         let byte_idx = self.char_to_byte(self.cursor);
         self.value.drain(byte_idx..);
-        self.update_slash_autocomplete();
     }
 
     pub fn delete_word_right(&mut self) {
@@ -278,7 +211,6 @@ impl InputState {
         }
         let byte_end = self.char_to_byte(i);
         self.value.drain(byte_start..byte_end);
-        self.update_slash_autocomplete();
     }
 
     pub fn move_left(&mut self) {
@@ -448,8 +380,6 @@ impl InputState {
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
-        self.show_completions = false;
-        self.hide_slash_autocomplete();
     }
 
     pub fn push_history(&mut self) {
@@ -514,11 +444,6 @@ impl InputState {
         }
     }
 
-    pub fn set_completions(&mut self, completions: Vec<String>) {
-        self.completions = completions;
-        self.completion_idx = 0;
-    }
-
     pub fn set_models(&mut self, models: Vec<String>) {
         self.available_models = models;
     }
@@ -531,133 +456,19 @@ impl InputState {
         self.cwd = cwd;
     }
 
+    pub fn set_completions(&mut self, _completions: Vec<String>) {}
     pub fn complete_contextual(&mut self) -> bool {
-        let value = &self.value;
-        let cursor = self.cursor;
-
-        if !value.starts_with('/') {
-            return false;
-        }
-
-        let completions = if let Some(partial) = value.get(8..).filter(|_| {
-            (value.starts_with("/export ") || value.starts_with("/export\t")) && cursor >= 8
-        }) {
-            complete_file_path(&self.cwd, partial)
-        } else if let Some(partial) = value.get(7..).filter(|_| {
-            (value.starts_with("/model ") || value.starts_with("/model\t")) && cursor >= 7
-        }) {
-            self.available_models
-                .iter()
-                .filter(|m| m.starts_with(partial))
-                .take(20)
-                .cloned()
-                .collect()
-        } else if let Some(partial) = value.get(16..).filter(|_| {
-            (value.starts_with("/session switch ") || value.starts_with("/session switch\t"))
-                && cursor >= 16
-        }) {
-            self.available_sessions
-                .iter()
-                .filter(|s| s.starts_with(partial))
-                .take(20)
-                .cloned()
-                .collect()
-        } else {
-            return false;
-        };
-
-        if completions.is_empty() {
-            false
-        } else {
-            self.completions = completions;
-            self.completion_idx = 0;
-            self.show_completions = true;
-            true
-        }
+        false
     }
-
-    pub fn cycle_completion_forward(&mut self) {
-        if self.completions.is_empty() {
-            return;
-        }
-        self.show_completions = true;
-        self.completion_idx = (self.completion_idx + 1) % self.completions.len();
-        self.value
-            .clone_from(&self.completions[self.completion_idx]);
-        self.cursor = self.value.chars().count();
-    }
-
-    pub fn cycle_completion_backward(&mut self) {
-        if self.completions.is_empty() {
-            return;
-        }
-        self.show_completions = true;
-        if self.completion_idx == 0 {
-            self.completion_idx = self.completions.len() - 1;
-        } else {
-            self.completion_idx -= 1;
-        }
-        self.value
-            .clone_from(&self.completions[self.completion_idx]);
-        self.cursor = self.value.chars().count();
-    }
-
-    fn update_slash_autocomplete(&mut self) {
-        if self.value.starts_with('/') && self.cursor > 0 {
-            let prefix = self.value.as_str();
-            self.slash_completions = SLASH_COMMANDS
-                .iter()
-                .filter(|cmd| cmd.starts_with(prefix))
-                .map(std::string::ToString::to_string)
-                .collect();
-            self.show_slash_autocomplete = !self.slash_completions.is_empty();
-            if self.show_slash_autocomplete {
-                self.slash_completion_idx = 0;
-            }
-        } else {
-            self.hide_slash_autocomplete();
-        }
-    }
-
-    fn hide_slash_autocomplete(&mut self) {
-        self.show_slash_autocomplete = false;
-        self.slash_completions.clear();
-        self.slash_completion_idx = 0;
-    }
-
-    pub fn slash_autocomplete_up(&mut self) {
-        if self.slash_completions.is_empty() {
-            return;
-        }
-        if self.slash_completion_idx == 0 {
-            self.slash_completion_idx = self.slash_completions.len() - 1;
-        } else {
-            self.slash_completion_idx -= 1;
-        }
-    }
-
-    pub fn slash_autocomplete_down(&mut self) {
-        if self.slash_completions.is_empty() {
-            return;
-        }
-        self.slash_completion_idx = (self.slash_completion_idx + 1) % self.slash_completions.len();
-    }
-
+    pub fn cycle_completion_forward(&mut self) {}
+    pub fn cycle_completion_backward(&mut self) {}
+    pub fn slash_autocomplete_up(&mut self) {}
+    pub fn slash_autocomplete_down(&mut self) {}
     pub fn slash_autocomplete_select(&mut self) -> bool {
-        if self.slash_completions.is_empty() {
-            return false;
-        }
-        let selected = self.slash_completions[self.slash_completion_idx].clone();
-        self.value = selected.clone();
-        self.cursor = selected.chars().count();
-        self.hide_slash_autocomplete();
-        true
+        false
     }
-
     pub fn selected_slash_completion(&self) -> Option<&str> {
-        self.slash_completions
-            .get(self.slash_completion_idx)
-            .map(std::string::String::as_str)
+        None
     }
 
     pub fn submit(&mut self) -> String {
@@ -666,13 +477,11 @@ impl InputState {
             frecency.record(&value);
         }
         self.cursor = 0;
-        self.show_completions = false;
-        self.hide_slash_autocomplete();
         value
     }
 
     pub fn visible_text(&self) -> String {
-        if self.value.is_empty() && !self.show_completions {
+        if self.value.is_empty() {
             return self.placeholder.clone();
         }
         self.value.clone()
@@ -735,77 +544,76 @@ impl StatefulWidget for InputWidget {
 
         let prompt = Span::styled(&state.prompt, Style::default().fg(self.theme.border_active));
 
-        let lines: Vec<ratatui::text::Line<'_>> =
-            if state.value.is_empty() && !state.show_completions {
-                let placeholder = Span::styled(
-                    &state.placeholder,
-                    Style::default()
-                        .fg(muted_color)
-                        .add_modifier(ratatui::style::Modifier::ITALIC),
-                );
-                vec![ratatui::text::Line::from(vec![prompt.clone(), placeholder])]
-            } else {
-                let mut result = Vec::new();
-                for (line_idx, segment) in state.value.split('\n').enumerate() {
-                    if line_idx == 0 {
-                        let mut spans = vec![prompt.clone()];
-                        for chip in parse_input_segments(segment) {
-                            match chip {
-                                InputSegment::Text(t) => {
-                                    spans.push(Span::styled(t, Style::default().fg(text_color)));
-                                }
-                                InputSegment::FileChip(t) => {
-                                    spans.push(Span::styled(
-                                        format!(" {t} "),
-                                        Style::default()
-                                            .fg(self.theme.info)
-                                            .bg(self.theme.background_hover),
-                                    ));
-                                }
-                                InputSegment::AgentChip(t) => {
-                                    spans.push(Span::styled(
-                                        format!(" {t} "),
-                                        Style::default()
-                                            .fg(self.theme.accent)
-                                            .bg(self.theme.background_hover),
-                                    ));
-                                }
+        let lines: Vec<ratatui::text::Line<'_>> = if state.value.is_empty() {
+            let placeholder = Span::styled(
+                &state.placeholder,
+                Style::default()
+                    .fg(muted_color)
+                    .add_modifier(ratatui::style::Modifier::ITALIC),
+            );
+            vec![ratatui::text::Line::from(vec![prompt.clone(), placeholder])]
+        } else {
+            let mut result = Vec::new();
+            for (line_idx, segment) in state.value.split('\n').enumerate() {
+                if line_idx == 0 {
+                    let mut spans = vec![prompt.clone()];
+                    for chip in parse_input_segments(segment) {
+                        match chip {
+                            InputSegment::Text(t) => {
+                                spans.push(Span::styled(t, Style::default().fg(text_color)));
+                            }
+                            InputSegment::FileChip(t) => {
+                                spans.push(Span::styled(
+                                    format!(" {t} "),
+                                    Style::default()
+                                        .fg(self.theme.info)
+                                        .bg(self.theme.background_hover),
+                                ));
+                            }
+                            InputSegment::AgentChip(t) => {
+                                spans.push(Span::styled(
+                                    format!(" {t} "),
+                                    Style::default()
+                                        .fg(self.theme.accent)
+                                        .bg(self.theme.background_hover),
+                                ));
                             }
                         }
-                        result.push(ratatui::text::Line::from(spans));
-                    } else {
-                        let mut spans = Vec::new();
-                        for chip in parse_input_segments(segment) {
-                            match chip {
-                                InputSegment::Text(t) => {
-                                    spans.push(Span::styled(t, Style::default().fg(text_color)));
-                                }
-                                InputSegment::FileChip(t) => {
-                                    spans.push(Span::styled(
-                                        format!(" {t} "),
-                                        Style::default()
-                                            .fg(self.theme.info)
-                                            .bg(self.theme.background_hover),
-                                    ));
-                                }
-                                InputSegment::AgentChip(t) => {
-                                    spans.push(Span::styled(
-                                        format!(" {t} "),
-                                        Style::default()
-                                            .fg(self.theme.accent)
-                                            .bg(self.theme.background_hover),
-                                    ));
-                                }
-                            }
-                        }
-                        result.push(ratatui::text::Line::from(spans));
                     }
+                    result.push(ratatui::text::Line::from(spans));
+                } else {
+                    let mut spans = Vec::new();
+                    for chip in parse_input_segments(segment) {
+                        match chip {
+                            InputSegment::Text(t) => {
+                                spans.push(Span::styled(t, Style::default().fg(text_color)));
+                            }
+                            InputSegment::FileChip(t) => {
+                                spans.push(Span::styled(
+                                    format!(" {t} "),
+                                    Style::default()
+                                        .fg(self.theme.info)
+                                        .bg(self.theme.background_hover),
+                                ));
+                            }
+                            InputSegment::AgentChip(t) => {
+                                spans.push(Span::styled(
+                                    format!(" {t} "),
+                                    Style::default()
+                                        .fg(self.theme.accent)
+                                        .bg(self.theme.background_hover),
+                                ));
+                            }
+                        }
+                    }
+                    result.push(ratatui::text::Line::from(spans));
                 }
-                if result.is_empty() {
-                    result.push(ratatui::text::Line::from(vec![prompt]));
-                }
-                result
-            };
+            }
+            if result.is_empty() {
+                result.push(ratatui::text::Line::from(vec![prompt]));
+            }
+            result
+        };
 
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false }).style(
             Style::default()
@@ -854,6 +662,10 @@ impl StatefulWidget for InputWidget {
             area.x + col as u16
         };
         let cursor_y = area.y + row;
+
+        state.cursor_x = cursor_x;
+        state.cursor_y = cursor_y;
+        state.cursor_width = 1;
 
         if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
             buf.cell_mut((cursor_x, cursor_y))

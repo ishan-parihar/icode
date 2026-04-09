@@ -260,7 +260,7 @@ pub fn edit_file(
     }
     if !original_file.contains(old_string) {
         return Err(io::Error::new(
-            io::ErrorKind::NotFound,
+            io::ErrorKind::InvalidInput,
             "old_string not found in file",
         ));
     }

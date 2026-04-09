@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::Json;
+use futures::stream::Stream;
 use futures::stream::StreamExt;
 use runtime::SqliteStore;
 use runtime::{
@@ -15,6 +18,7 @@ use runtime::{
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::sse::event_bus_to_sse;
 use crate::state::ServerState;
@@ -175,6 +179,37 @@ pub async fn get_session(
     }
 }
 
+/// Wraps an SSE stream with task abort handles.
+/// When the stream is dropped (client disconnect), aborts the spawned
+/// blocking conversation turn and its async wrapper task.
+struct GuardedSseStream<S> {
+    inner: S,
+    blocking_handle: tokio::task::JoinHandle<()>,
+    async_handle: tokio::task::JoinHandle<()>,
+}
+
+impl<S: Stream> Stream for GuardedSseStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S> Drop for GuardedSseStream<S> {
+    fn drop(&mut self) {
+        // Abort the async wrapper task (which holds the blocking handle).
+        self.async_handle.abort();
+        // Also directly abort the blocking task in case the async wrapper
+        // hasn't started yet or is blocked on the JoinHandle.
+        self.blocking_handle.abort();
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/sessions/{id}/message",
@@ -198,27 +233,43 @@ pub async fn send_message(
         .clone()
         .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
-    let (tx, rx) = mpsc::unbounded_channel::<String>();
+    let (tx, rx) = mpsc::channel::<String>(1024);
 
     state.event_bus.publish(runtime::Event::MessageStarted {
         session_id: session_id.clone(),
         role: "user".to_string(),
     });
 
+    let tx_for_blocking = tx.clone();
     let session_id_for_task = session_id.clone();
     let message = body.message.clone();
     let state_ref = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || {
-        match run_conversation_turn(&session_id_for_task, &message, &model, &tx, &state_ref) {
+    let blocking_handle = tokio::task::spawn_blocking(move || {
+        match run_conversation_turn(
+            &session_id_for_task,
+            &message,
+            &model,
+            &tx_for_blocking,
+            &state_ref,
+        ) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx.send(format!("error: {e}"));
+                let _ = tx_for_blocking.send(format!("error: {e}"));
             }
         }
     });
 
-    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
-        .map(|text| Ok(SseEvent::default().event("content").data(text)));
+    let async_handle = tokio::spawn(async move {
+        if let Err(e) = blocking_handle.await {
+            let _ = tx.send(format!("\n\n[error: conversation turn failed — {e}]"));
+        }
+    });
+
+    let stream = GuardedSseStream {
+        inner: ReceiverStream::new(rx).map(|text| Ok(SseEvent::default().event("content").data(text))),
+        blocking_handle,
+        async_handle,
+    };
 
     Sse::new(stream).keep_alive(
         KeepAlive::new()
@@ -231,7 +282,7 @@ fn run_conversation_turn(
     session_id: &str,
     user_message: &str,
     model: &str,
-    tx: &mpsc::UnboundedSender<String>,
+    tx: &mpsc::Sender<String>,
     state: &ServerState,
 ) -> Result<(), String> {
     let handle = tokio::runtime::Handle::current();

@@ -146,7 +146,7 @@ impl ShareDialogState {
                 ShareAction::None
             }
             (_, Right) => {
-                if self.selected_button < 3 {
+                if self.selected_button < 2 {
                     self.selected_button += 1;
                 }
                 ShareAction::None

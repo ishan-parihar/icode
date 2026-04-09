@@ -330,7 +330,9 @@ fn handle_session_message(
             }
         }
     } else {
-        std::fs::create_dir_all(&session_dir).ok();
+        std::fs::create_dir_all(&session_dir).inspect_err(|e| {
+            tracing::warn!(error = %e, "Failed to create ACP session directory: {}", session_dir.display());
+        }).ok();
         runtime::Session::new().with_persistence_path(&session_path)
     };
 

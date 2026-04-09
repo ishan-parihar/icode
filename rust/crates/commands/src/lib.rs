@@ -2586,8 +2586,7 @@ fn default_skill_install_root() -> std::io::Result<PathBuf> {
     if let Some(home) = env::var_os("HOME") {
         return Ok(PathBuf::from(home).join(".codex").join("skills"));
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
+    Err(std::io::Error::other(
         "unable to resolve a skills install root; set CODEX_HOME or HOME",
     ))
 }
