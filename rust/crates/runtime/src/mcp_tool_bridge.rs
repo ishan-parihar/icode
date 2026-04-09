@@ -5,11 +5,13 @@
 //! connect to MCP servers and invoke their capabilities.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use crate::mcp::mcp_tool_name;
 use crate::mcp_stdio::McpServerManager;
 use serde::{Deserialize, Serialize};
+
+const MAX_CONCURRENT_MCP_CALLS: usize = 8;
 
 /// Status of a managed MCP server connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,10 +64,21 @@ pub struct McpServerState {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct McpToolRegistry {
     inner: Arc<Mutex<HashMap<String, McpServerState>>>,
     manager: Arc<OnceLock<Arc<Mutex<McpServerManager>>>>,
+    concurrency_limiter: Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl Default for McpToolRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            manager: Arc::new(OnceLock::new()),
+            concurrency_limiter: Arc::new((Mutex::new(0), Condvar::new())),
+        }
+    }
 }
 
 impl McpToolRegistry {
@@ -173,7 +186,18 @@ impl McpToolRegistry {
         manager: Arc<Mutex<McpServerManager>>,
         qualified_tool_name: String,
         arguments: Option<serde_json::Value>,
+        limiter: &Arc<(Mutex<usize>, Condvar)>,
     ) -> Result<serde_json::Value, String> {
+        let (lock, cvar) = &**limiter;
+        let mut active = lock.lock().expect("limiter lock poisoned");
+        while *active >= MAX_CONCURRENT_MCP_CALLS {
+            active = cvar.wait(active).expect("limiter condvar poisoned");
+        }
+        *active += 1;
+        drop(active);
+
+        let limiter_for_thread = Arc::clone(limiter);
+        let limiter_for_panic = Arc::clone(limiter);
         let join_handle = std::thread::Builder::new()
             .name(format!("mcp-tool-call-{qualified_tool_name}"))
             .spawn(move || {
@@ -182,7 +206,7 @@ impl McpToolRegistry {
                     .build()
                     .map_err(|error| format!("failed to create MCP tool runtime: {error}"))?;
 
-                runtime.block_on(async move {
+                let result = runtime.block_on(async move {
                     #[allow(clippy::await_holding_lock)]
                     let response = {
                         let mut manager = manager
@@ -217,11 +241,23 @@ impl McpToolRegistry {
 
                     serde_json::to_value(result)
                         .map_err(|error| format!("failed to serialize MCP tool result: {error}"))
-                })
+                });
+
+                let (lock, cvar): &(Mutex<usize>, Condvar) = &limiter_for_thread;
+                let mut active = lock.lock().expect("limiter lock poisoned");
+                *active -= 1;
+                cvar.notify_one();
+
+                result
             })
             .map_err(|error| format!("failed to spawn MCP tool call thread: {error}"))?;
 
         join_handle.join().map_err(|panic_payload| {
+            let (lock, cvar): &(Mutex<usize>, Condvar) = &limiter_for_panic;
+            let mut active = lock.lock().expect("limiter lock poisoned");
+            *active -= 1;
+            cvar.notify_one();
+
             if let Some(message) = panic_payload.downcast_ref::<&str>() {
                 format!("MCP tool call thread panicked: {message}")
             } else if let Some(message) = panic_payload.downcast_ref::<String>() {
@@ -268,6 +304,7 @@ impl McpToolRegistry {
             manager,
             mcp_tool_name(server_name, tool_name),
             (!arguments.is_null()).then(|| arguments.clone()),
+            &self.concurrency_limiter,
         )
     }
 
@@ -678,7 +715,6 @@ mod tests {
 
     #[test]
     fn mcp_connection_status_display_all_variants() {
-        // given
         let cases = [
             (McpConnectionStatus::Disconnected, "disconnected"),
             (McpConnectionStatus::Connecting, "connecting"),
@@ -687,13 +723,11 @@ mod tests {
             (McpConnectionStatus::Error, "error"),
         ];
 
-        // when
         let rendered: Vec<_> = cases
             .into_iter()
             .map(|(status, expected)| (status.to_string(), expected))
             .collect();
 
-        // then
         assert_eq!(
             rendered,
             vec![
@@ -708,7 +742,6 @@ mod tests {
 
     #[test]
     fn list_servers_returns_all_registered() {
-        // given
         let registry = McpToolRegistry::new();
         registry.register_server(
             "alpha",
@@ -725,10 +758,8 @@ mod tests {
             None,
         );
 
-        // when
         let servers = registry.list_servers();
 
-        // then
         assert_eq!(servers.len(), 2);
         assert!(servers.iter().any(|server| server.server_name == "alpha"));
         assert!(servers.iter().any(|server| server.server_name == "beta"));
@@ -736,7 +767,6 @@ mod tests {
 
     #[test]
     fn list_tools_from_connected_server() {
-        // given
         let registry = McpToolRegistry::new();
         registry.register_server(
             "srv",
@@ -750,17 +780,14 @@ mod tests {
             None,
         );
 
-        // when
         let tools = registry.list_tools("srv").expect("tools should list");
 
-        // then
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "inspect");
     }
 
     #[test]
     fn list_tools_rejects_disconnected_server() {
-        // given
         let registry = McpToolRegistry::new();
         registry.register_server(
             "srv",
@@ -770,10 +797,8 @@ mod tests {
             None,
         );
 
-        // when
         let result = registry.list_tools("srv");
 
-        // then
         let error = result.expect_err("non-connected server should fail");
         assert!(error.contains("not connected"));
         assert!(error.contains("auth_required"));
@@ -781,13 +806,10 @@ mod tests {
 
     #[test]
     fn list_tools_rejects_missing_server() {
-        // given
         let registry = McpToolRegistry::new();
 
-        // when
         let result = registry.list_tools("missing");
 
-        // then
         assert_eq!(
             result.expect_err("missing server should fail"),
             "server 'missing' not found"
@@ -796,13 +818,10 @@ mod tests {
 
     #[test]
     fn get_server_returns_none_for_missing() {
-        // given
         let registry = McpToolRegistry::new();
 
-        // when
         let server = registry.get_server("missing");
 
-        // then
         assert!(server.is_none());
     }
 
@@ -851,11 +870,9 @@ mod tests {
 
     #[test]
     fn upsert_overwrites_existing_server() {
-        // given
         let registry = McpToolRegistry::new();
         registry.register_server("srv", McpConnectionStatus::Connecting, vec![], vec![], None);
 
-        // when
         registry.register_server(
             "srv",
             McpConnectionStatus::Connected,
@@ -869,7 +886,6 @@ mod tests {
         );
         let state = registry.get_server("srv").expect("server should exist");
 
-        // then
         assert_eq!(state.status, McpConnectionStatus::Connected);
         assert_eq!(state.tools.len(), 1);
         assert_eq!(state.server_info.as_deref(), Some("Inspector"));
@@ -877,22 +893,17 @@ mod tests {
 
     #[test]
     fn disconnect_missing_returns_none() {
-        // given
         let registry = McpToolRegistry::new();
 
-        // when
         let removed = registry.disconnect("missing");
 
-        // then
         assert!(removed.is_none());
     }
 
     #[test]
     fn len_and_is_empty_transitions() {
-        // given
         let registry = McpToolRegistry::new();
 
-        // when
         registry.register_server(
             "alpha",
             McpConnectionStatus::Connected,
@@ -906,7 +917,6 @@ mod tests {
         let after_first_remove = registry.len();
         let _ = registry.disconnect("beta");
 
-        // then
         assert_eq!(after_create, 2);
         assert_eq!(after_first_remove, 1);
         assert_eq!(registry.len(), 0);

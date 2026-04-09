@@ -19,11 +19,18 @@ pub fn edit_file_tool_spec() -> Value {
 pub fn execute_edit_file(input: &EditFileInput) -> Result<String, String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
+    let canonical_cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve workspace root: {e}"))?;
     let path = cwd.join(&input.path);
-    if !path.exists() {
-        return Err(format!("File not found: {}", input.path));
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {e}"))?;
+    if !canonical_path.starts_with(&canonical_cwd) {
+        return Err(format!("Path '{}' escapes workspace boundary", input.path));
     }
-    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let content =
+        fs::read_to_string(&canonical_path).map_err(|e| format!("Failed to read file: {e}"))?;
     if !content.contains(&input.old_string) {
         return Err(format!("String not found in {}", input.path));
     }

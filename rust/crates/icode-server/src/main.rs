@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::routing::{delete, get, post};
-use axum::Json;
 use axum::Router;
 use icode_server::state::ServerState;
 use icode_server::ApiDoc;
@@ -96,10 +95,6 @@ fn create_router(state: Arc<ServerState>) -> Router {
         .route("/lsp/{language}/connect", post(connect_lsp))
         // Swagger & OpenAPI
         .merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", ApiDoc::openapi()))
-        .route(
-            "/api/openapi.json",
-            get(|| async { Json(ApiDoc::openapi()) }),
-        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

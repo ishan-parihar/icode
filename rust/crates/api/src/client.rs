@@ -24,6 +24,7 @@ pub enum ProviderClient {
     OpenRouter(OpenRouterClient),
     Mistral(MistralClient),
     Groq(GroqClient),
+    Unconfigured,
 }
 
 #[derive(Debug)]
@@ -73,6 +74,7 @@ impl ProviderClient {
             ProviderKind::OpenRouter => Ok(Self::OpenRouter(OpenRouterClient::from_env()?)),
             ProviderKind::Mistral => Ok(Self::Mistral(MistralClient::from_env()?)),
             ProviderKind::Groq => Ok(Self::Groq(GroqClient::from_env()?)),
+            ProviderKind::Unconfigured => Ok(Self::Unconfigured),
         }
     }
 
@@ -89,6 +91,7 @@ impl ProviderClient {
             Self::OpenRouter(_) => ProviderKind::OpenRouter,
             Self::Mistral(_) => ProviderKind::Mistral,
             Self::Groq(_) => ProviderKind::Groq,
+            Self::Unconfigured => ProviderKind::Unconfigured,
         }
     }
 
@@ -131,6 +134,9 @@ impl ProviderClient {
             Self::OpenRouter(client) => client.send_message(request).await,
             Self::Mistral(client) => client.send_message(request).await,
             Self::Groq(client) => client.send_message(request).await,
+            Self::Unconfigured => Err(ApiError::Auth(
+                "No API provider configured. Set credentials via environment variables or ~/.icode/auth.json".to_string(),
+            )),
         }
     }
 
@@ -177,6 +183,9 @@ impl ProviderClient {
                     client.stream_message(request).await?;
                 Ok(MessageStream::Groq(s))
             }
+            Self::Unconfigured => Err(ApiError::Auth(
+                "No API provider configured. Set credentials via environment variables or ~/.icode/auth.json".to_string(),
+            )),
         }
     }
 }

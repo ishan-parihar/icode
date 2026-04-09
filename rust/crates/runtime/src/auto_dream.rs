@@ -87,7 +87,9 @@ pub fn should_trigger_dream(state: &ConsolidationState, config: &AutoDreamConfig
     let lock_gate = acquire_dream_lock().is_ok();
 
     if lock_gate {
-        let _ = release_dream_lock();
+        if let Err(e) = release_dream_lock() {
+            eprintln!("auto_dream: failed to release dream lock: {e}");
+        }
     }
 
     time_gate && session_gate && lock_gate

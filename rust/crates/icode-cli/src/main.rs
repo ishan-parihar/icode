@@ -708,7 +708,7 @@ fn default_permission_mode() -> PermissionMode {
         .and_then(normalize_permission_mode)
         .map(permission_mode_from_label)
         .or_else(config_permission_mode_for_current_dir)
-        .unwrap_or(PermissionMode::DangerFullAccess)
+        .unwrap_or(PermissionMode::WorkspaceWrite)
 }
 
 fn default_model_from_config() -> Option<String> {
@@ -947,7 +947,10 @@ fn open_browser(url: &str) -> io::Result<()> {
     };
     for (program, args) in commands {
         match Command::new(program).args(args).spawn() {
-            Ok(_) => return Ok(()),
+            Ok(mut child) => {
+                let _ = child.wait();
+                return Ok(());
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
@@ -2172,7 +2175,9 @@ fn run_repl(
     }
 
     for handle in turn_handles {
-        let _ = handle.join();
+        if let Err(e) = handle.join() {
+            eprintln!("turn thread panicked: {e:?}");
+        }
     }
 
     Ok(())
@@ -6582,7 +6587,7 @@ mod tests {
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
     }
@@ -6671,7 +6676,7 @@ mod tests {
                 model: DEFAULT_MODEL.to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
     }
@@ -6694,7 +6699,7 @@ mod tests {
                 model: "claude-opus".to_string(),
                 output_format: CliOutputFormat::Json,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
     }
@@ -6716,7 +6721,7 @@ mod tests {
                 model: "claude-opus-4-6".to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
     }
@@ -6773,7 +6778,7 @@ mod tests {
                         .map(str::to_string)
                         .collect()
                 ),
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
     }
@@ -6854,7 +6859,7 @@ mod tests {
             parse_args(&["status".to_string()]).expect("status should parse"),
             CliAction::Status {
                 model: DEFAULT_MODEL.to_string(),
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
         assert_eq!(
@@ -6882,7 +6887,7 @@ mod tests {
                 model: DEFAULT_MODEL.to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
     }

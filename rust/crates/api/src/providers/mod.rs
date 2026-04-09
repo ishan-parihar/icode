@@ -1,5 +1,8 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+
+use runtime::AuthStore;
 
 use crate::error::ApiError;
 use crate::types::{MessageRequest, MessageResponse};
@@ -31,7 +34,7 @@ pub trait Provider {
     ) -> ProviderFuture<'a, Self::Stream>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     Anthropic,
     Xai,
@@ -43,6 +46,8 @@ pub enum ProviderKind {
     OpenRouter,
     Mistral,
     Groq,
+    /// No provider is configured; credentials are missing for all providers.
+    Unconfigured,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,7 +478,7 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     {
         return ProviderKind::QwenProxy;
     }
-    ProviderKind::Anthropic
+    ProviderKind::Unconfigured
 }
 
 #[must_use]
@@ -521,6 +526,143 @@ pub fn max_tokens_for_model(model: &str) -> u32 {
 
 pub fn list_all_models() -> impl Iterator<Item = &'static RegistryEntry> {
     MODEL_REGISTRY.iter()
+}
+
+/// Status of a provider's authentication configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAuthStatus {
+    pub kind: ProviderKind,
+    pub display_name: &'static str,
+    pub env_vars: Vec<&'static str>,
+    pub has_auth: bool,
+    /// Number of models available for this provider.
+    pub model_count: usize,
+}
+
+/// Unique set of provider kinds that appear in the model registry, with display names.
+const PROVIDER_DISPLAY_NAMES: &[(ProviderKind, &str)] = &[
+    (ProviderKind::Anthropic, "Anthropic"),
+    (ProviderKind::OpenAi, "OpenAI"),
+    (ProviderKind::Xai, "xAI"),
+    (ProviderKind::QwenProxy, "Qwen Proxy"),
+    (ProviderKind::Azure, "Azure OpenAI"),
+    (ProviderKind::Gemini, "Google Gemini"),
+    (ProviderKind::Bedrock, "AWS Bedrock"),
+    (ProviderKind::OpenRouter, "OpenRouter"),
+    (ProviderKind::Mistral, "Mistral"),
+    (ProviderKind::Groq, "Groq"),
+];
+
+/// Maps a `ProviderKind` to its `AuthStore` string key.
+fn auth_store_key(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenAi => "openai",
+        ProviderKind::Xai => "xai",
+        ProviderKind::QwenProxy => "qwen_proxy",
+        ProviderKind::Azure => "azure",
+        ProviderKind::Gemini => "gemini",
+        ProviderKind::Bedrock => "bedrock",
+        ProviderKind::OpenRouter => "openrouter",
+        ProviderKind::Mistral => "mistral",
+        ProviderKind::Groq => "groq",
+        ProviderKind::Unconfigured => "unconfigured",
+    }
+}
+
+/// Check if a provider has auth configured via env vars OR stored `AuthStore` keys.
+/// Returns true if EITHER source has a non-empty key configured.
+#[must_use]
+pub fn check_provider_auth(kind: ProviderKind) -> bool {
+    // Check env vars first (existing logic)
+    let has_env_auth = match kind {
+        ProviderKind::Bedrock => {
+            std::env::var("AWS_ACCESS_KEY_ID").is_ok()
+                || std::env::var("AWS_SECRET_ACCESS_KEY").is_ok()
+                || std::env::var("AWS_PROFILE").is_ok()
+                || std::env::var("AWS_BEARER_TOKEN_BEDROCK").is_ok()
+        }
+        other => {
+            // Collect unique env vars for this provider kind from the registry
+            let env_vars: HashSet<&'static str> = MODEL_REGISTRY
+                .iter()
+                .filter(|e| e.provider == other)
+                .map(|e| e.auth_env)
+                .collect();
+            env_vars
+                .iter()
+                .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
+        }
+    };
+
+    if has_env_auth {
+        return true;
+    }
+
+    // Check AuthStore as additional source
+    let store = AuthStore::load();
+    store.api_key_for(auth_store_key(kind)).is_some()
+}
+
+/// Scan all registered providers and report which ones have authentication
+/// available via environment variables or stored keys.
+///
+/// This is the provider-agnostic equivalent of opencode's auth resolution:
+/// instead of hardcoding Anthropic credential checks, it iterates over every
+/// provider in the model registry and checks their declared env vars.
+#[must_use]
+pub fn scan_provider_auth_status() -> Vec<ProviderAuthStatus> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+
+    for (kind, display_name) in PROVIDER_DISPLAY_NAMES {
+        if seen.contains(kind) {
+            continue;
+        }
+        seen.insert(*kind);
+
+        // Collect all unique env vars for this provider kind
+        let env_vars: Vec<&'static str> = MODEL_REGISTRY
+            .iter()
+            .filter(|e| e.provider == *kind)
+            .map(|e| e.auth_env)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let model_count = MODEL_REGISTRY
+            .iter()
+            .filter(|e| e.provider == *kind)
+            .count();
+
+        // Use combined env + AuthStore check
+        let has_auth = check_provider_auth(*kind);
+
+        result.push(ProviderAuthStatus {
+            kind: *kind,
+            display_name,
+            env_vars,
+            has_auth,
+            model_count,
+        });
+    }
+
+    result
+}
+
+/// Returns the display name for a provider kind.
+#[must_use]
+pub fn provider_display_name(kind: ProviderKind) -> &'static str {
+    PROVIDER_DISPLAY_NAMES
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map_or("Unknown", |(_, name)| *name)
+}
+
+/// Returns true if the given provider kind has authentication configured.
+#[must_use]
+pub fn is_provider_configured(kind: ProviderKind) -> bool {
+    check_provider_auth(kind)
 }
 
 #[cfg(test)]

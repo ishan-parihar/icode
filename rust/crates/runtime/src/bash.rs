@@ -234,8 +234,18 @@ fn prepare_tokio_command(
 }
 
 fn prepare_sandbox_dirs(cwd: &std::path::Path) {
-    let _ = std::fs::create_dir_all(cwd.join(".sandbox-home"));
-    let _ = std::fs::create_dir_all(cwd.join(".sandbox-tmp"));
+    if let Err(e) = std::fs::create_dir_all(cwd.join(".sandbox-home")) {
+        eprintln!("bash: failed to create sandbox HOME: {e}");
+    }
+    if let Err(e) = std::fs::create_dir_all(cwd.join(".sandbox-tmp")) {
+        eprintln!("bash: failed to create sandbox TMPDIR: {e}");
+    }
+}
+
+#[allow(dead_code)]
+pub fn cleanup_sandbox_dirs(cwd: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(cwd.join(".sandbox-home"));
+    let _ = std::fs::remove_dir_all(cwd.join(".sandbox-tmp"));
 }
 
 #[cfg(test)]

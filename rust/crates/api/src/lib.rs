@@ -24,8 +24,9 @@ pub use providers::anthropic::{AnthropicClient, AnthropicClient as ApiClient, Au
 pub use providers::openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
 // pub use providers::openrouter::OpenRouterClient;
 pub use providers::{
-    capabilities_for_model, detect_provider_kind, list_all_models, max_tokens_for_model,
-    resolve_model_alias, ModelCapabilities, ProviderKind, RegistryEntry,
+    capabilities_for_model, check_provider_auth, detect_provider_kind, is_provider_configured,
+    list_all_models, max_tokens_for_model, provider_display_name, resolve_model_alias,
+    scan_provider_auth_status, ModelCapabilities, ProviderKind, RegistryEntry,
 };
 pub use sse::{parse_frame, SseParser};
 pub use types::{

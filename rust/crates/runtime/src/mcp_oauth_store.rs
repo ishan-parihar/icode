@@ -92,23 +92,31 @@ impl McpOAuthStore {
         let rendered = serde_json::to_string_pretty(map)?;
         let tmp_path = path.with_extension("json.tmp");
 
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(rendered.as_bytes())?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
+        let result = (|| {
+            {
+                let mut file = File::create(&tmp_path)?;
+                file.write_all(rendered.as_bytes())?;
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&tmp_path)?.permissions();
+                perms.set_mode(0o600);
+                fs::set_permissions(&tmp_path, perms).map_err(McpOAuthStoreError::Permission)?;
+            }
+
+            fs::rename(&tmp_path, &path)?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
         }
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&tmp_path)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&tmp_path, perms).map_err(McpOAuthStoreError::Permission)?;
-        }
-
-        fs::rename(&tmp_path, &path)?;
-        Ok(())
+        result
     }
 
     #[must_use]

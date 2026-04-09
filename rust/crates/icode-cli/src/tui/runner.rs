@@ -1115,6 +1115,32 @@ impl Tui {
                 );
                 None
             }
+            ProviderAction::ConnectProvider(kind, display, api_key) => {
+                let store_key = match kind {
+                    api::ProviderKind::Anthropic => "anthropic",
+                    api::ProviderKind::OpenAi => "openai",
+                    api::ProviderKind::Xai => "xai",
+                    api::ProviderKind::QwenProxy => "qwen_proxy",
+                    api::ProviderKind::Azure => "azure",
+                    api::ProviderKind::Gemini => "gemini",
+                    api::ProviderKind::Bedrock => "bedrock",
+                    api::ProviderKind::OpenRouter => "openrouter",
+                    api::ProviderKind::Mistral => "mistral",
+                    api::ProviderKind::Groq => "groq",
+                    api::ProviderKind::Unconfigured => return None,
+                };
+                let mut store = runtime::AuthStore::load();
+                store.set_api_key(store_key.to_string(), api_key.clone());
+                if let Err(e) = store.save() {
+                    self.state
+                        .add_toast(format!("Failed to save key: {e}"), ToastKind::Error);
+                } else {
+                    self.state
+                        .add_toast(format!("{display} connected"), ToastKind::Success);
+                    self.state.provider_dialog.refresh_providers();
+                }
+                None
+            }
         }
     }
 

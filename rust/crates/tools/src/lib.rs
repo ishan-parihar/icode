@@ -4713,13 +4713,51 @@ fn detect_powershell_shell() -> std::io::Result<&'static str> {
     }
 }
 
+/// Check if a command exists by scanning PATH directories for an executable file.
+/// Safe against shell injection — never invokes a shell.
 fn command_exists(command: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-lc")
-        .arg(format!("command -v {command} >/dev/null 2>&1"))
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    // Reject obviously malicious or malformed input
+    if command.is_empty() || command.contains('/') || command.contains(char::is_whitespace) {
+        return false;
+    }
+
+    let Ok(path_env) = std::env::var("PATH") else {
+        return false;
+    };
+
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(command);
+        // Check: exists AND is a file AND is executable
+        if candidate.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = candidate.metadata() {
+                    let mode = metadata.permissions().mode();
+                    // Check owner, group, or other execute bit
+                    if mode & 0o111 != 0 {
+                        return true;
+                    }
+                }
+            }
+            #[cfg(windows)]
+            {
+                // On Windows, check for .exe, .cmd, .bat, .ps1 extensions
+                let extensions = [".exe", ".cmd", ".bat", ".ps1"];
+                if extensions
+                    .iter()
+                    .any(|ext| candidate.to_string_lossy().to_lowercase().ends_with(ext))
+                {
+                    return true;
+                }
+                // Also accept extension-less if it's a file
+                if candidate.extension().is_none() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_lines)]

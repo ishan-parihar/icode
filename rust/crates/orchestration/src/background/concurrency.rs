@@ -20,15 +20,21 @@ impl ConcurrencyLimiter {
     pub fn set_limit(&self, model: String, limit: usize) {
         self.limits
             .write()
-            .expect("rwlock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(model, limit);
     }
 
     pub fn try_acquire(&self, model: &str) -> bool {
-        let limits = self.limits.read().expect("rwlock poisoned");
+        let limits = self
+            .limits
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let limit = limits.get(model).copied().unwrap_or(self.default_limit);
         drop(limits);
-        let mut active = self.active.write().expect("rwlock poisoned");
+        let mut active = self
+            .active
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = active.entry(model.to_string()).or_insert(0);
         if *count < limit {
             *count += 1;
@@ -39,7 +45,10 @@ impl ConcurrencyLimiter {
     }
 
     pub fn release(&self, model: &str) {
-        let mut active = self.active.write().expect("rwlock poisoned");
+        let mut active = self
+            .active
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(count) = active.get_mut(model) {
             *count = count.saturating_sub(1);
         }
@@ -48,7 +57,7 @@ impl ConcurrencyLimiter {
     pub fn active_count(&self, model: &str) -> usize {
         self.active
             .read()
-            .expect("rwlock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(model)
             .copied()
             .unwrap_or(0)

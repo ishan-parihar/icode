@@ -50,6 +50,7 @@ pub struct UnixSocketServer {
     store: Arc<std::sync::Mutex<SqliteStore>>,
     socket_path: PathBuf,
     running: Arc<AtomicBool>,
+    accept_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl UnixSocketServer {
@@ -59,6 +60,7 @@ impl UnixSocketServer {
             store,
             socket_path: default_socket_path(),
             running: Arc::new(AtomicBool::new(true)),
+            accept_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -72,6 +74,7 @@ impl UnixSocketServer {
             store,
             socket_path,
             running: Arc::new(AtomicBool::new(true)),
+            accept_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -89,7 +92,7 @@ impl UnixSocketServer {
         let instance_id = self.instance_id.clone();
         let store = self.store.clone();
 
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             for stream in listener.incoming() {
                 if !running.load(Ordering::SeqCst) {
                     break;
@@ -111,12 +114,34 @@ impl UnixSocketServer {
             }
         });
 
+        *self
+            .accept_handle
+            .lock()
+            .expect("accept_handle lock poisoned") = Some(handle);
+
         Ok(())
     }
 
     pub fn shutdown(&self) {
         self.running.store(false, Ordering::SeqCst);
+        let _ = UnixStream::connect(&self.socket_path);
         let _ = std::fs::remove_file(&self.socket_path);
+
+        if let Some(handle) = self
+            .accept_handle
+            .lock()
+            .expect("accept_handle lock poisoned")
+            .take()
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !handle.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if !handle.is_finished() {
+                eprintln!("ipc_socket: accept thread did not exit within 2s, detaching");
+            }
+            let _ = handle.join();
+        }
     }
 
     pub fn broadcast_event(&self, envelope: &Envelope) {
@@ -276,6 +301,8 @@ pub struct UnixSocketClient {
     instance_id: String,
     socket_path: PathBuf,
     receive_buffer: Arc<std::sync::Mutex<Vec<Envelope>>>,
+    receiver_running: Arc<AtomicBool>,
+    receiver_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl UnixSocketClient {
@@ -285,6 +312,8 @@ impl UnixSocketClient {
             instance_id,
             socket_path,
             receive_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            receiver_running: Arc::new(AtomicBool::new(true)),
+            receiver_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -292,8 +321,12 @@ impl UnixSocketClient {
         let socket_path = self.socket_path.clone();
         let buffer = self.receive_buffer.clone();
         let client_instance_id = self.instance_id.clone();
+        let running = self.receiver_running.clone();
 
-        thread::spawn(move || loop {
+        let handle = thread::spawn(move || loop {
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
             if let Ok(mut stream) = UnixStream::connect(&socket_path) {
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -315,6 +348,9 @@ impl UnixSocketClient {
 
                 let reader = BufReader::new(stream);
                 for line in reader.lines() {
+                    if !running.load(Ordering::SeqCst) {
+                        break;
+                    }
                     match line {
                         Ok(line) => {
                             if let Ok(ProtocolMessage::Event { envelope }) =
@@ -332,8 +368,36 @@ impl UnixSocketClient {
                     }
                 }
             }
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
             thread::sleep(std::time::Duration::from_secs(1));
         });
+
+        *self
+            .receiver_handle
+            .lock()
+            .expect("receiver_handle lock poisoned") = Some(handle);
+    }
+
+    pub fn stop_receiver(&self) {
+        self.receiver_running.store(false, Ordering::SeqCst);
+
+        if let Some(handle) = self
+            .receiver_handle
+            .lock()
+            .expect("receiver_handle lock poisoned")
+            .take()
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !handle.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if !handle.is_finished() {
+                eprintln!("ipc_socket: receiver thread did not exit within 2s, detaching");
+            }
+            let _ = handle.join();
+        }
     }
 
     pub fn send_envelope(&self, envelope: &Envelope) -> Result<(), String> {

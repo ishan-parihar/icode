@@ -65,8 +65,18 @@ impl MessageActionDialogState {
             self.options
                 .iter()
                 .filter(|o| {
-                    o.title.to_lowercase().contains(&lower)
-                        || o.description.to_lowercase().contains(&lower)
+                    let title_lower = o.title.to_lowercase();
+                    if title_lower.starts_with(&lower) {
+                        return true;
+                    }
+                    if lower.len() >= 3 {
+                        o.description
+                            .to_lowercase()
+                            .split_whitespace()
+                            .any(|word| word.starts_with(&lower))
+                    } else {
+                        false
+                    }
                 })
                 .collect()
         }

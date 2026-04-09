@@ -54,7 +54,9 @@ impl CronScheduler {
 
                     if let Ok(schedule) = Schedule::from_str(&entry.schedule) {
                         let last_run = entry.last_run_at.and_then(|ts| {
-                            chrono::DateTime::<chrono::Utc>::from_timestamp(ts as i64, 0)
+                            i64::try_from(ts)
+                                .ok()
+                                .and_then(|ts_i64| chrono::DateTime::<chrono::Utc>::from_timestamp(ts_i64, 0))
                         });
 
                         let should_run = match last_run {
@@ -76,7 +78,12 @@ impl CronScheduler {
                             if let Some(ref cb) = callback {
                                 cb(entry);
                             }
-                            let _ = registry.record_run(&entry.cron_id);
+                            if let Err(e) = registry.record_run(&entry.cron_id) {
+                                eprintln!(
+                                    "cron_scheduler: failed to record run for {}: {e}",
+                                    entry.cron_id
+                                );
+                            }
                         }
                     }
                 }

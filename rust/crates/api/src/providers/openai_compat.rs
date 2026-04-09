@@ -35,6 +35,15 @@ const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
 const QWEN_PROXY_ENV_VARS: &[&str] = &["QWEN_PROXY_API_KEY"];
 
+fn auth_store_key_for_config(config: OpenAiCompatConfig) -> &'static str {
+    match config.provider_name {
+        "xAI" => "xai",
+        "OpenAI" => "openai",
+        "QwenProxy" => "qwen_proxy",
+        _ => config.provider_name,
+    }
+}
+
 impl OpenAiCompatConfig {
     #[must_use]
     pub const fn xai() -> Self {
@@ -109,12 +118,14 @@ impl OpenAiCompatClient {
     }
 
     pub fn from_env(config: OpenAiCompatConfig) -> Result<Self, ApiError> {
-        let Some(api_key) = read_env_non_empty(config.api_key_env)? else {
-            return Err(ApiError::missing_credentials(
-                config.provider_name,
-                config.credential_env_vars(),
-            ));
-        };
+        let api_key = read_env_non_empty(config.api_key_env)?.or_else(|| {
+            let store = runtime::AuthStore::load();
+            store.api_key_for(auth_store_key_for_config(config))
+        });
+
+        let api_key = api_key.ok_or_else(|| {
+            ApiError::missing_credentials(config.provider_name, config.credential_env_vars())
+        })?;
         Ok(Self::new(api_key, config))
     }
 

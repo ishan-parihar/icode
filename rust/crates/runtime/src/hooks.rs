@@ -951,7 +951,12 @@ fn parse_hook_output(stdout: &str) -> ParsedHookOutput {
             parsed.permission_reason = Some(reason.to_string());
         }
         if let Some(updated_input) = specific.get("updatedInput") {
-            parsed.updated_input = serde_json::to_string(updated_input).ok();
+            match serde_json::to_string(updated_input) {
+                Ok(s) => parsed.updated_input = Some(s),
+                Err(e) => {
+                    eprintln!("hooks: failed to serialize hook updatedInput, input unchanged: {e}");
+                }
+            }
         }
     }
 
@@ -1070,14 +1075,22 @@ impl CommandWithStdin {
 
         loop {
             if abort_signal.is_some_and(HookAbortSignal::is_aborted) {
-                let _ = child.kill();
-                let _ = child.wait_with_output();
+                if let Err(e) = child.kill() {
+                    eprintln!("hooks: child kill failed: {e}");
+                }
+                if let Err(e) = child.wait_with_output() {
+                    eprintln!("hooks: child reap failed: {e}");
+                }
                 return Ok(CommandExecution::Cancelled);
             }
 
             if Instant::now() > deadline {
-                let _ = child.kill();
-                let _ = child.wait_with_output();
+                if let Err(e) = child.kill() {
+                    eprintln!("hooks: child kill failed: {e}");
+                }
+                if let Err(e) = child.wait_with_output() {
+                    eprintln!("hooks: child reap failed: {e}");
+                }
                 return Ok(CommandExecution::Cancelled);
             }
 

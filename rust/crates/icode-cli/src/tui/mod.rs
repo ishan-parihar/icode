@@ -4,6 +4,7 @@ pub mod autocomplete;
 pub mod command_palette;
 pub mod context_suggestions;
 pub mod debug_panel;
+pub mod dialog_connect;
 pub mod dialog_context_viz;
 pub mod dialog_export_options;
 pub mod dialog_help;
@@ -46,6 +47,7 @@ pub mod transcript;
 pub mod widgets;
 
 pub use app::{Toast, ToastKind};
+pub use dialog_connect::{render_connect_dialog, ConnectAction, ConnectDialogState};
 pub use dialog_message_actions::{MessageAction, MessageActionDialogState};
 pub use dialog_prompt_stash::{render_prompt_stash_dialog, PromptStashState};
 pub use input::InputWidget;

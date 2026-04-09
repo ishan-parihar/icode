@@ -154,6 +154,7 @@ pub struct FileWatcher {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
     event_rx: Option<sync_mpsc::Receiver<Result<NotifyEvent, notify::Error>>>,
+    stop_tx: Option<sync_mpsc::Sender<()>>,
 }
 
 fn emit_file_changed(event_bus: &EventBus, path: &Path, kind: EventKind) {
@@ -234,6 +235,7 @@ impl FileWatcher {
             running: Arc::new(AtomicBool::new(false)),
             handle: None,
             event_rx: Some(rx),
+            stop_tx: None,
         })
     }
 
@@ -295,12 +297,16 @@ impl FileWatcher {
 
         self.running.store(true, Ordering::SeqCst);
         self.handle = Some(handle);
-        let _ = stop_tx;
+        self.stop_tx = Some(stop_tx);
         Ok(())
     }
 
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
+
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
 
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
@@ -524,7 +530,10 @@ mod tests {
         assert!(pending.events.is_empty());
     }
 
-    #[cfg_attr(not(feature = "watcher-tests"), ignore = "requires file watcher support")]
+    #[cfg_attr(
+        not(feature = "watcher-tests"),
+        ignore = "requires file watcher support"
+    )]
     #[test]
     fn file_watcher_new_and_stop_works() {
         let dir = temp_dir("new-stop");
@@ -547,7 +556,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg_attr(not(feature = "watcher-tests"), ignore = "requires file watcher support")]
+    #[cfg_attr(
+        not(feature = "watcher-tests"),
+        ignore = "requires file watcher support"
+    )]
     #[test]
     fn file_watcher_emits_events_on_file_change() {
         let dir = temp_dir("emit-events");
@@ -593,7 +605,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg_attr(not(feature = "watcher-tests"), ignore = "requires file watcher support")]
+    #[cfg_attr(
+        not(feature = "watcher-tests"),
+        ignore = "requires file watcher support"
+    )]
     #[test]
     fn file_watcher_excludes_configured_patterns() {
         let dir = temp_dir("exclude-patterns");

@@ -1,9 +1,12 @@
+use api::{list_all_models, provider_display_name, scan_provider_auth_status, ProviderKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
+use std::collections::HashMap;
 
+use crate::tui::dialog_connect::{ConnectAction, ConnectDialogState};
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 56;
@@ -33,6 +36,7 @@ pub enum ProviderStatus {
 #[derive(Debug, Clone)]
 pub struct ProviderEntry {
     pub name: String,
+    pub kind: ProviderKind,
     pub status: ProviderStatus,
     pub configured: bool,
     pub models: Vec<String>,
@@ -46,6 +50,7 @@ pub struct ProviderDialogState {
     pub scroll_offset: usize,
     pub search: String,
     pub filtered: Vec<usize>,
+    pub connect_dialog: ConnectDialogState,
 }
 
 impl ProviderDialogState {
@@ -57,6 +62,7 @@ impl ProviderDialogState {
             scroll_offset: 0,
             search: String::new(),
             filtered: Vec::new(),
+            connect_dialog: ConnectDialogState::new(),
         }
     }
 
@@ -71,62 +77,40 @@ impl ProviderDialogState {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.connect_dialog.close();
     }
 
     fn detect_providers() -> Vec<ProviderEntry> {
-        let mut providers = Vec::new();
+        let auth_statuses = scan_provider_auth_status();
 
-        let anthropic_configured = std::env::var("ANTHROPIC_API_KEY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        providers.push(ProviderEntry {
-            name: "Anthropic".to_string(),
-            status: if anthropic_configured {
-                ProviderStatus::Connected
-            } else {
-                ProviderStatus::Disconnected
-            },
-            configured: anthropic_configured,
-            models: vec![
-                "claude-opus-4-6".to_string(),
-                "claude-sonnet-4-6".to_string(),
-                "claude-haiku-4-5-20251213".to_string(),
-            ],
-        });
+        let mut models_by_provider: HashMap<ProviderKind, Vec<String>> = HashMap::new();
+        for entry in list_all_models() {
+            models_by_provider
+                .entry(entry.provider)
+                .or_default()
+                .push(entry.alias.to_string());
+        }
 
-        let openai_configured = std::env::var("OPENAI_API_KEY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        providers.push(ProviderEntry {
-            name: "OpenAI".to_string(),
-            status: if openai_configured {
-                ProviderStatus::Connected
-            } else {
-                ProviderStatus::Disconnected
-            },
-            configured: openai_configured,
-            models: vec![
-                "gpt-4o".to_string(),
-                "gpt-4o-mini".to_string(),
-                "o1".to_string(),
-            ],
-        });
-
-        let gemini_configured = std::env::var("GEMINI_API_KEY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        providers.push(ProviderEntry {
-            name: "Google (Gemini)".to_string(),
-            status: if gemini_configured {
-                ProviderStatus::Connected
-            } else {
-                ProviderStatus::Disconnected
-            },
-            configured: gemini_configured,
-            models: vec!["gemini-2.5-pro".to_string(), "gemini-2.5-flash".to_string()],
-        });
-
-        providers
+        auth_statuses
+            .into_iter()
+            .map(|status| {
+                let models = models_by_provider
+                    .get(&status.kind)
+                    .cloned()
+                    .unwrap_or_default();
+                ProviderEntry {
+                    name: status.display_name.to_string(),
+                    kind: status.kind,
+                    status: if status.has_auth {
+                        ProviderStatus::Connected
+                    } else {
+                        ProviderStatus::Disconnected
+                    },
+                    configured: status.has_auth,
+                    models,
+                }
+            })
+            .collect()
     }
 
     fn apply_filter(&mut self) {
@@ -145,6 +129,21 @@ impl ProviderDialogState {
     }
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> ProviderAction {
+        if self.connect_dialog.open {
+            match self.connect_dialog.handle_key(key) {
+                ConnectAction::Submit(api_key) => {
+                    let kind = self.connect_dialog.provider_kind;
+                    let display = self.connect_dialog.provider_name.clone();
+                    return ProviderAction::ConnectProvider(kind, display, api_key);
+                }
+                ConnectAction::Close => {
+                    self.connect_dialog.close();
+                    return ProviderAction::None;
+                }
+                ConnectAction::None => return ProviderAction::None,
+            }
+        }
+
         use crossterm::event::{KeyCode, KeyModifiers};
 
         match (key.modifiers, key.code) {
@@ -158,8 +157,14 @@ impl ProviderDialogState {
             }
             (_, KeyCode::Enter) => {
                 if let Some(&idx) = self.filtered.get(self.selected) {
-                    self.providers[idx].configured = !self.providers[idx].configured;
-                    ProviderAction::Toggle(idx)
+                    let provider = &self.providers[idx];
+                    if provider.configured {
+                        ProviderAction::Toggle(idx)
+                    } else {
+                        self.connect_dialog
+                            .open(provider.name.clone(), provider.kind);
+                        ProviderAction::None
+                    }
                 } else {
                     ProviderAction::None
                 }
@@ -212,6 +217,11 @@ impl ProviderDialogState {
             _ => ProviderAction::None,
         }
     }
+
+    pub fn refresh_providers(&mut self) {
+        self.providers = Self::detect_providers();
+        self.apply_filter();
+    }
 }
 
 impl Default for ProviderDialogState {
@@ -226,6 +236,7 @@ pub enum ProviderAction {
     Close,
     Toggle(usize),
     ViewDocs(usize),
+    ConnectProvider(ProviderKind, String, String),
 }
 
 fn status_icon(status: &ProviderStatus) -> &'static str {
@@ -297,18 +308,30 @@ pub fn render_provider_dialog(
     };
     frame.render_widget(Paragraph::new(search_line), chunks[0]);
 
-    let hint = Span::styled(
-        "Enter: toggle  •  d: docs  •  /: search  •  Esc: close",
-        Style::default()
-            .fg(theme.text_muted)
-            .add_modifier(Modifier::ITALIC),
-    );
+    let hint = if state.connect_dialog.open {
+        Span::styled(
+            "Connect to provider...",
+            Style::default()
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        )
+    } else {
+        Span::styled(
+            "Enter: connect  •  d: docs  •  /: search  •  Esc: close",
+            Style::default()
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        )
+    };
     frame.render_widget(Paragraph::new(hint), chunks[1]);
 
     let list_area = chunks[2];
     let visible_lines = list_area.height as usize;
 
-    if state.filtered.is_empty() {
+    if state.connect_dialog.open {
+        use crate::tui::dialog_connect::render_connect_dialog;
+        render_connect_dialog(frame, area, &mut state.connect_dialog, theme);
+    } else if state.filtered.is_empty() {
         let empty = Paragraph::new(Span::styled(
             "No providers match search",
             Style::default().fg(theme.text_muted),
@@ -333,7 +356,7 @@ pub fn render_provider_dialog(
             let configured_label = if provider.configured {
                 "configured"
             } else {
-                "not configured"
+                "connect"
             };
 
             let model_count = provider.models.len();
@@ -435,9 +458,9 @@ mod tests {
     fn test_detect_providers() {
         let providers = ProviderDialogState::detect_providers();
         assert!(providers.len() >= 3);
-        assert_eq!(providers[0].name, "Anthropic");
-        assert_eq!(providers[1].name, "OpenAI");
-        assert_eq!(providers[2].name, "Google (Gemini)");
+        let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"Anthropic"));
+        assert!(names.contains(&"OpenAI"));
     }
 
     #[test]
@@ -458,15 +481,29 @@ mod tests {
     }
 
     #[test]
-    fn test_enter_toggles_provider() {
+    fn test_enter_opens_connect_for_disconnected() {
         let mut state = ProviderDialogState::new();
         state.open();
 
-        let initial_configured = state.providers[0].configured;
+        let disconnected_idx = state
+            .providers
+            .iter()
+            .position(|p| !p.configured)
+            .unwrap_or(0);
+        state.selected = state
+            .filtered
+            .iter()
+            .position(|&f| f == disconnected_idx)
+            .unwrap_or(0);
+
         let action = state.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(matches!(action, ProviderAction::Toggle(0)));
-        assert_ne!(state.providers[0].configured, initial_configured);
+        if state.providers[disconnected_idx].configured {
+            assert!(matches!(action, ProviderAction::Toggle(_)));
+        } else {
+            assert!(state.connect_dialog.open);
+            assert!(matches!(action, ProviderAction::None));
+        }
     }
 
     #[test]
@@ -531,6 +568,26 @@ mod tests {
         let providers = ProviderDialogState::detect_providers();
         for provider in &providers {
             assert!(!provider.models.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_provider_has_kind() {
+        let providers = ProviderDialogState::detect_providers();
+        for provider in &providers {
+            match provider.kind {
+                ProviderKind::Anthropic
+                | ProviderKind::OpenAi
+                | ProviderKind::Xai
+                | ProviderKind::QwenProxy
+                | ProviderKind::Azure
+                | ProviderKind::Gemini
+                | ProviderKind::Bedrock
+                | ProviderKind::OpenRouter
+                | ProviderKind::Mistral
+                | ProviderKind::Groq
+                | ProviderKind::Unconfigured => {}
+            }
         }
     }
 }

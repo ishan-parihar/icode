@@ -205,6 +205,13 @@ fn dirs_like_home() -> Option<std::path::PathBuf> {
     std::env::var("HOME").ok().map(std::path::PathBuf::from)
 }
 
+fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
 fn handle_model_list(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     let mut models: Vec<_> = api::list_all_models()
         .map(|entry| {
@@ -250,6 +257,7 @@ fn provider_kind_to_string(kind: api::ProviderKind) -> &'static str {
         api::ProviderKind::OpenRouter => "OpenRouter",
         api::ProviderKind::Mistral => "Mistral",
         api::ProviderKind::Groq => "Groq",
+        api::ProviderKind::Unconfigured => "Unconfigured",
     }
 }
 
@@ -282,6 +290,14 @@ fn handle_session_message(
         .and_then(|v| v.as_str())
         .unwrap_or("default");
 
+    if !is_valid_session_id(session_id) {
+        return JsonRpcResponse::error(
+            id.cloned(),
+            -32602,
+            "Invalid session_id: must contain only alphanumeric characters, hyphens, and underscores",
+        );
+    }
+
     let model = params
         .get("model")
         .and_then(|v| v.as_str())
@@ -291,7 +307,7 @@ fn handle_session_message(
     let permission_mode_str = params
         .get("permission_mode")
         .and_then(|v| v.as_str())
-        .unwrap_or("danger-full-access");
+        .unwrap_or("workspace-write");
 
     let permission_mode = match permission_mode_str {
         "read-only" => runtime::PermissionMode::ReadOnly,

@@ -23,11 +23,21 @@ pub fn read_file_tool_spec() -> Value {
 pub fn execute_read_file(input: &ReadFileInput) -> Result<String, String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
+    let canonical_cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve workspace root: {e}"))?;
     let path = cwd.join(&input.path);
-    if !path.exists() {
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {e}"))?;
+    if !canonical_path.starts_with(&canonical_cwd) {
+        return Err(format!("Path '{}' escapes workspace boundary", input.path));
+    }
+    if !canonical_path.exists() {
         return Err(format!("File not found: {}", input.path));
     }
-    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let content =
+        fs::read_to_string(&canonical_path).map_err(|e| format!("Failed to read file: {e}"))?;
     let lines: Vec<&str> = content.lines().collect();
     let start = input.start_line.saturating_sub(1);
     let end = if input.max_lines > 0 {

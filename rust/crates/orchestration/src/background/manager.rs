@@ -34,7 +34,7 @@ impl BackgroundManager {
         let task = BackgroundTask::new(id.clone(), description, "default".to_string(), model);
         self.tasks
             .write()
-            .expect("rwlock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.clone(), task);
         Some(id)
     }
@@ -43,14 +43,17 @@ impl BackgroundManager {
     pub fn get(&self, task_id: &str) -> Option<BackgroundTask> {
         self.tasks
             .read()
-            .expect("rwlock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(task_id)
             .cloned()
     }
 
     /// Update task status.
     pub fn update_status(&self, task_id: &str, status: BackgroundTaskStatus) -> Result<(), String> {
-        let mut tasks = self.tasks.write().expect("rwlock poisoned");
+        let mut tasks = self
+            .tasks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let task = tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task {task_id} not found"))?;
@@ -60,7 +63,10 @@ impl BackgroundManager {
 
     /// Mark task as completed with result.
     pub fn complete(&self, task_id: &str, result: String) -> Result<(), String> {
-        let mut tasks = self.tasks.write().expect("rwlock poisoned");
+        let mut tasks = self
+            .tasks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let task = tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task {task_id} not found"))?;
@@ -75,7 +81,10 @@ impl BackgroundManager {
 
     /// Mark task as failed with error.
     pub fn fail(&self, task_id: &str, error: String) -> Result<(), String> {
-        let mut tasks = self.tasks.write().expect("rwlock poisoned");
+        let mut tasks = self
+            .tasks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let task = tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task {task_id} not found"))?;
@@ -90,7 +99,10 @@ impl BackgroundManager {
 
     /// Cancel a task. Fails if already completed.
     pub fn cancel(&self, task_id: &str) -> Result<(), String> {
-        let mut tasks = self.tasks.write().expect("rwlock poisoned");
+        let mut tasks = self
+            .tasks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let task = tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task {task_id} not found"))?;
@@ -115,7 +127,7 @@ impl BackgroundManager {
     pub fn list(&self) -> Vec<BackgroundTask> {
         self.tasks
             .read()
-            .expect("rwlock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect()
@@ -127,6 +139,12 @@ impl BackgroundManager {
 
     /// Cleanup expired tasks, return count removed.
     pub fn cleanup(&self, ttl: Duration) -> usize {
-        cleanup_expired(&mut self.tasks.write().expect("rwlock poisoned"), ttl)
+        cleanup_expired(
+            &mut self
+                .tasks
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ttl,
+        )
     }
 }

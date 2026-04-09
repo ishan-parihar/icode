@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::json::{JsonError, JsonValue};
 use crate::usage::TokenUsage;
@@ -160,6 +160,9 @@ impl Session {
 
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, SessionError> {
         let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            cleanup_stale_temp_files(parent);
+        }
         let contents = fs::read_to_string(path)?;
         let session = match JsonValue::parse(&contents) {
             Ok(value)
@@ -842,13 +845,62 @@ fn generate_session_id() -> String {
     format!("session-{millis}-{counter}")
 }
 
+/// Guard that removes a temporary file on drop unless explicitly disarmed.
+struct TempFileGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn defuse(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Remove stale `*.tmp-*-` files older than one hour in the given directory.
+pub fn cleanup_stale_temp_files(parent: &Path) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let one_hour_ago = SystemTime::now()
+        .checked_sub(Duration::from_secs(3600))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if file_name.contains(".tmp-") {
+            if let Ok(metadata) = fs::metadata(&path) {
+                if let Ok(modified) = metadata.modified() {
+                    if modified < one_hour_ago {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn write_atomic(path: &Path, contents: &str) -> Result<(), SessionError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let temp_path = temporary_path_for(path);
+    let mut guard = TempFileGuard::new(temp_path.clone());
     fs::write(&temp_path, contents)?;
-    fs::rename(temp_path, path)?;
+    fs::rename(&temp_path, path)?;
+    guard.defuse();
     Ok(())
 }
 

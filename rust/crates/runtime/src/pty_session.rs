@@ -154,13 +154,13 @@ impl PtyManager {
         let reader_thread = std::thread::spawn(move || {
             let mut buf = [0u8; READER_BUFFER_SIZE];
             loop {
-                if stop_for_reader.load(Ordering::Relaxed) {
+                if stop_for_reader.load(Ordering::Acquire) {
                     break;
                 }
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let mut ring = ring_for_reader.lock().unwrap();
+                        let mut ring = ring_for_reader.lock().unwrap_or_else(|e| e.into_inner());
                         for &byte in &buf[..n] {
                             if ring.len() >= RING_BUFFER_MAX {
                                 ring.pop_front();
@@ -168,7 +168,7 @@ impl PtyManager {
                             ring.push_back(byte);
                         }
                     }
-                    Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {},
+                    Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => break,
                 }
             }
@@ -234,11 +234,23 @@ impl PtyManager {
             .remove(session_id)
             .ok_or_else(|| PtyError::SessionNotFound(session_id.to_string()))?;
 
-        session.reader_stop.store(true, Ordering::Relaxed);
+        session.reader_stop.store(true, Ordering::Release);
         let _ = session.child.kill();
 
         if let Some(handle) = session.reader_thread.take() {
-            let _ = handle.join();
+            // Give the reader thread a brief window to observe the stop flag
+            // and exit. If it's blocked on I/O, we detach rather than hang.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            // If the thread didn't exit in time, detach it. It will eventually
+            // terminate when the PTY master is dropped (which happens when
+            // PtySessionInner is dropped).
         }
 
         let exit_code = match session.child.wait() {

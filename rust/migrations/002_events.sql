@@ -9,5 +9,5 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
-CREATE INDEX idx_events_session ON events(session_id);
-CREATE INDEX idx_events_type ON events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);

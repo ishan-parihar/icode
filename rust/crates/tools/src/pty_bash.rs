@@ -12,6 +12,8 @@ use std::io::{Read, Write as IoWrite};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(windows)]
+use std::thread;
 
 #[derive(Debug, Clone)]
 pub struct ShellState {
@@ -39,6 +41,16 @@ type BgTaskMap = HashMap<String, Result<PtyBashOutput, String>>;
 
 pub fn global_bg_task_registry() -> Arc<Mutex<BgTaskMap>> {
     static REG: OnceLock<Arc<Mutex<BgTaskMap>>> = OnceLock::new();
+    REG.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+#[cfg(windows)]
+type BgHandleMap = HashMap<String, thread::JoinHandle<()>>;
+
+#[cfg(windows)]
+fn global_bg_handle_registry() -> Arc<Mutex<BgHandleMap>> {
+    static REG: OnceLock<Arc<Mutex<BgHandleMap>>> = OnceLock::new();
     REG.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone()
 }
@@ -177,8 +189,9 @@ fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> 
     }
     drop(guard);
 
+    let safe_user_cmd = user_cmd.replace('\'', "'\\''");
     let script = format!(
-        "cd '{cwd_str}'; {exports} {user_cmd} exit_code=$?; printf '\\n{SENTINEL}\\n'; pwd; env; exit $exit_code"
+        "cd '{cwd_str}'; {exports} {safe_user_cmd}; exit_code=$?; printf '\\n{SENTINEL}\\n'; pwd; env; exit $exit_code"
     );
 
     let pty_system = portable_pty::native_pty_system();
@@ -309,9 +322,11 @@ fn execute_pty_bash_windows(input: &PtyBashInput) -> Result<PtyBashOutput, Strin
     if run_in_background {
         let id = format!("pty_bg_{}", BG_COUNTER.fetch_add(1, Ordering::SeqCst) + 1);
         let registry = global_bg_task_registry();
+        let handle_registry = global_bg_handle_registry();
         let cmd_str = input.command.clone();
+        let id_for_thread = id.clone();
 
-        let _ = std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let output = Command::new("cmd")
                 .args(["/C", &cmd_str])
                 .output()
@@ -320,14 +335,18 @@ fn execute_pty_bash_windows(input: &PtyBashInput) -> Result<PtyBashOutput, Strin
                     stderr: String::from_utf8_lossy(&o.stderr).to_string(),
                     exit_code: o.status.code().unwrap_or(-1),
                     interrupted: false,
-                    background_task_id: Some(id.clone()),
+                    background_task_id: Some(id_for_thread.clone()),
                 })
                 .map_err(|e| e.to_string());
 
             let _ = registry.lock().map(|mut map| {
-                map.insert(id, output);
+                map.insert(id_for_thread, output);
             });
         });
+
+        if let Ok(mut map) = handle_registry.lock() {
+            map.insert(id.clone(), handle);
+        }
 
         return Ok(PtyBashOutput {
             stdout: String::new(),

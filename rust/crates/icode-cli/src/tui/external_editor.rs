@@ -24,7 +24,12 @@ pub fn open_editor(initial_content: &str) -> Result<String, String> {
     let temp_path = create_temp_file(initial_content)?;
     let result = run_editor(&editor, &temp_path);
     let content = result.and_then(|()| read_temp_file(&temp_path));
-    let _ = fs::remove_file(&temp_path);
+    if let Err(e) = fs::remove_file(&temp_path) {
+        eprintln!(
+            "external_editor: failed to clean up temp file {}: {e}",
+            temp_path.display()
+        );
+    }
 
     content.map(|s| s.trim_end_matches(['\n', '\r']).to_string())
 }

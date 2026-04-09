@@ -14,35 +14,27 @@ use crate::tui::dialog_sessions::render_sessions_dialog;
 use crate::tui::dialog_skills::render_skills_dialog;
 use crate::tui::dialog_theme_list::render_theme_list_dialog;
 use crate::tui::dialog_workspaces::render_workspace_dialog;
-use crate::tui::home_screen::render_home_content;
 use crate::tui::model_picker::render_model_picker;
 use crate::tui::prompt_bar::{PromptBar, PromptBarMode};
 use crate::tui::widgets::{render_pager, DiffView, MessageList, Sidebar};
 use crate::tui::Theme;
 use api::capabilities_for_model;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::prelude::{StatefulWidget, Widget};
+use ratatui::prelude::Widget;
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 use runtime::{format_usd, pricing_for_model};
 
-const HOME_PLACEHOLDERS: &[&str] = &[
-    "Ask anything... 'Fix a TODO in the codebase'",
-    "Ask anything... 'What is the tech stack of this project?'",
-    "Ask anything... 'Fix broken tests'",
-    "Ask anything... 'Explain this codebase'",
-    "Ask anything... 'Add error handling to main'",
-];
-
-const HOME_PLACEHOLDER_INTERVAL_MS: u64 = 3000;
-
 pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     let area = frame.area();
     let bg = Paragraph::new("").style(Style::default().bg(state.theme.background));
     frame.render_widget(bg, area);
-    let has_sidebar = state.sidebar_visible && area.width > 120;
+
+    let is_welcome = state.messages.is_empty();
+
+    let has_sidebar = !is_welcome && state.sidebar_visible && area.width > 120;
     let content_width = if has_sidebar {
         area.width.saturating_sub(42)
     } else {
@@ -51,12 +43,15 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     let prompt_lines = state.prompt.line_count(content_width as usize).clamp(1, 6);
     let prompt_height = (prompt_lines as u16) + 3;
 
-    let is_welcome = state.messages.is_empty();
-    let constraints = vec![
-        Constraint::Min(1),
-        Constraint::Length(prompt_height),
-        Constraint::Length(1),
-    ];
+    let constraints = if is_welcome {
+        vec![Constraint::Min(1), Constraint::Length(1)]
+    } else {
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(prompt_height),
+            Constraint::Length(1),
+        ]
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -64,7 +59,11 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
         .split(area);
 
     let main_area = chunks[0];
-    let (prompt_area, footer_area) = (Some(chunks[1]), chunks[2]);
+    let (prompt_area, footer_area) = if is_welcome {
+        (None, chunks[1])
+    } else {
+        (Some(chunks[1]), chunks[2])
+    };
 
     if has_sidebar {
         let main_chunks = Layout::default()
@@ -91,30 +90,23 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             }
         }
     } else if is_welcome {
-        render_home_content(frame, main_area, &state.home_screen, theme);
+        PromptBar::new(PromptBarMode::Welcome, theme).render(frame, state, main_area);
     } else {
         render_messages_panel(frame, state, main_area, theme);
     }
 
     if let Some(pa) = prompt_area {
-        if is_welcome {
-            PromptBar::new(PromptBarMode::Home, theme).render(frame, state, pa);
-            if state.prompt.show_slash_autocomplete && !state.prompt.slash_completions.is_empty() {
-                render_slash_autocomplete(frame.buffer_mut(), &state.prompt, pa, theme);
-            }
-        } else {
-            PromptBar::new(
-                PromptBarMode::Active {
-                    is_streaming: state.is_streaming,
-                    leader_active: state.leader_active,
-                    interrupt_count: state.interrupt_count,
-                },
-                theme,
-            )
-            .render(frame, state, pa);
-            if state.prompt.show_slash_autocomplete && !state.prompt.slash_completions.is_empty() {
-                render_slash_autocomplete(frame.buffer_mut(), &state.prompt, pa, theme);
-            }
+        PromptBar::new(
+            PromptBarMode::Active {
+                is_streaming: state.is_streaming,
+                leader_active: state.leader_active,
+                interrupt_count: state.interrupt_count,
+            },
+            theme,
+        )
+        .render(frame, state, pa);
+        if state.prompt.show_slash_autocomplete && !state.prompt.slash_completions.is_empty() {
+            render_slash_autocomplete(frame.buffer_mut(), &state.prompt, pa, theme);
         }
     }
     render_footer(frame, state, footer_area);

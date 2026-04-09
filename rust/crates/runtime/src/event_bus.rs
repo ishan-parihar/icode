@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::persistence::SqliteStore;
 
@@ -135,33 +135,75 @@ pub trait IpcTransport: Send + Sync {
     fn poll_events(&self) -> Vec<Envelope>;
 }
 
+async fn dispatch_ipc_loop(
+    transports: Arc<Mutex<Vec<Box<dyn IpcTransport>>>>,
+    mut rx: mpsc::Receiver<Envelope>,
+) {
+    while let Some(envelope) = rx.recv().await {
+        let guards = transports.lock().await;
+        for transport in guards.iter() {
+            if let Err(e) = transport.send(&envelope) {
+                eprintln!("event_bus: IPC send failed: {e}");
+            }
+        }
+    }
+}
+
 // ── EventBus ──────────────────────────────────────────────────────────
+
+const IPC_DISPATCH_CAPACITY: usize = 256;
 
 pub struct EventBus {
     sender: broadcast::Sender<Event>,
+    #[allow(dead_code)]
+    _receiver: broadcast::Receiver<Event>,
     instance_id: String,
     ipc_transports: Arc<Mutex<Vec<Box<dyn IpcTransport>>>>,
+    ipc_tx: mpsc::Sender<Envelope>,
+    ipc_dispatch_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl EventBus {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         let instance_id = generate_instance_id();
-        let (sender, _receiver) = broadcast::channel(capacity);
+        let (sender, receiver) = broadcast::channel(capacity);
+        let ipc_transports = Arc::new(Mutex::new(Vec::new()));
+        let (ipc_tx, ipc_rx) = mpsc::channel(IPC_DISPATCH_CAPACITY);
+        let ipc_dispatch_handle = if tokio::runtime::Handle::try_current().is_ok() {
+            let transports = Arc::clone(&ipc_transports);
+            Some(tokio::spawn(dispatch_ipc_loop(transports, ipc_rx)))
+        } else {
+            None
+        };
         Self {
             sender,
+            _receiver: receiver,
             instance_id,
-            ipc_transports: Arc::new(Mutex::new(Vec::new())),
+            ipc_transports,
+            ipc_tx,
+            ipc_dispatch_handle,
         }
     }
 
     #[must_use]
     pub fn with_instance_id(capacity: usize, instance_id: String) -> Self {
-        let (sender, _receiver) = broadcast::channel(capacity);
+        let (sender, receiver) = broadcast::channel(capacity);
+        let ipc_transports = Arc::new(Mutex::new(Vec::new()));
+        let (ipc_tx, ipc_rx) = mpsc::channel(IPC_DISPATCH_CAPACITY);
+        let ipc_dispatch_handle = if tokio::runtime::Handle::try_current().is_ok() {
+            let transports = Arc::clone(&ipc_transports);
+            Some(tokio::spawn(dispatch_ipc_loop(transports, ipc_rx)))
+        } else {
+            None
+        };
         Self {
             sender,
+            _receiver: receiver,
             instance_id,
-            ipc_transports: Arc::new(Mutex::new(Vec::new())),
+            ipc_transports,
+            ipc_tx,
+            ipc_dispatch_handle,
         }
     }
 
@@ -170,18 +212,14 @@ impl EventBus {
     }
 
     pub fn publish(&self, event: Event) {
-        let _ = self.sender.send(event.clone());
+        if let Err(e) = self.sender.send(event.clone()) {
+            eprintln!("event_bus: broadcast send failed (no subscribers): {e}");
+        }
 
         let envelope = Envelope::new(self.instance_id.clone(), event);
-        let transports = self.ipc_transports.clone();
-        tokio::spawn(async move {
-            let guards = transports.lock().await;
-            for transport in guards.iter() {
-                if let Err(e) = transport.send(&envelope) {
-                    eprintln!("event_bus: IPC send failed: {e}");
-                }
-            }
-        });
+        if let Err(e) = self.ipc_tx.try_send(envelope) {
+            eprintln!("event_bus: IPC event dropped: {e}");
+        }
     }
 
     #[must_use]
@@ -208,7 +246,7 @@ impl EventBus {
 
     #[must_use]
     pub fn sender_count(&self) -> usize {
-        self.sender.receiver_count()
+        self.sender.receiver_count().saturating_sub(1)
     }
 
     pub fn persist(&self, event: &Event, store: &SqliteStore, session_id: &str) {
@@ -221,6 +259,14 @@ impl EventBus {
         };
         if let Err(e) = store.insert_event(session_id, event.event_type_name(), &event_data) {
             eprintln!("event_bus: failed to persist event: {e}");
+        }
+    }
+}
+
+impl Drop for EventBus {
+    fn drop(&mut self) {
+        if let Some(handle) = self.ipc_dispatch_handle.take() {
+            handle.abort();
         }
     }
 }
