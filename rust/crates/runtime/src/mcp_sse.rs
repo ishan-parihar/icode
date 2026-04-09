@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value as JsonValue;
 use tokio::sync::Mutex;
-use tokio::time::{Duration, timeout};
 
 use crate::mcp_stdio::{
     JsonRpcError, JsonRpcId, JsonRpcRequest, McpInitializeParams, McpInitializeResult,
@@ -41,19 +40,19 @@ const READ_RESOURCE_TIMEOUT_MS: u64 = 30_000;
 #[derive(Debug)]
 pub enum McpSseTransportError {
     Http {
-        method: &'static str,
+        method: String,
         source: reqwest::Error,
     },
     JsonRpc {
-        method: &'static str,
+        method: String,
         error: JsonRpcError,
     },
     InvalidResponse {
-        method: &'static str,
+        method: String,
         details: String,
     },
     Timeout {
-        method: &'static str,
+        method: String,
         duration_ms: u64,
     },
     SseConnection {
@@ -126,6 +125,7 @@ pub struct McpSseTransport {
 }
 
 impl McpSseTransport {
+    #[must_use]
     pub fn new(base_url: String, headers: BTreeMap<String, String>) -> Self {
         Self {
             base_url,
@@ -167,7 +167,7 @@ impl McpSseTransport {
 
         let response = request.send().await.map_err(|source| {
             McpSseTransportError::Http {
-                method: "sse_connect",
+                method: "sse_connect".to_string(),
                 source,
             }
         })?;
@@ -182,7 +182,7 @@ impl McpSseTransport {
 
         let body = response.text().await.map_err(|source| {
             McpSseTransportError::Http {
-                method: "sse_read",
+                method: "sse_read".to_string(),
                 source,
             }
         })?;
@@ -214,9 +214,9 @@ impl McpSseTransport {
 
     async fn send_request_with_timeout(
         &self,
-        method: &'static str,
+        method: &str,
         params: JsonValue,
-        timeout_ms: u64,
+        _timeout_ms: u64,
     ) -> Result<JsonValue, McpSseTransportError> {
         let endpoint_url = self.discover_endpoint().await?;
 
@@ -225,7 +225,7 @@ impl McpSseTransport {
 
         let body = serde_json::to_string(&request).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method,
+                method: method.to_string(),
                 details: format!("failed to serialize request: {e}"),
             }
         })?;
@@ -245,7 +245,7 @@ impl McpSseTransport {
 
         let response = post_request.body(body).send().await.map_err(|source| {
             McpSseTransportError::Http {
-                method,
+                method: method.to_string(),
                 source,
             }
         })?;
@@ -254,14 +254,14 @@ impl McpSseTransport {
             let status = response.status();
             let details = response.text().await.unwrap_or_default();
             return Err(McpSseTransportError::InvalidResponse {
-                method,
+                method: method.to_string(),
                 details: format!("HTTP {status}: {details}"),
             });
         }
 
         let json: JsonValue = response.json().await.map_err(|source| {
             McpSseTransportError::Http {
-                method,
+                method: method.to_string(),
                 source,
             }
         })?;
@@ -270,12 +270,12 @@ impl McpSseTransport {
             let json_rpc_error: JsonRpcError =
                 serde_json::from_value(error.clone()).map_err(|e| {
                     McpSseTransportError::InvalidResponse {
-                        method,
+                        method: method.to_string(),
                         details: format!("failed to parse error: {e}"),
                     }
                 })?;
             return Err(McpSseTransportError::JsonRpc {
-                method,
+                method: method.to_string(),
                 error: json_rpc_error,
             });
         }
@@ -283,7 +283,7 @@ impl McpSseTransport {
         json.get("result")
             .cloned()
             .ok_or_else(|| McpSseTransportError::InvalidResponse {
-                method,
+                method: method.to_string(),
                 details: "response missing both result and error".to_string(),
             })
     }
@@ -295,7 +295,6 @@ impl McpSseTransport {
     ) -> Result<JsonValue, McpSseTransportError> {
         let timeout_ms = match method {
             "initialize" => INIT_TIMEOUT_MS,
-            "tools/list" => LIST_TOOLS_TIMEOUT_MS,
             "tools/call" => CALL_TOOL_TIMEOUT_MS,
             "resources/list" => LIST_RESOURCES_TIMEOUT_MS,
             "resources/read" => READ_RESOURCE_TIMEOUT_MS,
@@ -311,7 +310,7 @@ impl McpSseTransport {
     ) -> Result<McpInitializeResult, McpSseTransportError> {
         let json = serde_json::to_value(&params).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "initialize",
+                method: "initialize".to_string(),
                 details: format!("failed to serialize params: {e}"),
             }
         })?;
@@ -320,7 +319,7 @@ impl McpSseTransport {
             .await?;
         serde_json::from_value(response).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "initialize",
+                method: "initialize".to_string(),
                 details: format!("failed to deserialize result: {e}"),
             }
         })
@@ -332,7 +331,7 @@ impl McpSseTransport {
         let params = crate::mcp_stdio::McpListToolsParams { cursor: None };
         let json = serde_json::to_value(&params).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "tools/list",
+                method: "tools/list".to_string(),
                 details: format!("failed to serialize params: {e}"),
             }
         })?;
@@ -341,7 +340,7 @@ impl McpSseTransport {
             .await?;
         serde_json::from_value(response).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "tools/list",
+                method: "tools/list".to_string(),
                 details: format!("failed to deserialize result: {e}"),
             }
         })
@@ -353,7 +352,7 @@ impl McpSseTransport {
     ) -> Result<McpToolCallResult, McpSseTransportError> {
         let json = serde_json::to_value(&params).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "tools/call",
+                method: "tools/call".to_string(),
                 details: format!("failed to serialize params: {e}"),
             }
         })?;
@@ -362,7 +361,7 @@ impl McpSseTransport {
             .await?;
         serde_json::from_value(response).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "tools/call",
+                method: "tools/call".to_string(),
                 details: format!("failed to deserialize result: {e}"),
             }
         })
@@ -372,7 +371,7 @@ impl McpSseTransport {
         let params = crate::mcp_stdio::McpListResourcesParams { cursor: None };
         let json = serde_json::to_value(&params).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "resources/list",
+                method: "resources/list".to_string(),
                 details: format!("failed to serialize params: {e}"),
             }
         })?;
@@ -381,7 +380,7 @@ impl McpSseTransport {
             .await?;
         serde_json::from_value(response).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "resources/list",
+                method: "resources/list".to_string(),
                 details: format!("failed to deserialize result: {e}"),
             }
         })
@@ -393,7 +392,7 @@ impl McpSseTransport {
     ) -> Result<McpReadResourceResult, McpSseTransportError> {
         let json = serde_json::to_value(&params).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "resources/read",
+                method: "resources/read".to_string(),
                 details: format!("failed to serialize params: {e}"),
             }
         })?;
@@ -402,7 +401,7 @@ impl McpSseTransport {
             .await?;
         serde_json::from_value(response).map_err(|e| {
             McpSseTransportError::InvalidResponse {
-                method: "resources/read",
+                method: "resources/read".to_string(),
                 details: format!("failed to deserialize result: {e}"),
             }
         })
@@ -464,7 +463,7 @@ mod tests {
         let source = send_result.unwrap_err();
 
         let error = McpSseTransportError::Http {
-            method: "initialize",
+            method: "initialize".to_string(),
             source,
         };
         let display = format!("{error}");
@@ -475,7 +474,7 @@ mod tests {
     #[test]
     fn error_display_jsonrpc() {
         let error = McpSseTransportError::JsonRpc {
-            method: "tools/list",
+            method: "tools/list".to_string(),
             error: JsonRpcError {
                 code: -32_601,
                 message: "Method not found".to_string(),
@@ -491,7 +490,7 @@ mod tests {
     #[test]
     fn error_display_invalid_response() {
         let error = McpSseTransportError::InvalidResponse {
-            method: "tools/call",
+            method: "tools/call".to_string(),
             details: "missing result field".to_string(),
         };
         let display = format!("{error}");
@@ -502,7 +501,7 @@ mod tests {
     #[test]
     fn error_display_timeout() {
         let error = McpSseTransportError::Timeout {
-            method: "resources/list",
+            method: "resources/list".to_string(),
             duration_ms: 30_000,
         };
         let display = format!("{error}");

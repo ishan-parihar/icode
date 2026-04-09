@@ -21,6 +21,8 @@ pub mod mcp_lifecycle_hardened;
 mod mcp_oauth_flow;
 pub mod mcp_oauth_store;
 mod mcp_stdio;
+pub mod mcp_sse;
+pub mod mcp_streamable_http;
 pub mod mcp_tool_bridge;
 mod oauth;
 pub mod permission_enforcer;

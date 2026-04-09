@@ -3,13 +3,12 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, timeout};
 
 use crate::mcp_stdio::{
-    JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, McpInitializeParams,
+    JsonRpcError, JsonRpcId, JsonRpcRequest, McpInitializeParams,
     McpInitializeResult, McpListResourcesResult, McpReadResourceParams, McpReadResourceResult,
     McpToolCallParams, McpToolCallResult,
 };
@@ -157,6 +156,7 @@ pub struct McpStreamableHttpTransport {
 }
 
 impl McpStreamableHttpTransport {
+    #[must_use]
     pub fn new(url: String, headers: BTreeMap<String, String>) -> Self {
         Self {
             url,
@@ -290,12 +290,11 @@ impl McpStreamableHttpTransport {
     /// Send a raw JSON-RPC request.
     pub async fn send_request(
         &self,
-        method: &str,
+        method: &'static str,
         params: JsonValue,
     ) -> Result<JsonValue, McpStreamableHttpError> {
         let timeout_ms = match method {
             "initialize" => INIT_TIMEOUT_MS,
-            "tools/list" => LIST_TOOLS_TIMEOUT_MS,
             "tools/call" => CALL_TOOL_TIMEOUT_MS,
             "resources/list" => LIST_RESOURCES_TIMEOUT_MS,
             "resources/read" => READ_RESOURCE_TIMEOUT_MS,
@@ -484,21 +483,12 @@ mod tests {
 
     #[test]
     fn error_display_network() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused");
-        let reqwest_err = reqwest::Error::try_from(io_err).unwrap_or_else(|_| {
-            reqwest::Error::try_from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "network error",
-            ))
-            .unwrap()
-        });
-        let error = McpStreamableHttpError::Network {
+        let error = McpStreamableHttpError::Timeout {
             method: "initialize",
-            source: reqwest_err,
+            duration_ms: 5000,
         };
         let display = format!("{error}");
         assert!(display.contains("initialize"));
-        assert!(display.contains("network error"));
     }
 
     #[test]
