@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write as IoWrite};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(windows)]
 use std::thread;
@@ -367,17 +367,21 @@ fn execute_pty_bash_windows(input: &PtyBashInput) -> Result<PtyBashOutput, Strin
         });
     }
 
-    let handle = tokio::runtime::Handle::current();
     let mut child = Command::new("cmd")
         .args(["/C", &input.command])
         .spawn()
         .map_err(|e| format!("failed to spawn cmd: {e}"))?;
 
-    let result = handle
-        .block_on(tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            async move { child.wait() },
-        ))
+    let (tx, rx) = mpsc::channel();
+    let mut child_for_thread = child
+        .try_clone()
+        .map_err(|e| format!("failed to clone child: {e}"))?;
+    thread::spawn(move || {
+        let _ = tx.send(child_for_thread.wait());
+    });
+
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(timeout_secs))
         .map_err(|_| {
             let _ = child.kill();
             "command timed out".to_string()
