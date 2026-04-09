@@ -184,15 +184,14 @@ pub async fn get_session(
 /// blocking conversation turn and its async wrapper task.
 struct GuardedSseStream<S> {
     inner: S,
-    blocking_handle: tokio::task::JoinHandle<()>,
     async_handle: tokio::task::JoinHandle<()>,
 }
 
-impl<S: Stream> Stream for GuardedSseStream<S> {
+impl<S: Stream + Unpin> Stream for GuardedSseStream<S> {
     type Item = S::Item;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.inner.poll_next_unpin(cx)
+        Stream::poll_next(Pin::new(&mut self.inner), cx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -202,11 +201,9 @@ impl<S: Stream> Stream for GuardedSseStream<S> {
 
 impl<S> Drop for GuardedSseStream<S> {
     fn drop(&mut self) {
-        // Abort the async wrapper task (which holds the blocking handle).
+        // Abort the async wrapper task, which in turn drops the blocking handle
+        // and signals cancellation to the blocking thread pool.
         self.async_handle.abort();
-        // Also directly abort the blocking task in case the async wrapper
-        // hasn't started yet or is blocked on the JoinHandle.
-        self.blocking_handle.abort();
     }
 }
 
@@ -254,20 +251,19 @@ pub async fn send_message(
         ) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx_for_blocking.send(format!("error: {e}"));
+                let _ = tx_for_blocking.blocking_send(format!("error: {e}"));
             }
         }
     });
 
     let async_handle = tokio::spawn(async move {
         if let Err(e) = blocking_handle.await {
-            let _ = tx.send(format!("\n\n[error: conversation turn failed — {e}]"));
+            let _ = tx.try_send(format!("\n\n[error: conversation turn failed — {e}]"));
         }
     });
 
     let stream = GuardedSseStream {
         inner: ReceiverStream::new(rx).map(|text| Ok(SseEvent::default().event("content").data(text))),
-        blocking_handle,
         async_handle,
     };
 
@@ -315,13 +311,13 @@ fn run_conversation_turn(
     let event_bus = Arc::clone(&state.event_bus);
     let progress = move |event: AssistantEvent| {
         if let AssistantEvent::TextDelta(delta) = event {
-            let _ = tx_clone.send(delta);
+            let _ = tx_clone.blocking_send(delta);
         }
     };
 
     match runtime.run_turn(user_message, None, Some(&progress)) {
         Ok(summary) => {
-            let _ = tx.send(format!(
+            let _ = tx.blocking_send(format!(
                 "\n\n[turn_complete: {} iterations]",
                 summary.iterations
             ));
@@ -335,7 +331,7 @@ fn run_conversation_turn(
             Ok(())
         }
         Err(e) => {
-            let _ = tx.send(format!("\n\n[error: {e}]"));
+            let _ = tx.blocking_send(format!("\n\n[error: {e}]"));
             Err(e.to_string())
         }
     }
