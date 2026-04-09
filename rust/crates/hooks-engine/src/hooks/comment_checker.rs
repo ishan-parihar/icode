@@ -11,10 +11,7 @@ const COMMENT_WARNING: &str =
 pub struct CommentChecker;
 
 fn has_excessive_comments(content: &str) -> bool {
-    let patterns = [
-        "// TODO", "// HACK", "// FIXME", "/// ", "/**", "# TODO", "/*", "BDD", "given", "when",
-        "then",
-    ];
+    let patterns = ["// TODO", "// HACK", "// FIXME", "# TODO"];
     let count = patterns.iter().filter(|&&p| content.contains(p)).count();
     count >= 3
 }

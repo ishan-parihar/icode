@@ -451,7 +451,7 @@ async fn context_monitor_silent_below_threshold() {
 
 #[tokio::test]
 async fn rules_injector_handles_missing_dir() {
-    let hook = RulesInjector::with_base_path("/nonexistent/rules".into());
+    let hook = RulesInjector::with_base_path("/nonexistent/rules");
     let mut ctx = HookContext::new();
     let mut params = ApiParams {
         model: "sonnet".into(),

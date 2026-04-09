@@ -117,11 +117,11 @@ impl QuestionDef {
     fn is_custom_answer_idx(&self, idx: usize) -> bool {
         self.options
             .get(idx)
-            .map(|o| o.label == CUSTOM_ANSWER_LABEL)
-            .unwrap_or(false)
+            .is_some_and(|o| o.label == CUSTOM_ANSWER_LABEL)
     }
 }
 
+#[derive(Default)]
 pub struct QuestionPromptState {
     pub open: bool,
     pub agent: String,
@@ -133,23 +133,6 @@ pub struct QuestionPromptState {
     pub custom_input: String,
     pub editing_custom: bool,
     pub answer_tx: Option<std::sync::mpsc::Sender<String>>,
-}
-
-impl Default for QuestionPromptState {
-    fn default() -> Self {
-        Self {
-            open: false,
-            agent: String::new(),
-            context: String::new(),
-            questions: Vec::new(),
-            answers: Vec::new(),
-            active_tab: 0,
-            cursor_idx: 0,
-            custom_input: String::new(),
-            editing_custom: false,
-            answer_tx: None,
-        }
-    }
 }
 
 impl QuestionPromptState {
@@ -311,11 +294,10 @@ impl QuestionPromptState {
                     return true;
                 }
                 return false;
-            } else {
-                self.editing_custom = true;
-                self.custom_input.clear();
-                return false;
             }
+            self.editing_custom = true;
+            self.custom_input.clear();
+            return false;
         }
         let opt_label = q.options[self.cursor_idx].label.clone();
         match &q.question_type {
@@ -350,9 +332,8 @@ impl QuestionPromptState {
         if should_advance {
             if self.is_last_question() {
                 return Some(self.submit());
-            } else {
-                self.advance_tab();
             }
+            self.advance_tab();
         }
         None
     }
@@ -546,7 +527,7 @@ impl QuestionPromptState {
                     return Some(r);
                 }
             }
-            KeyCode::Char(c) if c >= '1' && c <= '9' => {
+            KeyCode::Char(c) if ('1'..='9').contains(&c) => {
                 if let Some(num) = c.to_digit(10) {
                     if let Some(r) = self.handle_number(num as usize) {
                         return Some(r);
@@ -827,7 +808,7 @@ fn render_custom_textarea(
         .border_style(Style::default().fg(theme.accent))
         .border_type(BorderType::Rounded)
         .title(Span::styled(
-            format!(" {} ", placeholder),
+            format!(" {placeholder} "),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),

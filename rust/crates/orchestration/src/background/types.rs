@@ -23,7 +23,6 @@ pub enum BackgroundTaskStatus {
     Completed,
     Failed,
     Cancelled,
-    Stale,
 }
 
 impl BackgroundTask {

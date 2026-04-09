@@ -1,7 +1,6 @@
 use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
 use crate::tui::event::{Event, EventLoop, ParsedKey};
 use crate::tui::frecency::FrecencyStore;
-use crate::tui::home_screen::{HomeAction, HomeKeyResult};
 use crate::tui::input::InputState;
 use crate::tui::kitty::KittyKeyboard;
 use crate::tui::layout::render_ui;
@@ -286,68 +285,6 @@ impl Tui {
 
         if self.state.pager.open {
             return self.handle_pager_key(key);
-        }
-
-        // Home screen mode: when messages are empty, let home screen handle input
-        if self.state.messages.is_empty() {
-            match key.code {
-                KeyCode::Enter => {
-                    let action = self.state.home_screen.handle_key(key.code);
-                    match action {
-                        HomeKeyResult::Action(HomeAction::OpenSession(session_id)) => {
-                            return Some(format!("__session_open__{}", session_id));
-                        }
-                        HomeKeyResult::Action(HomeAction::NewSession) => {
-                            return Some("__new_session__".to_string());
-                        }
-                        HomeKeyResult::Action(HomeAction::Quit) => {
-                            return Some(String::new());
-                        }
-                        HomeKeyResult::None => {
-                            return None;
-                        }
-                        HomeKeyResult::TypeChar(c) => {
-                            self.state.prompt.insert_char(c);
-                            return None;
-                        }
-                    }
-                }
-                KeyCode::Up | KeyCode::Down | KeyCode::Char('n') | KeyCode::Char('q') => {
-                    self.state.home_screen.handle_key(key.code);
-                    return None;
-                }
-                KeyCode::Char(c) => {
-                    self.state.prompt.insert_char(c);
-                    return None;
-                }
-                KeyCode::Backspace => {
-                    self.state.prompt.backspace();
-                    return None;
-                }
-                KeyCode::Delete => {
-                    self.state.prompt.delete();
-                    return None;
-                }
-                KeyCode::Left => {
-                    self.state.prompt.move_left();
-                    return None;
-                }
-                KeyCode::Right => {
-                    self.state.prompt.move_right();
-                    return None;
-                }
-                KeyCode::Home => {
-                    self.state.prompt.move_home();
-                    return None;
-                }
-                KeyCode::End => {
-                    self.state.prompt.move_end();
-                    return None;
-                }
-                _ => {
-                    // Let normal handling proceed
-                }
-            }
         }
 
         if self.state.diff_view.is_some() {

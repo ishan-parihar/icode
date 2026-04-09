@@ -509,7 +509,10 @@ impl McpOAuthFlow {
         let scopes = token_response
             .get("scope")
             .and_then(|v| v.as_str())
-            .map_or_else(|| credentials.scopes.clone(), |s| s.split_whitespace().map(str::to_string).collect());
+            .map_or_else(
+                || credentials.scopes.clone(),
+                |s| s.split_whitespace().map(str::to_string).collect(),
+            );
 
         let refreshed = McpServerCredentials {
             server_url: credentials.server_url.clone(),

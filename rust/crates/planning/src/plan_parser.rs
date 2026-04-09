@@ -99,8 +99,11 @@ pub fn read_current_top_level_task(plan_path: &str) -> Option<TopLevelTask> {
             .or_else(|| trimmed.strip_prefix("* [ ]"))
             .map_or(trimmed, str::trim);
 
-        let (label, title) = parse_task_label(task_text, current_section.as_ref().unwrap());
-        let section = current_section.unwrap();
+        let (label, title) = parse_task_label(
+            task_text,
+            current_section.as_ref().expect("section guard on line 88"),
+        );
+        let section = current_section.expect("section guard on line 88");
 
         let key = match &section {
             TaskSection::Todo => format!("todo:{label}"),

@@ -9,6 +9,24 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 
+/// Rotating placeholder suggestions for the home/welcome prompt.
+const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
+    "Ask anything... 'Fix a TODO in the codebase'",
+    "Ask anything... 'What is the tech stack of this project?'",
+    "Ask anything... 'Fix broken tests'",
+    "Ask anything... 'Explain this codebase'",
+    "Ask anything... 'Add error handling to main'",
+];
+
+/// Pick a placeholder suggestion based on current time (simple rotation).
+fn get_dynamic_placeholder() -> &'static str {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    PLACEHOLDER_SUGGESTIONS[secs as usize % PLACEHOLDER_SUGGESTIONS.len()]
+}
+
 /// Display mode for the prompt bar.
 pub enum PromptBarMode {
     /// Welcome screen: centered prompt with logo above, tips below.
@@ -121,6 +139,7 @@ impl PromptBar {
         frame.render_widget(border_block.clone(), area);
 
         if inner.width > 0 && inner.height > 0 {
+            state.prompt.placeholder = get_dynamic_placeholder().to_string();
             InputWidget::new(self.theme).render(inner, frame.buffer_mut(), &mut state.prompt);
         }
 
@@ -178,10 +197,13 @@ impl PromptBar {
         frame.render_widget(border_block.clone(), prompt_area);
 
         if inner.width > 0 && inner.height > 0 {
+            state.prompt.placeholder = get_dynamic_placeholder().to_string();
             InputWidget::new(self.theme).render(inner, frame.buffer_mut(), &mut state.prompt);
         }
 
         let info_y = prompt_area.bottom();
+        let tips_y = info_y + 1;
+
         if info_y < area.bottom() {
             let info_area = Rect {
                 x: prompt_area.x + 1,
@@ -191,6 +213,48 @@ impl PromptBar {
             };
             render_info_bar(frame, state, info_area, &self.mode);
         }
+
+        if tips_y < area.bottom() {
+            let tips_area = Rect {
+                x: prompt_area.x,
+                y: tips_y,
+                width: prompt_area.width,
+                height: 1,
+            };
+            self.render_home_tips(frame, state, tips_area);
+        }
+    }
+
+    fn render_home_tips(&self, frame: &mut Frame, state: &AppState, area: Rect) {
+        let tips = [
+            ("Use ", "Ctrl+P", " to open the command palette"),
+            ("Press ", "Ctrl+M", " to switch models"),
+            ("Type ", "/help", " to see all available commands"),
+            ("Use ", "Alt+S", " to toggle the sidebar"),
+        ];
+        let tip = tips[state.session.turns as usize % tips.len()];
+
+        let line = Line::from(vec![
+            Span::styled(
+                "\u{25cf} Tip ",
+                Style::default()
+                    .fg(state.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(tip.0, Style::default().fg(state.theme.text_muted)),
+            Span::styled(
+                tip.1,
+                Style::default()
+                    .fg(state.theme.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(tip.2, Style::default().fg(state.theme.text_muted)),
+        ]);
+
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(state.theme.background)),
+            area,
+        );
     }
 
     fn render_welcome_tips(&self, frame: &mut Frame, state: &AppState, area: Rect) {

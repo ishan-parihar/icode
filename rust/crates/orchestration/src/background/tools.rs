@@ -71,7 +71,7 @@ pub fn background_cancel_tool_spec() -> Value {
                     "description": "Cancel all running background tasks (default: false)"
                 }
             },
-            "required": []
+            "required": ["all"]
         }
     })
 }

@@ -7,6 +7,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use serde_json::{json, Value};
 
@@ -1065,8 +1066,16 @@ impl CommandWithStdin {
             child_stdin.write_all(stdin)?;
         }
 
+        let deadline = Instant::now() + Duration::from_secs(30);
+
         loop {
             if abort_signal.is_some_and(HookAbortSignal::is_aborted) {
+                let _ = child.kill();
+                let _ = child.wait_with_output();
+                return Ok(CommandExecution::Cancelled);
+            }
+
+            if Instant::now() > deadline {
                 let _ = child.kill();
                 let _ = child.wait_with_output();
                 return Ok(CommandExecution::Cancelled);

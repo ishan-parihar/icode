@@ -12,14 +12,18 @@ use std::time::{Duration, SystemTime};
 #[test]
 fn manager_register_returns_task_id() {
     let mgr = BackgroundManager::new(4);
-    let id = mgr.register("search codebase".into(), "sonnet".into());
+    let id = mgr
+        .register("search codebase".into(), "sonnet".into())
+        .unwrap();
     assert_eq!(id, "bg_1");
 }
 
 #[test]
 fn manager_get_returns_task() {
     let mgr = BackgroundManager::new(4);
-    let id = mgr.register("search codebase".into(), "sonnet".into());
+    let id = mgr
+        .register("search codebase".into(), "sonnet".into())
+        .unwrap();
     let task = mgr.get(&id).unwrap();
     assert_eq!(task.id, "bg_1");
     assert_eq!(task.description, "search codebase");
@@ -36,7 +40,7 @@ fn manager_get_nonexistent_returns_none() {
 #[test]
 fn manager_update_status() {
     let mgr = BackgroundManager::new(4);
-    let id = mgr.register("task".into(), "sonnet".into());
+    let id = mgr.register("task".into(), "sonnet".into()).unwrap();
     mgr.update_status(&id, BackgroundTaskStatus::Running)
         .unwrap();
     let task = mgr.get(&id).unwrap();
@@ -46,7 +50,7 @@ fn manager_update_status() {
 #[test]
 fn manager_complete_sets_result_and_time() {
     let mgr = BackgroundManager::new(4);
-    let id = mgr.register("task".into(), "sonnet".into());
+    let id = mgr.register("task".into(), "sonnet".into()).unwrap();
     mgr.complete(&id, "done".into()).unwrap();
     let task = mgr.get(&id).unwrap();
     assert_eq!(task.status, BackgroundTaskStatus::Completed);
@@ -57,7 +61,7 @@ fn manager_complete_sets_result_and_time() {
 #[test]
 fn manager_fail_sets_error() {
     let mgr = BackgroundManager::new(4);
-    let id = mgr.register("task".into(), "sonnet".into());
+    let id = mgr.register("task".into(), "sonnet".into()).unwrap();
     mgr.fail(&id, "timeout".into()).unwrap();
     let task = mgr.get(&id).unwrap();
     assert_eq!(task.status, BackgroundTaskStatus::Failed);
@@ -68,7 +72,7 @@ fn manager_fail_sets_error() {
 #[test]
 fn manager_cancel_changes_status() {
     let mgr = BackgroundManager::new(4);
-    let id = mgr.register("task".into(), "sonnet".into());
+    let id = mgr.register("task".into(), "sonnet".into()).unwrap();
     mgr.cancel(&id).unwrap();
     let task = mgr.get(&id).unwrap();
     assert_eq!(task.status, BackgroundTaskStatus::Cancelled);
@@ -77,7 +81,7 @@ fn manager_cancel_changes_status() {
 #[test]
 fn manager_cancel_completed_fails() {
     let mgr = BackgroundManager::new(4);
-    let id = mgr.register("task".into(), "sonnet".into());
+    let id = mgr.register("task".into(), "sonnet".into()).unwrap();
     mgr.complete(&id, "ok".into()).unwrap();
     let err = mgr.cancel(&id).unwrap_err();
     assert!(err.contains("Completed"));
@@ -86,8 +90,8 @@ fn manager_cancel_completed_fails() {
 #[test]
 fn manager_list_returns_all() {
     let mgr = BackgroundManager::new(4);
-    mgr.register("task1".into(), "sonnet".into());
-    mgr.register("task2".into(), "opus".into());
+    mgr.register("task1".into(), "sonnet".into()).unwrap();
+    mgr.register("task2".into(), "opus".into()).unwrap();
     let tasks = mgr.list();
     assert_eq!(tasks.len(), 2);
 }
@@ -104,7 +108,7 @@ fn concurrency_limiter_default_limit() {
 
 #[test]
 fn concurrency_limiter_custom_limit() {
-    let mut limiter = ConcurrencyLimiter::new(1);
+    let limiter = ConcurrencyLimiter::new(1);
     limiter.set_limit("sonnet".into(), 3);
     assert!(limiter.try_acquire("sonnet"));
     assert!(limiter.try_acquire("sonnet"));
@@ -176,12 +180,9 @@ fn cleanup_keeps_recent_tasks() {
 #[test]
 fn cleanup_keeps_incomplete_tasks() {
     let mut tasks = HashMap::new();
-    let old_time = SystemTime::now()
-        .checked_sub(Duration::from_secs(3600))
-        .unwrap();
     tasks.insert(
         "bg_1".into(),
-        make_task(BackgroundTaskStatus::Running, Some(old_time)),
+        make_task(BackgroundTaskStatus::Running, None),
     );
     tasks.insert(
         "bg_2".into(),

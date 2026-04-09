@@ -2,25 +2,21 @@ use std::fs;
 
 use crate::enhance::enhance_with_hashlines;
 use crate::types::{EditError, HashlineEditOp};
-use crate::validate::{validate_all, validate_edit};
+use crate::validate::{validate_all_with_content, validate_edit_with_content};
 
 /// Validates and applies a single edit to a file, returning new content.
 pub fn apply_edit(file_path: &str, edit: &HashlineEditOp) -> Result<String, EditError> {
-    validate_edit(file_path, edit)?;
-
     let content = fs::read_to_string(file_path)
         .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
-
+    validate_edit_with_content(&content, edit)?;
     apply_edit_to_content(&content, std::slice::from_ref(edit))
 }
 
 /// Validates and applies multiple edits to a file, returning new content.
 pub fn apply_edits(file_path: &str, edits: &[HashlineEditOp]) -> Result<String, EditError> {
-    validate_all(file_path, edits)?;
-
     let content = fs::read_to_string(file_path)
         .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
-
+    validate_all_with_content(&content, edits)?;
     apply_edit_to_content(&content, edits)
 }
 
@@ -29,10 +25,16 @@ pub fn apply_edit_to_content(content: &str, edits: &[HashlineEditOp]) -> Result<
     let hashlines = enhance_with_hashlines(content);
     let total_lines = hashlines.len();
 
-    let mut lines: Vec<&str> = content.lines().collect();
+    let mut lines: Vec<&str> = content.split('\n').collect();
+    // A trailing '\n' produces an extra empty element — it will be preserved by join
+    let line_count = if content.ends_with('\n') {
+        lines.len() - 1
+    } else {
+        lines.len()
+    };
 
     for edit in edits {
-        if edit.line_number == 0 || edit.line_number > total_lines {
+        if edit.line_number == 0 || edit.line_number > line_count {
             return Err(EditError::LineNotFound {
                 line: edit.line_number,
                 total_lines,

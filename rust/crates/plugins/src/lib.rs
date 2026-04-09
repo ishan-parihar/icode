@@ -5,12 +5,47 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub use hooks::{HookEvent, HookRunResult, HookRunner};
+
+/// Default timeout for plugin tool execution (60 seconds).
+const PLUGIN_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Default timeout for plugin lifecycle commands (120 seconds).
+const LIFECYCLE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Default timeout for git clone during plugin install (300 seconds).
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Run a spawned child process with a timeout.
+/// Polls `child.try_wait()` at 100ms intervals. Kills the process if timeout exceeded.
+pub(crate) fn wait_with_output_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+    context: &str,
+) -> std::io::Result<std::process::Output> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(_status) = child.try_wait()? {
+            return child.wait_with_output();
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{context} timed out after {:.1}s", timeout.as_secs_f64()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Hook execution timeout (30 seconds).
+pub(crate) const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
 const EXTERNAL_MARKETPLACE: &str = "external";
 const BUILTIN_MARKETPLACE: &str = "builtin";
@@ -350,12 +385,16 @@ impl PluginTool {
         }
 
         let mut child = process.spawn()?;
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write as _;
             stdin.write_all(input_json.as_bytes())?;
         }
 
-        let output = child.wait_with_output()?;
+        let output = wait_with_output_timeout(
+            child,
+            PLUGIN_TOOL_TIMEOUT,
+            &format!("plugin tool `{}`", self.definition.name),
+        )?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
@@ -1006,6 +1045,7 @@ pub enum PluginError {
     ManifestValidation(Vec<PluginManifestValidationError>),
     LoadFailures(Vec<PluginLoadFailure>),
     InvalidManifest(String),
+    Install(String),
     NotFound(String),
     CommandFailed(String),
 }
@@ -1034,6 +1074,7 @@ impl Display for PluginError {
                 Ok(())
             }
             Self::InvalidManifest(message)
+            | Self::Install(message)
             | Self::NotFound(message)
             | Self::CommandFailed(message) => write!(f, "{message}"),
         }
@@ -1143,14 +1184,22 @@ impl PluginManager {
         let temp_root = self.install_root().join(".tmp");
         let staged_source = materialize_source(&install_source, &temp_root)?;
         let cleanup_source = matches!(install_source, PluginInstallSource::GitUrl { .. });
-        let manifest = load_plugin_from_directory(&staged_source)?;
+        let manifest = load_plugin_from_directory(&staged_source).inspect_err(|_e| {
+            if cleanup_source {
+                let _ = fs::remove_dir_all(&staged_source);
+            }
+        })?;
 
         let plugin_id = plugin_id(&manifest.name, EXTERNAL_MARKETPLACE);
         let install_path = self.install_root().join(sanitize_plugin_id(&plugin_id));
         if install_path.exists() {
             fs::remove_dir_all(&install_path)?;
         }
-        copy_dir_all(&staged_source, &install_path)?;
+        copy_dir_all(&staged_source, &install_path).inspect_err(|_e| {
+            if cleanup_source {
+                let _ = fs::remove_dir_all(&staged_source);
+            }
+        })?;
         if cleanup_source {
             let _ = fs::remove_dir_all(&staged_source);
         }
@@ -2115,7 +2164,12 @@ fn run_lifecycle_commands(
         if let Some(root) = &metadata.root {
             process.current_dir(root);
         }
-        let output = process.output()?;
+        let child = process.spawn()?;
+        let output = wait_with_output_timeout(
+            child,
+            LIFECYCLE_COMMAND_TIMEOUT,
+            &format!("plugin `{}` {phase} lifecycle", metadata.id),
+        )?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -2174,13 +2228,15 @@ fn materialize_source(
         PluginInstallSource::LocalPath { path } => Ok(path.clone()),
         PluginInstallSource::GitUrl { url } => {
             let destination = temp_root.join(format!("plugin-{}", unix_time_ms()));
-            let output = Command::new("git")
+            let child = Command::new("git")
                 .arg("clone")
                 .arg("--depth")
                 .arg("1")
                 .arg(url)
                 .arg(&destination)
-                .output()?;
+                .spawn()?;
+            let output =
+                wait_with_output_timeout(child, GIT_CLONE_TIMEOUT, "git clone for plugin install")?;
             if !output.status.success() {
                 return Err(PluginError::CommandFailed(format!(
                     "git clone failed for `{url}`: {}",
@@ -2242,11 +2298,19 @@ fn copy_dir_all(source: &Path, destination: &Path) -> Result<(), PluginError> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(PluginError::Install(format!(
+                "symlink not allowed: {}",
+                path.display()
+            )));
+        }
         let target = destination.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(&entry.path(), &target)?;
+        if file_type.is_dir() {
+            copy_dir_all(&path, &target)?;
         } else {
-            fs::copy(entry.path(), target)?;
+            fs::copy(path, target)?;
         }
     }
     Ok(())

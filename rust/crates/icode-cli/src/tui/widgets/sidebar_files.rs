@@ -240,7 +240,7 @@ mod tests {
             model_picker: crate::tui::model_picker::ModelPickerState::new(),
             command_palette: crate::tui::command_palette::CommandPaletteState::new(),
             mcp_dialog: crate::tui::dialog_mcp::McpDialogState::new(),
-            skills_dialog: crate::tui::dialog_skills::SkillsDialogState::new(),
+            skills_dialog: crate::tui::dialog_skills::SkillsDialogState::new(None),
             theme_list_dialog: crate::tui::dialog_theme_list::ThemeListDialogState::new("opencode"),
             plugins_dialog: crate::tui::dialog_plugins::PluginsDialogState::new(),
             sessions_dialog: crate::tui::dialog_sessions::SessionsDialogState::new(),
@@ -252,6 +252,7 @@ mod tests {
             prompt_stash: crate::tui::dialog_prompt_stash::PromptStashState::new(),
             export_options: crate::tui::dialog_export_options::ExportOptionsState::new(),
             debug_panel: crate::tui::debug_panel::DebugPanelState::new(),
+            home_screen: crate::tui::home_screen::HomeScreenState::new(),
             provider_dialog: crate::tui::dialog_providers::ProviderDialogState::new(),
             workspace_dialog: crate::tui::dialog_workspaces::WorkspaceDialogState::new(),
             skill_count: 0,
@@ -275,6 +276,8 @@ mod tests {
             pager: crate::tui::widgets::PagerState::default(),
             files_panel: FilesPanelState::new(),
             todo_panel: crate::tui::widgets::TodoPanelState::new(),
+            home_placeholder_idx: 0,
+            home_placeholder_timer: std::time::Instant::now(),
         }
     }
 

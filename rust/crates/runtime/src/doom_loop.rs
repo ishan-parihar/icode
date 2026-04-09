@@ -1,4 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -28,7 +28,7 @@ pub struct DoomLoopDetection {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DoomLoopDetector {
-    history: Vec<DoomLoopEntry>,
+    history: VecDeque<DoomLoopEntry>,
     threshold: u32,
 }
 
@@ -41,7 +41,7 @@ impl DoomLoopDetector {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            history: Vec::with_capacity(Self::MAX_HISTORY),
+            history: VecDeque::with_capacity(Self::MAX_HISTORY),
             threshold: Self::DEFAULT_THRESHOLD,
         }
     }
@@ -50,7 +50,7 @@ impl DoomLoopDetector {
     #[must_use]
     pub fn with_threshold(threshold: u32) -> Self {
         Self {
-            history: Vec::with_capacity(Self::MAX_HISTORY),
+            history: VecDeque::with_capacity(Self::MAX_HISTORY),
             threshold,
         }
     }
@@ -61,7 +61,7 @@ impl DoomLoopDetector {
     /// to the bounded history (max 10 entries, oldest removed first).
     pub fn record_tool_call(&mut self, tool_name: &str, args: &str) {
         let args_hash = Self::hash_args(args);
-        self.history.push(DoomLoopEntry {
+        self.history.push_back(DoomLoopEntry {
             tool_name: tool_name.to_string(),
             args_hash,
             timestamp: Instant::now(),
@@ -69,7 +69,7 @@ impl DoomLoopDetector {
 
         // Enforce bounded history size
         if self.history.len() > Self::MAX_HISTORY {
-            self.history.remove(0);
+            self.history.pop_front();
         }
     }
 

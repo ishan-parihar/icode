@@ -206,6 +206,8 @@ pub trait TelemetrySink: Send + Sync {
     fn record(&self, event: TelemetryEvent);
 }
 
+const MEMORY_SINK_MAX_EVENTS: usize = 10_000;
+
 #[derive(Default)]
 pub struct MemoryTelemetrySink {
     events: Mutex<Vec<TelemetryEvent>>,
@@ -223,10 +225,15 @@ impl MemoryTelemetrySink {
 
 impl TelemetrySink for MemoryTelemetrySink {
     fn record(&self, event: TelemetryEvent) {
-        self.events
+        let mut events = self
+            .events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(event);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if events.len() >= MEMORY_SINK_MAX_EVENTS {
+            let drain_end = events.len() / 4;
+            events.drain(0..drain_end);
+        }
+        events.push(event);
     }
 }
 
@@ -273,6 +280,14 @@ impl TelemetrySink for JsonlTelemetrySink {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = writeln!(file, "{line}");
         let _ = file.flush();
+    }
+}
+
+impl Drop for JsonlTelemetrySink {
+    fn drop(&mut self) {
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.flush();
+        }
     }
 }
 
@@ -511,16 +526,20 @@ mod tests {
     fn jsonl_sink_persists_events() {
         let path =
             std::env::temp_dir().join(format!("telemetry-jsonl-{}.log", current_timestamp_ms()));
-        let sink = JsonlTelemetrySink::new(&path).expect("sink should create file");
 
-        sink.record(TelemetryEvent::Analytics(
-            AnalyticsEvent::new("cli", "turn_completed").with_property("ok", Value::Bool(true)),
-        ));
+        {
+            let sink = JsonlTelemetrySink::new(&path).expect("sink should create file");
 
-        let contents = std::fs::read_to_string(&path).expect("telemetry log should be readable");
-        assert!(contents.contains("\"type\":\"analytics\""));
-        assert!(contents.contains("\"action\":\"turn_completed\""));
+            sink.record(TelemetryEvent::Analytics(
+                AnalyticsEvent::new("cli", "turn_completed").with_property("ok", Value::Bool(true)),
+            ));
 
-        let _ = std::fs::remove_file(path);
+            let contents =
+                std::fs::read_to_string(&path).expect("telemetry log should be readable");
+            assert!(contents.contains("\"type\":\"analytics\""));
+            assert!(contents.contains("\"action\":\"turn_completed\""));
+        }
+
+        let _ = std::fs::remove_file(&path);
     }
 }

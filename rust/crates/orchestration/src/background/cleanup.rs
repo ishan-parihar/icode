@@ -21,7 +21,24 @@ pub fn cleanup_expired<S: std::hash::BuildHasher>(
                     }
                 }
             }
-            _ => {}
+            BackgroundTaskStatus::Running => {
+                if now
+                    .duration_since(task.created_at)
+                    .unwrap_or(Duration::ZERO)
+                    > ttl * 3
+                {
+                    to_remove.push(id.clone());
+                }
+            }
+            BackgroundTaskStatus::Pending => {
+                if now
+                    .duration_since(task.created_at)
+                    .unwrap_or(Duration::ZERO)
+                    > ttl
+                {
+                    to_remove.push(id.clone());
+                }
+            }
         }
     }
 

@@ -37,10 +37,15 @@ pub fn handle_start_work(directory: &str, session_id: &str) -> Result<String, St
             return Err("Failed to write initial boulder state.".to_string());
         }
 
-        let _ = planning::notepad::create_notepad(directory, &plan_name);
+        let notepad_ok = planning::notepad::create_notepad(directory, &plan_name);
+        let notepad_note = if notepad_ok {
+            String::new()
+        } else {
+            "\n  Note:        Notepad creation failed."
+        };
 
         Ok(format!(
-            "Start Work (initialized)\n  Plan:          {plan_name}\n  Path:          {latest_plan}\n  Session:       {session_id}\n  Ready to begin."
+            "Start Work (initialized)\n  Plan:          {plan_name}\n  Path:          {latest_plan}\n  Session:       {session_id}\n  Ready to begin.{notepad_note}"
         ))
     }
 }

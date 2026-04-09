@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::types::{SessionInfo, SessionMessage, SessionSearchResult};
+use crate::types::{SessionMessage, SessionSearchResult};
 
 const CONTEXT_CHARS: usize = 50;
 
@@ -44,21 +44,16 @@ pub fn search_sessions(
             continue;
         }
 
+        let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let session_id = file_name.to_string();
+
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
 
-        let Ok(info) = serde_json::from_str::<SessionInfo>(&content) else {
-            continue;
-        };
-        let session_id = info.session_id;
-
-        let messages_path = Path::new(store_dir).join(format!("{session_id}_messages.json"));
-        let Ok(messages_content) = fs::read_to_string(&messages_path) else {
-            continue;
-        };
-
-        let Ok(messages) = serde_json::from_str::<Vec<SessionMessage>>(&messages_content) else {
+        let Ok(messages) = serde_json::from_str::<Vec<SessionMessage>>(&content) else {
             continue;
         };
 

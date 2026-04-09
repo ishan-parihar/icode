@@ -25,14 +25,18 @@ impl BackgroundManager {
     }
 
     /// Register a new background task. Returns `task_id` like `"bg_1"`.
-    pub fn register(&self, description: String, model: String) -> String {
+    /// Returns `None` if concurrency limit is reached for the model.
+    pub fn register(&self, description: String, model: String) -> Option<String> {
+        if !self.concurrency.try_acquire(&model) {
+            return None;
+        }
         let id = format!("bg_{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let task = BackgroundTask::new(id.clone(), description, "default".to_string(), model);
         self.tasks
             .write()
             .expect("rwlock poisoned")
             .insert(id.clone(), task);
-        id
+        Some(id)
     }
 
     /// Get a task by ID.
@@ -60,9 +64,12 @@ impl BackgroundManager {
         let task = tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task {task_id} not found"))?;
+        let model = task.model.clone();
         task.status = BackgroundTaskStatus::Completed;
         task.completed_at = Some(std::time::SystemTime::now());
         task.result = Some(result);
+        drop(tasks);
+        self.concurrency.release(&model);
         Ok(())
     }
 
@@ -72,9 +79,12 @@ impl BackgroundManager {
         let task = tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("task {task_id} not found"))?;
+        let model = task.model.clone();
         task.status = BackgroundTaskStatus::Failed;
         task.completed_at = Some(std::time::SystemTime::now());
         task.error = Some(error);
+        drop(tasks);
+        self.concurrency.release(&model);
         Ok(())
     }
 
@@ -91,8 +101,11 @@ impl BackgroundManager {
                 Err(format!("cannot cancel task in {:?} state", task.status))
             }
             _ => {
+                let model = task.model.clone();
                 task.status = BackgroundTaskStatus::Cancelled;
                 task.completed_at = Some(std::time::SystemTime::now());
+                drop(tasks);
+                self.concurrency.release(&model);
                 Ok(())
             }
         }

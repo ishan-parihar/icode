@@ -1882,6 +1882,76 @@ fn run_repl(
                         }
                         continue;
                     }
+                    _ if trimmed.starts_with("__session_open__") => {
+                        let session_id = trimmed.strip_prefix("__session_open__").unwrap();
+                        let sessions_dir = sessions_dir()?;
+                        let mut session_path = None;
+                        for ext in &["jsonl", "json"] {
+                            let candidate = sessions_dir.join(format!("{session_id}.{ext}"));
+                            if candidate.exists() {
+                                session_path = Some(candidate);
+                                break;
+                            }
+                        }
+                        if let Some(switch_path) = session_path {
+                            match runtime::Session::load_from_path(&switch_path) {
+                                Ok(new_session) => {
+                                    let session_ts = new_session.updated_at_ms / 1000;
+                                    let saved_msgs = new_session.messages.clone();
+                                    let msg_count = saved_msgs.len();
+                                    let turns = saved_msgs
+                                        .iter()
+                                        .filter(|m| {
+                                            matches!(m.role, runtime::MessageRole::Assistant)
+                                        })
+                                        .count()
+                                        as u32;
+                                    cli.persist_session()?;
+                                    cli.runtime.set_session(new_session);
+                                    cli.session = SessionHandle {
+                                        id: session_id.to_string(),
+                                        path: switch_path,
+                                    };
+                                    {
+                                        let st = tui.state_mut();
+                                        st.messages.clear();
+                                        st.tools.clear();
+                                        st.revert = None;
+                                        st.messages = convert_runtime_messages_to_tui(
+                                            &saved_msgs,
+                                            session_ts,
+                                        );
+                                        st.scroll_offset = usize::MAX;
+                                        st.prompt.value.clear();
+                                        st.prompt.cursor = 0;
+                                        st.is_streaming = false;
+                                        st.is_thinking = false;
+                                        st.mode = crate::tui::app::AppMode::Normal;
+                                        st.selection = None;
+                                        st.message_action_dialog.close();
+                                        st.interrupt_count = 0;
+                                        st.interrupt_timestamp = None;
+                                        st.turn_in_progress = false;
+                                        st.deactivate_leader();
+                                        st.session.id = session_id.to_string();
+                                        st.session.title = format!("Session {session_id}");
+                                        st.session.message_count = msg_count;
+                                        st.session.turns = turns;
+                                        st.session.input_tokens = 0;
+                                        st.session.output_tokens = 0;
+                                    }
+                                }
+                                Err(e) => {
+                                    tui.state_mut()
+                                        .show_error(format!("Failed to load session: {e}"));
+                                }
+                            }
+                        } else {
+                            tui.state_mut()
+                                .show_error(format!("Session file not found: {session_id}"));
+                        }
+                        continue;
+                    }
                     "session.clear" => {
                         {
                             let st = tui.state_mut();

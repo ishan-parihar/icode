@@ -28,6 +28,16 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 use runtime::{format_usd, pricing_for_model};
 
+const HOME_PLACEHOLDERS: &[&str] = &[
+    "Ask anything... 'Fix a TODO in the codebase'",
+    "Ask anything... 'What is the tech stack of this project?'",
+    "Ask anything... 'Fix broken tests'",
+    "Ask anything... 'Explain this codebase'",
+    "Ask anything... 'Add error handling to main'",
+];
+
+const HOME_PLACEHOLDER_INTERVAL_MS: u64 = 3000;
+
 pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     let area = frame.area();
     let bg = Paragraph::new("").style(Style::default().bg(state.theme.background));

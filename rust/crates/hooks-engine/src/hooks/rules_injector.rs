@@ -23,8 +23,15 @@ impl RulesInjector {
     }
 
     #[must_use]
-    pub fn with_base_path(base_path: String) -> Self {
-        Self { base_path }
+    pub fn with_base_path(base_path: &str) -> Self {
+        let normalized = base_path.replace("..", "");
+        Self {
+            base_path: if normalized.is_empty() {
+                RULES_DIR.to_string()
+            } else {
+                normalized
+            },
+        }
     }
 
     fn load_rules(&self) -> Vec<String> {
@@ -78,14 +85,14 @@ mod tests {
 
     #[test]
     fn returns_empty_when_no_rules_dir() {
-        let hook = RulesInjector::with_base_path("/nonexistent/path/rules".into());
+        let hook = RulesInjector::with_base_path("/nonexistent/path/rules");
         let rules = hook.load_rules();
         assert!(rules.is_empty());
     }
 
     #[test]
     fn injects_no_rules_when_dir_missing() {
-        let hook = RulesInjector::with_base_path("/no/such/dir".into());
+        let hook = RulesInjector::with_base_path("/no/such/dir");
         let mut ctx = HookContext::new();
         let mut params = ApiParams {
             model: "sonnet".into(),

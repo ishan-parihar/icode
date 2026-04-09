@@ -118,8 +118,13 @@ fn handle_tool_list(id: Option<&serde_json::Value>) -> JsonRpcResponse {
 
 fn handle_session_create(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     let now = chrono::Utc::now().timestamp_millis();
+    let nonce: u32 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let session_id = format!("acp-{now:x}-{nonce:x}");
     let result = serde_json::json!({
-        "session_id": format!("acp-{now}"),
+        "session_id": session_id,
         "status": "created"
     });
     JsonRpcResponse::result(id.cloned(), result)

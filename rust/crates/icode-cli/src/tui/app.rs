@@ -210,6 +210,8 @@ pub struct AppState {
     pub todo_panel: TodoPanelState,
     pub plugin_slots: std::collections::HashMap<PluginSlot, Vec<SlotContent>>,
     pub plugin_routes: Vec<PluginRoute>,
+    pub home_placeholder_idx: usize,
+    pub home_placeholder_timer: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -348,6 +350,8 @@ impl AppState {
             todo_panel: TodoPanelState::new(),
             plugin_slots: std::collections::HashMap::new(),
             plugin_routes: Vec::new(),
+            home_placeholder_idx: 0,
+            home_placeholder_timer: Instant::now(),
         }
     }
 
@@ -463,7 +467,7 @@ impl AppState {
         if let Some(msg) = self.messages.last_mut() {
             if msg.is_streaming {
                 if let Some(MessagePart::Thinking { content }) = msg.parts.last_mut() {
-                    content.push_str(delta)
+                    content.push_str(delta);
                 }
             }
         }

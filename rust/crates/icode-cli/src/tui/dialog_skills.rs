@@ -44,7 +44,7 @@ pub struct SkillsDialogState {
 
 impl SkillsDialogState {
     pub fn new(skill_manager: Option<Arc<SkillManager>>) -> Self {
-        let skills = discover_skills(skill_manager.as_ref());
+        let skills = discover_skills(skill_manager.as_deref());
         Self {
             open: false,
             skills,
@@ -57,7 +57,7 @@ impl SkillsDialogState {
     }
 
     pub fn open(&mut self) {
-        self.skills = discover_skills(self.skill_manager.as_ref());
+        self.skills = discover_skills(self.skill_manager.as_deref());
         self.open = true;
         self.search.clear();
         self.cursor = 0;
@@ -170,7 +170,7 @@ impl SkillsDialogState {
 
 impl Default for SkillsDialogState {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 

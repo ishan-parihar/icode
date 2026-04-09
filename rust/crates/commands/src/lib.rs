@@ -2526,8 +2526,21 @@ fn install_skill_into(
     cwd: &Path,
     registry_root: &Path,
 ) -> std::io::Result<InstalledSkill> {
+    const MAX_SKILL_FILE_SIZE: u64 = 1_048_576; // 1 MB
     let source = resolve_skill_install_source(source, cwd)?;
     let prompt_path = source.prompt_path();
+    let metadata = fs::metadata(prompt_path)?;
+    if metadata.len() > MAX_SKILL_FILE_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "skill file '{}' exceeds maximum allowed size of {} bytes ({} bytes)",
+                prompt_path.display(),
+                MAX_SKILL_FILE_SIZE,
+                metadata.len()
+            ),
+        ));
+    }
     let contents = fs::read_to_string(prompt_path)?;
     let display_name = parse_skill_frontmatter(&contents).0;
     let invocation_name = derive_skill_install_name(&source, display_name.as_deref())?;
@@ -2674,12 +2687,19 @@ fn copy_directory_contents(source: &Path, destination: &Path) -> std::io::Result
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let entry_type = entry.file_type()?;
+        let path = entry.path();
+        if entry_type.is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("symlink not allowed: {}", path.display()),
+            ));
+        }
         let destination_path = destination.join(entry.file_name());
         if entry_type.is_dir() {
             fs::create_dir_all(&destination_path)?;
-            copy_directory_contents(&entry.path(), &destination_path)?;
+            copy_directory_contents(&path, &destination_path)?;
         } else {
-            fs::copy(entry.path(), destination_path)?;
+            fs::copy(path, destination_path)?;
         }
     }
     Ok(())

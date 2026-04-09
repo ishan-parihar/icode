@@ -23,8 +23,17 @@ pub fn enhance_with_hashlines(content: &str) -> Vec<Hashline> {
         return vec![];
     }
 
-    content
-        .lines()
+    let lines: Vec<&str> = content.split('\n').collect();
+    // A trailing '\n' produces an extra empty element — skip it
+    let line_count = if content.ends_with('\n') {
+        lines.len() - 1
+    } else {
+        lines.len()
+    };
+
+    lines
+        .iter()
+        .take(line_count)
         .enumerate()
         .map(|(idx, line)| {
             let line_number = idx + 1;

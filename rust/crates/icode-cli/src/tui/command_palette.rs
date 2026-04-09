@@ -764,9 +764,7 @@ mod tests {
             .unwrap();
         assert!(
             session_pos < model_pos,
-            "session.list (pos {}) should come before model.list (pos {})",
-            session_pos,
-            model_pos
+            "session.list (pos {session_pos}) should come before model.list (pos {model_pos})"
         );
     }
 

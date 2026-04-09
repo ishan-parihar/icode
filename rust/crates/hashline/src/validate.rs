@@ -7,8 +7,12 @@ use crate::types::{EditError, Hashline, HashlineEditOp};
 pub fn validate_edit(file_path: &str, edit: &HashlineEditOp) -> Result<(), EditError> {
     let content = fs::read_to_string(file_path)
         .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
+    validate_edit_with_content(&content, edit)
+}
 
-    let hashlines = enhance_with_hashlines(&content);
+/// Validates a single edit against in-memory content.
+pub fn validate_edit_with_content(content: &str, edit: &HashlineEditOp) -> Result<(), EditError> {
+    let hashlines = enhance_with_hashlines(content);
 
     if edit.line_number == 0 || edit.line_number > hashlines.len() {
         return Err(EditError::LineNotFound {
@@ -32,8 +36,18 @@ pub fn validate_edit(file_path: &str, edit: &HashlineEditOp) -> Result<(), EditE
 
 /// Validates all edit operations in sequence against a file.
 pub fn validate_all(file_path: &str, edits: &[HashlineEditOp]) -> Result<(), EditError> {
+    let content = fs::read_to_string(file_path)
+        .map_err(|_| EditError::FileNotFound(file_path.to_string()))?;
     for edit in edits {
-        validate_edit(file_path, edit)?;
+        validate_edit_with_content(&content, edit)?;
+    }
+    Ok(())
+}
+
+/// Validates all edit operations against in-memory content.
+pub fn validate_all_with_content(content: &str, edits: &[HashlineEditOp]) -> Result<(), EditError> {
+    for edit in edits {
+        validate_edit_with_content(content, edit)?;
     }
     Ok(())
 }

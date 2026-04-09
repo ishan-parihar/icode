@@ -475,7 +475,7 @@ impl CommandWithStdin {
             use std::io::Write as _;
             child_stdin.write_all(stdin)?;
         }
-        child.wait_with_output()
+        crate::wait_with_output_timeout(child, crate::HOOK_TIMEOUT, "hook execution")
     }
 }
 
