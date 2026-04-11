@@ -36,6 +36,8 @@ pub enum AppMode {
     Normal,
     Loading,
     Error(String),
+    AuthError(String),
+    Welcome,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +222,7 @@ pub struct AppState {
     pub pending_slash_command: Option<String>,
     pub permission_dialog: PermissionDialogState,
     pub question_prompt: QuestionPromptState,
+    pub has_shown_welcome: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -365,6 +368,7 @@ impl AppState {
             pending_slash_command: None,
             permission_dialog: PermissionDialogState::new(),
             question_prompt: QuestionPromptState::new(),
+            has_shown_welcome: false,
         }
     }
 
@@ -560,6 +564,26 @@ impl AppState {
     /// The error is also appended to messages as a visible error block.
     pub fn show_error(&mut self, msg: String) {
         self.mode = AppMode::Error(msg.clone());
+        self.messages.push(Message {
+            role: MessageRole::Tool {
+                name: "error".into(),
+            },
+            parts: vec![MessagePart::Text { content: msg }],
+            agent: "system".into(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            is_streaming: false,
+            tool_timeline: Vec::new(),
+            turn_duration_ms: 0,
+            sub_agents: Vec::new(),
+        });
+        self.scroll_to_bottom();
+    }
+
+    pub fn show_auth_error(&mut self, msg: String) {
+        self.mode = AppMode::AuthError(msg.clone());
         self.messages.push(Message {
             role: MessageRole::Tool {
                 name: "error".into(),

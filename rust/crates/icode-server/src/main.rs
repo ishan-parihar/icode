@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
+use icode_server::routes::diagnostics;
 use icode_server::state::ServerState;
 use icode_server::ApiDoc;
 use icode_server::{
@@ -21,6 +22,11 @@ use utoipa_swagger_ui::SwaggerUi;
 #[tokio::main]
 async fn main() {
     let args = parse_args();
+
+    // Install crash reporter panic hook
+    let mut crash_context = std::collections::HashMap::new();
+    crash_context.insert("binary".to_string(), "icode-server".to_string());
+    telemetry::install_panic_hook(crash_context);
 
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=info".into()))
@@ -93,6 +99,9 @@ fn create_router(state: Arc<ServerState>) -> Router {
         // LSP
         .route("/lsp", get(list_lsp))
         .route("/lsp/{language}/connect", post(connect_lsp))
+        // Diagnostics
+        .route("/diagnostics", get(diagnostics::get_diagnostics))
+        .route("/crash-report", get(diagnostics::get_crash_report))
         // Swagger & OpenAPI
         .merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", ApiDoc::openapi()))
         .layer(CorsLayer::permissive())

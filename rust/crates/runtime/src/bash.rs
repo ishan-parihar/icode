@@ -76,11 +76,14 @@ pub struct BashCommandOutput {
 }
 
 pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
+    let cmd = &input.command;
+    let timeout = input.timeout;
+    tracing::info!(command = %cmd, timeout_secs = timeout, "executing bash command");
     let cwd = env::current_dir()?;
     let sandbox_status = sandbox_status_for_input(&input, &cwd);
 
     if input.dangerously_disable_sandbox == Some(true) {
-        eprintln!(
+        tracing::warn!(
             "[WARNING] Sandbox disabled via dangerously_disable_sandbox for command: {}",
             input.command
         );
@@ -94,7 +97,7 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
         Some("allow") => PermissionMode::Allow,
         None => PermissionMode::DangerFullAccess,
         Some(unknown) => {
-            eprintln!("[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only");
+            tracing::warn!("[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only");
             PermissionMode::ReadOnly
         }
     };
@@ -103,7 +106,7 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
         }
         ValidationResult::Warn { message } => {
-            eprintln!("bash validation warning: {message}");
+            tracing::warn!("bash validation warning: {message}");
         }
         ValidationResult::Allow => {}
     }
@@ -189,7 +192,7 @@ async fn execute_bash_async(
         Some("allow") => PermissionMode::Allow,
         None => PermissionMode::DangerFullAccess,
         Some(unknown) => {
-            eprintln!("[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only");
+            tracing::warn!("[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only");
             PermissionMode::ReadOnly
         }
     };
@@ -198,7 +201,7 @@ async fn execute_bash_async(
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
         }
         ValidationResult::Warn { message } => {
-            eprintln!("bash validation warning: {message}");
+            tracing::warn!("bash validation warning: {message}");
         }
         ValidationResult::Allow => {}
     }
@@ -221,6 +224,7 @@ async fn execute_bash_async(
                     .args(["-9", &pid.to_string()])
                     .output();
             }
+            tracing::warn!(timeout_ms = timeout_ms, "bash command timed out");
             return Ok(BashCommandOutput {
                 stdout: String::new(),
                 stderr: format!("Command exceeded timeout of {timeout_ms} ms. Partial output may have been discarded."),
@@ -246,6 +250,8 @@ async fn execute_bash_async(
     let (output, interrupted) = output_result;
     let stdout = truncate_output(&String::from_utf8_lossy(&output.stdout));
     let stderr = truncate_output(&String::from_utf8_lossy(&output.stderr));
+    let code = output.status.code();
+    tracing::info!(exit_code = ?code, stdout_bytes = stdout.len(), stderr_bytes = stderr.len(), "bash command completed");
     let no_output_expected = Some(stdout.trim().is_empty() && stderr.trim().is_empty());
     let return_code_interpretation = output.status.code().and_then(|code| {
         if code == 0 {
@@ -345,10 +351,10 @@ fn prepare_tokio_command(
 
 fn prepare_sandbox_dirs(cwd: &std::path::Path) {
     if let Err(e) = std::fs::create_dir_all(cwd.join(".sandbox-home")) {
-        eprintln!("bash: failed to create sandbox HOME: {e}");
+        tracing::warn!("bash: failed to create sandbox HOME: {e}");
     }
     if let Err(e) = std::fs::create_dir_all(cwd.join(".sandbox-tmp")) {
-        eprintln!("bash: failed to create sandbox TMPDIR: {e}");
+        tracing::warn!("bash: failed to create sandbox TMPDIR: {e}");
     }
 }
 

@@ -3,6 +3,7 @@ pub mod attach;
 pub mod autocomplete;
 pub mod command_palette;
 pub mod context_suggestions;
+pub mod debug;
 pub mod debug_panel;
 pub mod dialog_connect;
 pub mod dialog_context_viz;

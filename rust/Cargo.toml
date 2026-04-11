@@ -34,6 +34,7 @@ toml = "0.8"
 notify = "7"
 cron = "0.13"
 ignore = "0.4"
+num_cpus = "1"
 
 axum = "0.8"
 tower = "0.5"

@@ -926,7 +926,7 @@ impl MessageList {
             }
 
             let visible_start = start.saturating_sub(item_start);
-            let visible_end = end.min(item_end);
+            let visible_end = item_height.min(end.saturating_sub(item_start));
             let visible_count = visible_end.saturating_sub(visible_start);
 
             if visible_count == 0 {
@@ -961,7 +961,7 @@ impl MessageList {
                         item_area,
                         &state.theme,
                         visible_start,
-                        visible_end,
+                        visible_count,
                     );
                 }
                 RenderItem::ToolCallBlock(data) => {
@@ -972,7 +972,7 @@ impl MessageList {
                         content_width,
                         &state.theme,
                         visible_start,
-                        visible_end,
+                        visible_count,
                     );
                 }
                 RenderItem::TodoList(todos) => {
@@ -982,7 +982,7 @@ impl MessageList {
                         item_area,
                         &state.theme,
                         visible_start,
-                        visible_end,
+                        visible_count,
                     );
                 }
                 RenderItem::Thinking(lines) => {

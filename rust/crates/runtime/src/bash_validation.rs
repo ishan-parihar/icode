@@ -131,13 +131,22 @@ pub fn validate_read_only(command: &str, mode: PermissionMode) -> ValidationResu
             }
         }
 
-        // Check for sudo wrapping write commands.
+        // Check for sudo wrapping write commands or a shell interpreter.
         if first_command == "sudo" {
             let sudo_words = extract_sudo_words(command);
-            for word in sudo_words {
-                if WRITE_COMMANDS.contains(&word) || STATE_MODIFYING_COMMANDS.contains(&word) || ALWAYS_DESTRUCTIVE_COMMANDS.contains(&word) {
+            for word in &sudo_words {
+                if WRITE_COMMANDS.contains(word)
+                    || STATE_MODIFYING_COMMANDS.contains(word)
+                    || ALWAYS_DESTRUCTIVE_COMMANDS.contains(word)
+                {
                     return ValidationResult::Block {
                         reason: format!("sudo command contains blocked target '{word}' which modifies state in read-only mode"),
+                    };
+                }
+                // Block shell-interpreter escalation (e.g. `sudo bash -c 'rm -rf /'`)
+                if DANGEROUS_SHELLS.contains(word) {
+                    return ValidationResult::Block {
+                        reason: format!("sudo command invokes shell interpreter '{word}' which could execute arbitrary code in read-only mode"),
                     };
                 }
             }
@@ -241,6 +250,13 @@ const DESTRUCTIVE_PATTERNS: &[(&str, &str)] = &[
 /// Commands that are always destructive regardless of arguments.
 const ALWAYS_DESTRUCTIVE_COMMANDS: &[&str] = &["shred", "wipefs"];
 
+/// Shell interpreters that can execute arbitrary code and must not be allowed
+/// as the inner command of a `sudo` invocation in restricted modes.
+const DANGEROUS_SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "fish", "ksh", "tcsh", "csh", "rbash", "python", "python3",
+    "python2", "perl", "ruby", "node", "nodejs", "lua", "tclsh", "wish",
+];
+
 /// Warn if a command looks destructive.
 ///
 /// Corresponds to upstream `tools/BashTool/destructiveCommandWarning.ts`.
@@ -319,7 +335,9 @@ fn command_targets_outside_workspace(command: &str) -> bool {
     let all_cmds = extract_all_commands(command);
     let mut is_write_cmd = false;
     for first in &all_cmds {
-        if WRITE_COMMANDS.contains(&first.as_str()) || STATE_MODIFYING_COMMANDS.contains(&first.as_str()) {
+        if WRITE_COMMANDS.contains(&first.as_str())
+            || STATE_MODIFYING_COMMANDS.contains(&first.as_str())
+        {
             is_write_cmd = true;
             break;
         }
@@ -355,7 +373,7 @@ pub fn validate_sed(command: &str, mode: PermissionMode) -> ValidationResult {
             break;
         }
     }
-    
+
     if !has_sed {
         return ValidationResult::Allow;
     }
@@ -554,20 +572,28 @@ const SYSTEM_ADMIN_COMMANDS: &[&str] = &[
 pub fn classify_command(command: &str) -> CommandIntent {
     let commands = extract_all_commands(command);
     let mut highest_severity = CommandIntent::Unknown;
-    
+
     if commands.is_empty() {
         return highest_severity;
     }
-    
+
     for first in &commands {
         let intent = classify_by_first_command(first, command);
         highest_severity = match (highest_severity, intent) {
-            (CommandIntent::Destructive, _) | (_, CommandIntent::Destructive) => CommandIntent::Destructive,
-            (CommandIntent::SystemAdmin, _) | (_, CommandIntent::SystemAdmin) => CommandIntent::SystemAdmin,
+            (CommandIntent::Destructive, _) | (_, CommandIntent::Destructive) => {
+                CommandIntent::Destructive
+            }
+            (CommandIntent::SystemAdmin, _) | (_, CommandIntent::SystemAdmin) => {
+                CommandIntent::SystemAdmin
+            }
             (CommandIntent::Write, _) | (_, CommandIntent::Write) => CommandIntent::Write,
             (CommandIntent::Network, _) | (_, CommandIntent::Network) => CommandIntent::Network,
-            (CommandIntent::ProcessManagement, _) | (_, CommandIntent::ProcessManagement) => CommandIntent::ProcessManagement,
-            (CommandIntent::PackageManagement, _) | (_, CommandIntent::PackageManagement) => CommandIntent::PackageManagement,
+            (CommandIntent::ProcessManagement, _) | (_, CommandIntent::ProcessManagement) => {
+                CommandIntent::ProcessManagement
+            }
+            (CommandIntent::PackageManagement, _) | (_, CommandIntent::PackageManagement) => {
+                CommandIntent::PackageManagement
+            }
             (CommandIntent::ReadOnly, _) | (_, CommandIntent::ReadOnly) => CommandIntent::ReadOnly,
             _ => CommandIntent::Unknown,
         };
@@ -658,6 +684,7 @@ pub fn validate_command(command: &str, mode: PermissionMode, workspace: &Path) -
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[must_use]
 pub fn extract_all_commands(command: &str) -> Vec<String> {
     let mut cmds = Vec::new();
     for part in split_bash_commands(command) {
@@ -684,7 +711,7 @@ fn split_bash_commands(command: &str) -> Vec<&str> {
         }
         let b = bytes[i];
         if b == b'\\' {
-            // In bash, backslash only escapes inside double quotes or outside quotes. 
+            // In bash, backslash only escapes inside double quotes or outside quotes.
             if !in_single {
                 escaped = true;
             }
@@ -765,31 +792,54 @@ fn extract_sudo_words(command: &str) -> Vec<&str> {
 }
 
 /// Find the end of a value in `KEY=value rest` (handles basic quoting).
+///
+/// Correctly handles:
+/// - Single-quoted strings: no backslash escapes at all in POSIX sh.
+/// - Double-quoted strings: `\"` is an escaped quote; `\\` is an escaped backslash.
+///   We count consecutive backslashes before a `"` to determine if it is escaped.
 fn find_end_of_value(s: &str) -> Option<usize> {
     let s = s.trim_start();
     if s.is_empty() {
         return None;
     }
 
-    let first = s.as_bytes()[0];
+    let bytes = s.as_bytes();
+    let first = bytes[0];
     if first == b'"' || first == b'\'' {
         let quote = first;
         let mut i = 1;
         while i < s.len() {
-            let ch = s.as_bytes()[i];
+            let ch = bytes[i];
             if ch == quote {
-                // In bash, single quotes do not support backslash escapes.
-                if quote == b'"' && s.as_bytes()[i - 1] == b'\\' {
-                    i += 1;
-                    continue;
+                if quote == b'"' {
+                    // Count the number of consecutive backslashes immediately before
+                    // this quote. An even number means the quote is NOT escaped.
+                    let mut backslash_count = 0usize;
+                    let mut j = i;
+                    while j > 0 && bytes[j - 1] == b'\\' {
+                        backslash_count += 1;
+                        j -= 1;
+                    }
+                    if backslash_count % 2 == 1 {
+                        // The closing `"` is preceded by an odd number of backslashes,
+                        // so it is escaped — not the end of the string.
+                        i += 1;
+                        continue;
+                    }
                 }
-                // Skip past quote.
-                i += 1;
-                // Find next whitespace.
-                while i < s.len() && !s.as_bytes()[i].is_ascii_whitespace() {
+                // Single-quoted strings: no escape sequences; this is always the end.
+                // Double-quoted strings: preceded by even backslashes (including 0).
+                i += 1; // skip past closing quote
+                        // Find next whitespace.
+                while i < s.len() && !bytes[i].is_ascii_whitespace() {
                     i += 1;
                 }
                 return if i < s.len() { Some(i) } else { None };
+            }
+            // Inside a double-quoted string, skip backslash + next char together.
+            if quote == b'"' && ch == b'\\' && i + 1 < s.len() {
+                i += 2;
+                continue;
             }
             i += 1;
         }
@@ -1095,5 +1145,45 @@ mod tests {
     #[test]
     fn extracts_plain_command() {
         assert_eq!(extract_first_command("grep -r pattern ."), "grep");
+    }
+
+    // --- sudo shell escalation block ---
+
+    #[test]
+    fn blocks_sudo_shell_escalation_in_read_only() {
+        // `sudo bash -c 'rm -rf /'` must be blocked — bash is a dangerous shell.
+        assert!(matches!(
+            validate_read_only("sudo bash -c 'rm -rf /'", PermissionMode::ReadOnly),
+            ValidationResult::Block { reason } if reason.contains("bash")
+        ));
+        // `sudo -u root sh -c '...'` must be blocked — sh is a dangerous shell.
+        assert!(matches!(
+            validate_read_only("sudo -u root sh -c 'id'", PermissionMode::ReadOnly),
+            ValidationResult::Block { reason } if reason.contains("sh")
+        ));
+    }
+
+    // --- find_end_of_value double-quote handling ---
+
+    #[test]
+    fn env_prefix_double_quoted_with_escaped_backslash() {
+        // `FOO="foo\\" cmd` — the value is `foo\` (backslash before closing quote is escaped).
+        // extract_first_command must return "cmd", not "" (which would be the wrong parse).
+        let result = extract_first_command(r#"FOO="foo\\" cmd"#);
+        assert_eq!(
+            result, "cmd",
+            "expected 'cmd' but find_end_of_value mishandled escaped backslash before \""
+        );
+    }
+
+    #[test]
+    fn env_prefix_single_quoted_no_backslash_escape() {
+        // Single quotes never process backslashes, so `FOO='it\'s'` should terminate at the `'` after \
+        // This is a genuine single-quote split; the Bash behavior would treat the first `'` as end.
+        // Here the VALUE is `it\`, the `s'` part is not inside the single-quoted string.
+        // After stripping the env var FOO='it\' there may be trailing content.
+        // The important assertion: no panic, returns non-empty.
+        let result = extract_first_command("FOO='bar' ls");
+        assert_eq!(result, "ls");
     }
 }

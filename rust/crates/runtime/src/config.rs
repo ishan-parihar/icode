@@ -460,6 +460,7 @@ impl RuntimePluginConfig {
 #[must_use]
 pub fn default_config_home() -> PathBuf {
     std::env::var_os("CLAW_CONFIG_HOME")
+        .or_else(|| std::env::var_os("ICODE_CONFIG_HOME"))
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".icode")))
         .unwrap_or_else(|| PathBuf::from(".icode"))

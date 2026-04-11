@@ -130,6 +130,7 @@ pub struct QuestionPromptState {
     pub answers: Vec<Vec<String>>,
     pub active_tab: usize,
     pub cursor_idx: usize,
+    pub scroll_offset: usize,
     pub custom_input: String,
     pub editing_custom: bool,
     pub answer_tx: Option<std::sync::mpsc::Sender<String>>,
@@ -154,6 +155,7 @@ impl QuestionPromptState {
         self.answers = vec![Vec::new(); self.questions.len()];
         self.active_tab = 0;
         self.cursor_idx = 0;
+        self.scroll_offset = 0;
         self.custom_input.clear();
         self.editing_custom = false;
         self.answer_tx = answer_tx;
@@ -189,6 +191,7 @@ impl QuestionPromptState {
         self.answers.clear();
         self.active_tab = 0;
         self.cursor_idx = 0;
+        self.scroll_offset = 0;
         self.custom_input.clear();
         self.editing_custom = false;
         self.answer_tx = None;
@@ -202,6 +205,7 @@ impl QuestionPromptState {
         if self.active_tab < self.questions.len() {
             self.active_tab += 1;
             self.cursor_idx = 0;
+            self.scroll_offset = 0;
             self.custom_input.clear();
             self.editing_custom = false;
         }
@@ -248,6 +252,7 @@ impl QuestionPromptState {
     pub fn cursor_up(&mut self) {
         if self.cursor_idx > 0 {
             self.cursor_idx -= 1;
+            self.ensure_visible_options(10);
         }
     }
 
@@ -256,7 +261,19 @@ impl QuestionPromptState {
             let len = self.questions[self.active_tab].option_count();
             if len > 0 && self.cursor_idx < len.saturating_sub(1) {
                 self.cursor_idx += 1;
+                self.ensure_visible_options(10);
             }
+        }
+    }
+
+    fn ensure_visible_options(&mut self, visible_count: usize) {
+        if visible_count == 0 {
+            return;
+        }
+        if self.cursor_idx < self.scroll_offset {
+            self.scroll_offset = self.cursor_idx;
+        } else if self.cursor_idx >= self.scroll_offset + visible_count {
+            self.scroll_offset = self.cursor_idx - visible_count + 1;
         }
     }
 
@@ -264,6 +281,7 @@ impl QuestionPromptState {
         if self.active_tab > 0 {
             self.active_tab -= 1;
             self.cursor_idx = 0;
+            self.scroll_offset = 0;
             self.custom_input.clear();
             self.editing_custom = false;
         }
@@ -274,6 +292,7 @@ impl QuestionPromptState {
         if self.active_tab < confirm_idx {
             self.active_tab += 1;
             self.cursor_idx = 0;
+            self.scroll_offset = 0;
             self.custom_input.clear();
             self.editing_custom = false;
         }
@@ -700,11 +719,19 @@ fn render_options(
     is_multi: bool,
 ) {
     let max_opts = area.height.min(12) as usize;
-    for (i, opt) in q.options.iter().take(max_opts).enumerate() {
-        if i as u16 >= area.height {
+    let visible_opts: Vec<_> = q
+        .options
+        .iter()
+        .skip(state.scroll_offset)
+        .take(max_opts)
+        .collect();
+    let mut row_pos: u16 = 0;
+    for (i, opt) in visible_opts.iter().enumerate() {
+        let global_idx = state.scroll_offset + i;
+        if row_pos >= area.height {
             break;
         }
-        let is_cursor = i == state.cursor_idx;
+        let is_cursor = global_idx == state.cursor_idx;
         let is_custom = opt.label == CUSTOM_ANSWER_LABEL;
         let prefix = if is_custom {
             if state.editing_custom {
@@ -742,8 +769,8 @@ fn render_options(
                 Span::raw("  ")
             }
         };
-        let num = if i < 9 {
-            format!("{}.", i + 1)
+        let num = if global_idx < 9 {
+            format!("{}.", global_idx + 1)
         } else {
             "  ".to_string()
         };
@@ -761,7 +788,7 @@ fn render_options(
         ]);
         let row = Rect {
             x: area.x,
-            y: area.y + i as u16,
+            y: area.y + row_pos,
             width: area.width,
             height: 1,
         };
@@ -773,9 +800,31 @@ fn render_options(
         } else {
             frame.render_widget(Paragraph::new(line), row);
         }
+        row_pos += 1;
+
+        if !opt.description.is_empty() && row_pos < area.height {
+            let desc_row = Rect {
+                x: area.x + 3,
+                y: area.y + row_pos,
+                width: area.width.saturating_sub(3),
+                height: 1,
+            };
+            let desc_style = if is_cursor && !state.editing_custom {
+                Style::default()
+                    .fg(theme.text_muted)
+                    .bg(theme.background_element)
+            } else {
+                Style::default().fg(theme.text_muted)
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(&opt.description, desc_style))),
+                desc_row,
+            );
+            row_pos += 1;
+        }
     }
     if state.editing_custom {
-        let ir = q.options.len().min(max_opts) as u16;
+        let ir = row_pos;
         if ir < area.height {
             render_custom_textarea(
                 frame,

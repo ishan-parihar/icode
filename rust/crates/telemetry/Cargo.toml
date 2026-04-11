@@ -6,8 +6,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+backtrace = "0.3"
+chrono = { workspace = true }
+num_cpus = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+walkdir = { workspace = true }
 
 [lints]
 workspace = true

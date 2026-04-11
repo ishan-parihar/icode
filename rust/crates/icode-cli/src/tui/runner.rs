@@ -20,6 +20,7 @@ use ratatui::Terminal;
 use runtime::skill_manager::SkillManager;
 use std::fmt::Write as _;
 use std::io;
+use std::io::BufRead;
 use std::io::Write;
 use std::path::Path;
 use std::sync::mpsc::Receiver;
@@ -81,11 +82,11 @@ impl Tui {
         let _ = frecency.load();
         state.prompt.frecency = Some(frecency);
 
-        // Auto-open provider dialog when no providers are configured
+        // Show welcome/setup flow when no providers are configured
         let any_configured = api::scan_provider_auth_status().iter().any(|p| p.has_auth);
         if !any_configured {
+            state.mode = AppMode::Welcome;
             state.provider_dialog.refresh_providers();
-            state.provider_dialog.open = true;
         }
 
         Ok(Self {
@@ -312,6 +313,34 @@ impl Tui {
 
         // Error mode: any key resets to Normal
         if matches!(self.state.mode, AppMode::Error(_)) {
+            self.state.mode = AppMode::Normal;
+            return None;
+        }
+
+        // Welcome mode: Enter opens provider dialog, Esc dismisses
+        if matches!(self.state.mode, AppMode::Welcome) {
+            match key.code {
+                KeyCode::Enter => {
+                    self.state.provider_dialog.open = true;
+                    self.state.mode = AppMode::Normal;
+                    return None;
+                }
+                KeyCode::Esc => {
+                    self.state.mode = AppMode::Normal;
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
+        // AuthError mode: 'p'/'P' opens provider dialog, any other key dismisses
+        if matches!(self.state.mode, AppMode::AuthError(_)) {
+            if let KeyCode::Char('p' | 'P') = key.code {
+                self.state.provider_dialog.refresh_providers();
+                self.state.provider_dialog.open = true;
+                self.state.mode = AppMode::Normal;
+                return None;
+            }
             self.state.mode = AppMode::Normal;
             return None;
         }
@@ -1523,6 +1552,16 @@ impl Tui {
                         .add_toast(format!("Unknown theme: {args}"), ToastKind::Error);
                 }
             }
+            _ if cmd.starts_with("/debug") => {
+                let args = cmd.strip_prefix("/debug").unwrap_or("").trim();
+                let action = if args.is_empty() { None } else { Some(args) };
+                let result = handle_debug_slash_command(action);
+                let (msg, kind) = match result {
+                    Ok(msg) => (msg, ToastKind::Info),
+                    Err(msg) => (msg, ToastKind::Warning),
+                };
+                self.state.add_toast(msg, kind);
+            }
             _ => {
                 self.state
                     .add_toast(format!("Unknown command: {cmd}"), ToastKind::Warning);
@@ -1611,9 +1650,10 @@ impl Tui {
             height: 24,
         });
         let area_width = size.width;
-        let has_sidebar = self.state.sidebar_visible && area_width > 120;
+        let is_welcome = self.state.messages.is_empty();
+        let has_sidebar = !is_welcome && self.state.sidebar_visible && area_width > 120;
         let panel_width = if has_sidebar {
-            area_width.saturating_sub(44)
+            area_width.saturating_sub(42)
         } else {
             area_width
         };
@@ -1626,9 +1666,10 @@ impl Tui {
             height: 24,
         });
         let area_width = size.width;
-        let has_sidebar = self.state.sidebar_visible && area_width > 120;
+        let is_welcome = self.state.messages.is_empty();
+        let has_sidebar = !is_welcome && self.state.sidebar_visible && area_width > 120;
         let content_w = if has_sidebar {
-            (area_width.saturating_sub(44)) as usize
+            (area_width.saturating_sub(42)) as usize
         } else {
             area_width as usize
         };
@@ -1656,6 +1697,7 @@ impl Tui {
         }
         if disconnected {
             self.turn_rx = None;
+            events.push(TurnEvent::TurnError("Model connection lost".to_string()));
         }
         for event in events {
             self.process_turn_event(event);
@@ -1729,7 +1771,16 @@ impl Tui {
                     self.state.last_turn_duration = Some(started.elapsed());
                 }
                 self.turn_rx = None;
-                self.state.show_error(msg);
+                let is_auth_error = msg.contains("No API provider configured")
+                    || msg.contains("MissingCredentials")
+                    || msg.contains("api key")
+                    || msg.contains("credentials")
+                    || msg.contains("auth");
+                if is_auth_error {
+                    self.state.show_auth_error(msg);
+                } else {
+                    self.state.show_error(msg);
+                }
             }
         }
     }
@@ -1743,7 +1794,8 @@ impl Tui {
             .clamp(1, 6);
         let prompt_height = (prompt_lines as u16) + 3;
 
-        let has_sidebar = self.state.sidebar_visible && area.width > 120;
+        let is_welcome = self.state.messages.is_empty();
+        let has_sidebar = !is_welcome && self.state.sidebar_visible && area.width > 120;
         let panel_width = if has_sidebar {
             area.width - 2 - 42
         } else {
@@ -2028,7 +2080,8 @@ impl Tui {
             .clamp(1, 6);
         let prompt_height = (prompt_lines as u16) + 3;
 
-        let has_sidebar = self.state.sidebar_visible && area.width > 120;
+        let is_welcome = self.state.messages.is_empty();
+        let has_sidebar = !is_welcome && self.state.sidebar_visible && area.width > 120;
         let panel_width = if has_sidebar {
             area.width - 2 - 42
         } else {
@@ -2448,6 +2501,140 @@ impl Drop for Tui {
         let _ = KittyKeyboard::disable();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+    }
+}
+
+/// Handle `/debug` slash command — inlined from main.rs for TUI accessibility.
+fn handle_debug_slash_command(action: Option<&str>) -> Result<String, String> {
+    match action {
+        None => {
+            let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info (default)".to_string());
+            let log_dir = crate::tui::debug::icode_log_dir();
+            let log_path = log_dir.join("icode");
+            let file_size = std::fs::metadata(&log_path)
+                .map_or_else(|_| "file not found".to_string(), |m| format!("{} bytes", m.len()));
+
+            let mut recent_logs = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&log_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if let Ok(name) = entry.file_name().into_string() {
+                            let modified = meta.modified()
+                                .map(|t| {
+                                    use std::time::SystemTime;
+                                    let dur = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+                                    dur.as_secs()
+                                })
+                                .unwrap_or(0);
+                            recent_logs.push((modified, format!("  {} ({} bytes)", name, meta.len())));
+                        }
+                    }
+                }
+            }
+            recent_logs.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
+
+            let recent = if recent_logs.is_empty() {
+                "  (no log files found)".to_string()
+            } else {
+                recent_logs.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("\n")
+            };
+
+            Ok(format!(
+                "Debug Log Status:\n  Log level:     {log_level}\n  Log directory: {}\n  File size:     {file_size}\n\nRecent log files:\n{recent}",
+                log_dir.display(),
+            ))
+        }
+        Some("on") => {
+            std::env::set_var("RUST_LOG", "debug,hyper=info,h2=info");
+            Ok("Debug logging enabled (RUST_LOG=debug,hyper=info,h2=info).\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart.".to_string())
+        }
+        Some("off") => {
+            std::env::set_var("RUST_LOG", "info");
+            Ok("Debug logging disabled (RUST_LOG=info).\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart.".to_string())
+        }
+        Some("level") => {
+            Err("Usage: /debug level <level>\nValid levels: error, warn, info, debug, trace".to_string())
+        }
+        Some(level_str) if level_str.starts_with("level ") => {
+            let level = level_str.strip_prefix("level ").unwrap().trim();
+            if level.is_empty() {
+                Err("Usage: /debug level <level>\nValid levels: error, warn, info, debug, trace".to_string())
+            } else {
+                let valid_levels = ["error", "warn", "info", "debug", "trace"];
+                if valid_levels.contains(&level) {
+                    std::env::set_var("RUST_LOG", level);
+                    Ok(format!(
+                        "Log level set to '{level}'.\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart."
+                    ))
+                } else {
+                    Err(format!(
+                        "Invalid log level '{level}'. Valid levels: error, warn, info, debug, trace"
+                    ))
+                }
+            }
+        }
+        Some("logs") => {
+            let log_dir = crate::tui::debug::icode_log_dir();
+            let mut log_files = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&log_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if let Ok(modified) = meta.modified() {
+                            log_files.push((modified, entry.path()));
+                        }
+                    }
+                }
+            }
+            log_files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+
+            let most_recent = log_files.first().map(|(_, path)| path.clone());
+
+            let mut output = format!("Log directory: {}\n", log_dir.display());
+            if let Some(path) = &most_recent {
+                use std::fmt::Write as _;
+                let _ = write!(output, "Most recent: {}\n\n", path.display());
+                let file = std::fs::File::open(path).map_err(|e| format!("Cannot open log file: {e}"))?;
+                let reader = std::io::BufReader::new(file);
+                let mut ring = std::collections::VecDeque::with_capacity(20);
+                for line in reader.lines() {
+                    let line = line.map_err(|e| format!("Error reading log: {e}"))?;
+                    if ring.len() >= 20 {
+                        ring.pop_front();
+                    }
+                    ring.push_back(line);
+                }
+                output.push_str("Last 20 lines:\n");
+                output.push_str("---\n");
+                for line in &ring {
+                    output.push_str(line);
+                    output.push('\n');
+                }
+                output.push_str("---\n");
+            } else {
+                output.push_str("No log files found.\n");
+            }
+            Ok(output)
+        }
+        Some("clean") => {
+            let log_dir = crate::tui::debug::icode_log_dir();
+            let before_count = std::fs::read_dir(&log_dir)
+                .map(|e| e.flatten().count())
+                .unwrap_or(0);
+            crate::tui::debug::cleanup_old_logs(7);
+            let after_count = std::fs::read_dir(&log_dir)
+                .map(|e| e.flatten().count())
+                .unwrap_or(0);
+            let cleaned = before_count.saturating_sub(after_count);
+            Ok(format!("Log cleanup complete. {cleaned} old log file(s) removed (older than 7 days)."))
+        }
+        Some("help" | "-h" | "--help") => {
+            Ok("/debug [subcommand]\n\nSubcommands:\n  /debug              Show current log status (level, path, size)\n  /debug on           Enable debug logging (RUST_LOG=debug,hyper=info,h2=info)\n  /debug off          Disable verbose logging (RUST_LOG=info)\n  /debug level <lvl>  Set specific log level (error|warn|info|debug|trace)\n  /debug logs         Show log path and tail last 20 lines\n  /debug clean        Cleanup old log files (older than 7 days)\n  /debug help         Show this help text\n\nNote: Log level changes apply to new entries after restart.\nThe active tracing subscriber cannot be re-initialized at runtime.".to_string())
+        }
+        Some(other) => {
+            Err(format!(
+                "Unknown /debug action '{other}'. Use /debug help for usage information."
+            ))
+        }
     }
 }
 

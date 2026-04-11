@@ -82,7 +82,7 @@ pub async fn check_for_updates(current_version: &str) -> Option<UpdateInfo> {
         }
         Err(e) => {
             // Log error but don't propagate — update check is best-effort
-            eprintln!("Failed to check for updates: {e}");
+            tracing::warn!("Failed to check for updates: {e}");
             None
         }
     }

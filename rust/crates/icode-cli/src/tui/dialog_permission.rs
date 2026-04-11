@@ -530,9 +530,9 @@ impl PermissionDialogState {
 }
 
 const BUTTON_COUNT: usize = 3;
-const BTN_APPROVE: &str = "Approve";
-const BTN_DENY: &str = "Deny";
-const BTN_ALWAYS: &str = "Always";
+const BTN_APPROVE: &str = "Allow once";
+const BTN_DENY: &str = "Reject";
+const BTN_ALWAYS: &str = "Allow always";
 
 // ---------------------------------------------------------------------------
 // Render

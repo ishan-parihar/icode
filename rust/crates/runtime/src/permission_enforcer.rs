@@ -307,9 +307,45 @@ fn is_read_only_command(command: &str) -> bool {
 
     !command.contains("sudo")
         && !sed_has_inplace_flag(command)
-        && !command.contains(" > ")
-        && !command.contains(" >> ")
-        && !command.contains(" | ")
+        && !command_has_unquoted_pipe_or_redirect(command)
+}
+
+/// Returns `true` if `command` contains a `|` or output-redirection operator (`>`, `>>`)
+/// outside of any quoted string context.
+///
+/// Unlike a plain `contains(" | ")`, this correctly handles compact forms such as
+/// `ls|grep`, `cmd>file`, and `cmd>>/tmp/out` that have no surrounding spaces.
+fn command_has_unquoted_pipe_or_redirect(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\\' if !in_single => {
+                escaped = true;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+            }
+            b'|' | b'>' if !in_single && !in_double => {
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -414,6 +450,30 @@ mod tests {
         assert!(!is_read_only_command("rm file.txt"));
         assert!(!is_read_only_command("echo test > file.txt"));
         assert!(!is_read_only_command("sed -i 's/a/b/' file"));
+    }
+
+    #[test]
+    fn pipe_redirect_detection_without_spaces() {
+        // Compact pipe: `ls|grep foo` — no spaces around `|`.
+        assert!(
+            !is_read_only_command("ls|grep foo"),
+            "compact pipe `ls|grep` must NOT be treated as read-only"
+        );
+        // Compact redirect: `cat file>out` — no spaces.
+        assert!(
+            !is_read_only_command("cat file>out"),
+            "compact redirect `cat file>out` must NOT be treated as read-only"
+        );
+        // Pipe in a quoted grep pattern must NOT trigger the rule.
+        assert!(
+            command_has_unquoted_pipe_or_redirect("ls | grep foo"),
+            "spaced pipe must be detected"
+        );
+        // A `|` inside a single-quoted string is literal and must NOT trigger.
+        assert!(
+            !command_has_unquoted_pipe_or_redirect("grep -P 'foo|bar' file"),
+            "pipe inside single-quoted grep pattern must not trigger"
+        );
     }
 
     #[test]
