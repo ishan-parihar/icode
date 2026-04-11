@@ -24,7 +24,7 @@ pub enum ProviderClient {
     OpenRouter(OpenRouterClient),
     Mistral(MistralClient),
     Groq(GroqClient),
-    Unconfigured,
+    Unconfigured { model: String },
 }
 
 #[derive(Debug)]
@@ -77,13 +77,17 @@ impl ProviderClient {
             ProviderKind::OpenRouter => OpenRouterClient::from_env().map(Self::OpenRouter),
             ProviderKind::Mistral => MistralClient::from_env().map(Self::Mistral),
             ProviderKind::Groq => GroqClient::from_env().map(Self::Groq),
-            ProviderKind::Unconfigured => Ok(Self::Unconfigured),
+            ProviderKind::Unconfigured => Ok(Self::Unconfigured { model: resolved_model.clone() }),
         };
         // If credentials are missing, return Unconfigured instead of erroring.
         // This allows the TUI to start and lets users configure providers interactively.
         // The actual error is deferred until an API call is made.
         match result {
-            Err(ApiError::MissingCredentials { .. } | ApiError::Auth(_)) => Ok(Self::Unconfigured),
+            Err(ApiError::MissingCredentials { .. } | ApiError::Auth(_)) => {
+                Ok(Self::Unconfigured {
+                    model: resolved_model.clone(),
+                })
+            }
             other => other,
         }
     }
@@ -101,7 +105,7 @@ impl ProviderClient {
             Self::OpenRouter(_) => ProviderKind::OpenRouter,
             Self::Mistral(_) => ProviderKind::Mistral,
             Self::Groq(_) => ProviderKind::Groq,
-            Self::Unconfigured => ProviderKind::Unconfigured,
+            Self::Unconfigured { .. } => ProviderKind::Unconfigured,
         }
     }
 
@@ -144,9 +148,54 @@ impl ProviderClient {
             Self::OpenRouter(client) => client.send_message(request).await,
             Self::Mistral(client) => client.send_message(request).await,
             Self::Groq(client) => client.send_message(request).await,
-            Self::Unconfigured => Err(ApiError::Auth(
-                "No API provider configured. Set credentials via environment variables or ~/.icode/auth.json".to_string(),
-            )),
+            Self::Unconfigured { model } => {
+                let model_lower = model.to_lowercase();
+                let recognized = providers::metadata_for_model(model).is_some()
+                    || model_lower.starts_with("claude")
+                    || model_lower.starts_with("gpt")
+                    || model_lower.starts_with("grok")
+                    || model_lower.starts_with("gemini/")
+                    || model_lower.starts_with("azure/")
+                    || model_lower.starts_with("bedrock/");
+
+                let msg = if !recognized {
+                    format!(
+                        "Model '{model}' is not recognized by any provider. \
+                         Use a known model name (e.g., 'sonnet', 'opus', 'gpt-4o', 'grok') \
+                         or prefix with provider (e.g., 'azure/deployment', 'gemini/model'). \
+                         Available: export ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY, \
+                         GEMINI_API_KEY, or run `icode login` for OAuth."
+                    )
+                } else if model_lower.starts_with("claude") {
+                    format!(
+                        "Model '{model}' requires Anthropic credentials. \
+                         Set ANTHROPIC_API_KEY env var, save a key to ~/.icode/auth.json, \
+                         or run `icode login` for OAuth."
+                    )
+                } else if model_lower.starts_with("gpt") {
+                    format!(
+                        "Model '{model}' requires OpenAI credentials. \
+                         Set OPENAI_API_KEY env var or save a key to ~/.icode/auth.json."
+                    )
+                } else if model_lower.starts_with("grok") {
+                    format!(
+                        "Model '{model}' requires XAI credentials. \
+                         Set XAI_API_KEY env var or save a key to ~/.icode/auth.json."
+                    )
+                } else if model_lower.starts_with("gemini/") {
+                    format!(
+                        "Model '{model}' requires Gemini credentials. \
+                         Set GEMINI_API_KEY env var or save a key to ~/.icode/auth.json."
+                    )
+                } else {
+                    format!(
+                        "No API provider configured for model '{model}'. \
+                         Set credentials via environment variables (ANTHROPIC_API_KEY, \
+                         OPENAI_API_KEY, XAI_API_KEY, GEMINI_API_KEY) or ~/.icode/auth.json."
+                    )
+                };
+                Err(ApiError::Auth(msg))
+            }
         }
     }
 
@@ -193,9 +242,54 @@ impl ProviderClient {
                     client.stream_message(request).await?;
                 Ok(MessageStream::Groq(s))
             }
-            Self::Unconfigured => Err(ApiError::Auth(
-                "No API provider configured. Set credentials via environment variables or ~/.icode/auth.json".to_string(),
-            )),
+            Self::Unconfigured { model } => {
+                let model_lower = model.to_lowercase();
+                let recognized = providers::metadata_for_model(model).is_some()
+                    || model_lower.starts_with("claude")
+                    || model_lower.starts_with("gpt")
+                    || model_lower.starts_with("grok")
+                    || model_lower.starts_with("gemini/")
+                    || model_lower.starts_with("azure/")
+                    || model_lower.starts_with("bedrock/");
+
+                let msg = if !recognized {
+                    format!(
+                        "Model '{model}' is not recognized by any provider. \
+                         Use a known model name (e.g., 'sonnet', 'opus', 'gpt-4o', 'grok') \
+                         or prefix with provider (e.g., 'azure/deployment', 'gemini/model'). \
+                         Available: export ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY, \
+                         GEMINI_API_KEY, or run `icode login` for OAuth."
+                    )
+                } else if model_lower.starts_with("claude") {
+                    format!(
+                        "Model '{model}' requires Anthropic credentials. \
+                         Set ANTHROPIC_API_KEY env var, save a key to ~/.icode/auth.json, \
+                         or run `icode login` for OAuth."
+                    )
+                } else if model_lower.starts_with("gpt") {
+                    format!(
+                        "Model '{model}' requires OpenAI credentials. \
+                         Set OPENAI_API_KEY env var or save a key to ~/.icode/auth.json."
+                    )
+                } else if model_lower.starts_with("grok") {
+                    format!(
+                        "Model '{model}' requires XAI credentials. \
+                         Set XAI_API_KEY env var or save a key to ~/.icode/auth.json."
+                    )
+                } else if model_lower.starts_with("gemini/") {
+                    format!(
+                        "Model '{model}' requires Gemini credentials. \
+                         Set GEMINI_API_KEY env var or save a key to ~/.icode/auth.json."
+                    )
+                } else {
+                    format!(
+                        "No API provider configured for model '{model}'. \
+                         Set credentials via environment variables (ANTHROPIC_API_KEY, \
+                         OPENAI_API_KEY, XAI_API_KEY, GEMINI_API_KEY) or ~/.icode/auth.json."
+                    )
+                };
+                Err(ApiError::Auth(msg))
+            }
         }
     }
 }
