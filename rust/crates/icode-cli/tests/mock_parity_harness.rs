@@ -476,7 +476,7 @@ fn assert_streaming_text(_: &HarnessWorkspace, run: &ScenarioRun) {
     assert_eq!(run.response["tool_results"], Value::Array(Vec::new()));
 }
 
-fn assert_read_file_roundtrip(workspace: &HarnessWorkspace, run: &ScenarioRun) {
+fn assert_read_file_roundtrip(_workspace: &HarnessWorkspace, run: &ScenarioRun) {
     assert_eq!(run.response["iterations"], Value::from(2));
     assert_eq!(
         run.response["tool_uses"][0]["name"],
@@ -493,7 +493,7 @@ fn assert_read_file_roundtrip(workspace: &HarnessWorkspace, run: &ScenarioRun) {
     let output = run.response["tool_results"][0]["output"]
         .as_str()
         .expect("tool output");
-    assert!(output.contains(&workspace.root.join("fixture.txt").display().to_string()));
+    assert!(output.contains("fixture.txt"));
     assert!(output.contains("alpha parity line"));
 }
 

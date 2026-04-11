@@ -252,9 +252,14 @@ fn execute_pty_bash_unix(input: &PtyBashInput) -> Result<PtyBashOutput, String> 
     }
     drop(guard);
 
-    let safe_user_cmd = user_cmd.replace('\'', "'\\''");
+    // `user_cmd` is shell code typed by the user; it is intentionally passed verbatim
+    // to `bash -c` so that all shell metacharacters (pipes, redirects, single/double
+    // quotes) are interpreted by Bash as the user intended.
+    // Do NOT apply any escaping here — the old `.replace('\'', "'\\''")` was incorrect
+    // because the command was never wrapped in single quotes in the format string,
+    // which produced broken Bash syntax for any input containing a `'`.
     let script = format!(
-        "cd '{cwd_str}'; {exports} {safe_user_cmd}; exit_code=$?; printf '\\n{SENTINEL}\\n'; pwd; env; exit $exit_code"
+        "cd '{cwd_str}'; {exports} {user_cmd}; exit_code=$?; printf '\\n{SENTINEL}\\n'; pwd; env; exit $exit_code"
     );
 
     let pty_system = portable_pty::native_pty_system();

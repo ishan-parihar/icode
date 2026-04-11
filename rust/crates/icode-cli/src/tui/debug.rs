@@ -6,7 +6,19 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 /// Log files are written to ~/.icode/logs/ with daily rotation.
 /// Control level via RUST_LOG env var (default: info for file, no stderr if unset).
 /// Use RUST_LOG=debug for full TUI diagnostics.
-pub fn init_logging() {
+///
+/// # Arguments
+/// * `log_level` - Log level for the file layer. One of: "error", "warn", "info", "debug", "trace".
+///   Defaults to "info" if None.
+pub fn init_logging(log_level: Option<&str>) {
+    // Skip if already initialized in a parent process
+    if std::env::var("ICODE_LOGGING_INITIALIZED").is_ok() {
+        return;
+    }
+
+    // Clean up old log files first
+    cleanup_old_logs(7);
+
     let log_dir = icode_log_dir();
     std::fs::create_dir_all(&log_dir).ok();
 
@@ -32,23 +44,26 @@ pub fn init_logging() {
                 .with_filter(filter)
         });
 
-    // Always apply info-level filter to the file layer
-    let info_filter = EnvFilter::try_new("info").unwrap_or_else(|_| EnvFilter::default());
+    // Use configurable log level for the file layer (defaults to "info")
+    let active_level = log_level.unwrap_or("info");
+    let level_filter = EnvFilter::try_new(active_level).unwrap_or_else(|_| EnvFilter::default());
 
     if let Some(sl) = stderr_layer {
         tracing_subscriber::registry()
-            .with(file_layer.with_filter(info_filter))
+            .with(file_layer.with_filter(level_filter))
             .with(sl)
             .init();
     } else {
         tracing_subscriber::registry()
-            .with(file_layer.with_filter(info_filter))
+            .with(file_layer.with_filter(level_filter))
             .init();
     }
 
     tracing::info!(
+        pid = std::process::id(),
         log_dir = %log_dir.display(),
         version = env!("CARGO_PKG_VERSION"),
+        log_level = active_level,
         "icode logging initialized"
     );
 }

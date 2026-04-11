@@ -169,7 +169,7 @@ impl TuiConfig {
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
+                tracing::warn!(
                     "[tui config] warning: cannot read {}: {}",
                     path.display(),
                     e
@@ -181,7 +181,7 @@ impl TuiConfig {
         match serde_json::from_str(&content) {
             Ok(config) => config,
             Err(e) => {
-                eprintln!(
+                tracing::warn!(
                     "[tui config] warning: corrupt config in {} ({}), using defaults",
                     path.display(),
                     e
@@ -205,13 +205,13 @@ impl TuiConfig {
         let content = match serde_json::to_string_pretty(self) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[tui config] warning: cannot serialize config: {}", e);
+                tracing::warn!("[tui config] warning: cannot serialize config: {}", e);
                 return;
             }
         };
 
         if let Err(e) = fs::write(&path, content) {
-            eprintln!(
+            tracing::warn!(
                 "[tui config] warning: cannot write {}: {}",
                 path.display(),
                 e

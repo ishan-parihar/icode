@@ -726,7 +726,10 @@ mod tests {
 
         // Force a misdelivery so the worker transitions to Blocked (auto_recover is false).
         registry
-            .observe(&worker.worker_id, "Run tests\n zsh: command not found: Run tests")
+            .observe(
+                &worker.worker_id,
+                "Run tests\n zsh: command not found: Run tests",
+            )
             .expect("observe should succeed");
 
         let restarted = registry

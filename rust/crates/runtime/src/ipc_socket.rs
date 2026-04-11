@@ -140,7 +140,7 @@ impl UnixSocketServer {
     pub fn accept_loop(&self) -> std::io::Result<()> {
         if let Err(e) = std::fs::remove_file(&self.socket_path) {
             if e.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("ipc_socket: stale socket cleanup failed: {e}");
+                tracing::warn!("stale socket cleanup failed: {e}");
             }
         }
 
@@ -172,7 +172,7 @@ impl UnixSocketServer {
                         let client_handle = thread::spawn(move || {
                             let _guard = ClientGuard::new(&clients, &handles_for_thread);
                             if let Err(e) = handle_client(stream, &iid, &s) {
-                                eprintln!("ipc_socket: client error: {e}");
+                                tracing::warn!("client error: {e}");
                             }
                         });
                         client_handles
@@ -181,7 +181,7 @@ impl UnixSocketServer {
                             .push(client_handle);
                     }
                     Err(e) => {
-                        eprintln!("ipc_socket: accept error: {e}");
+                        tracing::warn!("accept error: {e}");
                     }
                 }
             }
@@ -211,7 +211,7 @@ impl UnixSocketServer {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             if !handle.is_finished() {
-                eprintln!("ipc_socket: accept thread did not exit within 2s, detaching");
+                tracing::warn!("accept thread did not exit within 2s, detaching");
             }
             let _ = handle.join();
         }
@@ -224,7 +224,7 @@ impl UnixSocketServer {
         for client_handle in client_handles.drain(..) {
             let remaining = shutdown_deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                eprintln!("ipc_socket: shutdown timeout for client threads, detaching remaining");
+                tracing::warn!("shutdown timeout for client threads, detaching remaining");
                 break;
             }
             let mut waited = std::time::Duration::ZERO;
@@ -492,7 +492,7 @@ impl UnixSocketClient {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             if !handle.is_finished() {
-                eprintln!("ipc_socket: receiver thread did not exit within 2s, detaching");
+                tracing::warn!("receiver thread did not exit within 2s, detaching");
             }
             let _ = handle.join();
         }

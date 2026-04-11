@@ -557,6 +557,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "crash-report",
+        aliases: &["crash"],
+        summary: "Show the last crash report (if any)",
+        argument_hint: None,
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "api-key",
         aliases: &[],
         summary: "Show or set the Anthropic API key",
@@ -863,6 +870,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         summary: "Show or configure telemetry settings",
         argument_hint: Some("[on|off|status]"),
         resume_supported: true,
+    },
+    SlashCommandSpec {
+        name: "debug",
+        aliases: &[],
+        summary: "Inspect and control debug logging",
+        argument_hint: Some("[on|off|level <level>|logs|clean|help]"),
+        resume_supported: false,
     },
     SlashCommandSpec {
         name: "env",
@@ -1215,6 +1229,10 @@ pub enum SlashCommand {
     AddDir {
         path: Option<String>,
     },
+    CrashReport,
+    Debug {
+        action: Option<String>,
+    },
     Unknown(String),
 }
 
@@ -1463,6 +1481,11 @@ pub fn validate_slash_command_input(
         "tag" => SlashCommand::Tag { label: remainder },
         "output-style" => SlashCommand::OutputStyle { style: remainder },
         "add-dir" => SlashCommand::AddDir { path: remainder },
+        "crash-report" | "crash" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::CrashReport
+        }
+        "debug" => SlashCommand::Debug { action: remainder },
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -1856,8 +1879,8 @@ fn slash_command_category(name: &str) -> &'static str {
         | "export" | "plugin" | "branch" | "add-dir" | "files" | "hooks" | "release-notes" => {
             "Workspace & git"
         }
-        "agents" | "skills" | "teleport" | "debug-tool-call" | "mcp" | "context" | "tasks"
-        | "doctor" | "ide" | "desktop" => "Discovery & debugging",
+        "agents" | "skills" | "teleport" | "debug-tool-call" | "debug" | "mcp" | "context"
+        | "tasks" | "doctor" | "ide" | "desktop" => "Discovery & debugging",
         "bughunter" | "ultraplan" | "review" | "security-review" | "advisor" | "insights" => {
             "Analysis & automation"
         }
@@ -3491,6 +3514,8 @@ pub fn handle_slash_command(
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
         | SlashCommand::AddDir { .. }
+        | SlashCommand::CrashReport
+        | SlashCommand::Debug { .. }
         | SlashCommand::Unknown(_)
         | SlashCommand::Undo
         | SlashCommand::Redo => None,
@@ -3905,6 +3930,7 @@ mod tests {
         assert!(help.contains("/ultraplan [task]"));
         assert!(help.contains("/teleport <symbol-or-path>"));
         assert!(help.contains("/debug-tool-call"));
+        assert!(help.contains("/debug [on|off|level <level>|logs|clean|help]"));
         assert!(help.contains("/model [model]"));
         assert!(help.contains("/permissions [read-only|workspace-write|danger-full-access]"));
         assert!(help.contains("/clear [--confirm]"));
@@ -3925,7 +3951,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|refresh|clear|install <path>|help]"));
-        assert_eq!(slash_command_specs().len(), 145);
+        assert_eq!(slash_command_specs().len(), 147);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

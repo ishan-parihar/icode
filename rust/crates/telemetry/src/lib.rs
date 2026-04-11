@@ -9,6 +9,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub mod crash_report;
+pub mod diagnostic;
+pub mod paths;
+pub use crash_report::{install_panic_hook, is_hook_installed, CrashReport, SystemInfo};
+pub use diagnostic::DiagnosticSnapshot;
+pub use paths::{
+    crash_reports_dir, diagnostics_dir, ensure_telemetry_dirs, icode_config_dir,
+    latest_crash_report_path, log_dir,
+};
+
 pub const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const DEFAULT_APP_NAME: &str = "claude-code";
 pub const DEFAULT_RUNTIME: &str = "rust";

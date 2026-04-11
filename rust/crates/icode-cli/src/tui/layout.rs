@@ -270,6 +270,12 @@ fn render_messages_panel(frame: &mut Frame, state: &mut AppState, area: Rect, th
     if let AppMode::Error(msg) = &state.mode {
         render_error_block(frame, state, msg, inner);
     }
+    if let AppMode::AuthError(msg) = &state.mode {
+        render_auth_error_block(frame, state, msg, inner);
+    }
+    if matches!(&state.mode, AppMode::Welcome) {
+        render_welcome_modal(frame, state, inner);
+    }
 }
 
 fn render_error_block(frame: &mut Frame, state: &AppState, msg: &str, area: Rect) {
@@ -318,6 +324,150 @@ fn render_error_block(frame: &mut Frame, state: &AppState, msg: &str, area: Rect
     let error_para =
         Paragraph::new(error_lines).style(Style::default().bg(state.theme.background_element));
     frame.render_widget(error_para, inner);
+}
+
+fn render_auth_error_block(frame: &mut Frame, state: &AppState, msg: &str, area: Rect) {
+    let error_height = 5u16;
+    if area.height < error_height + 1 {
+        return;
+    }
+
+    let error_area = Rect {
+        x: area.x,
+        y: area.bottom().saturating_sub(error_height),
+        width: area.width,
+        height: error_height,
+    };
+
+    let error_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(state.theme.error))
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(
+            " NO API KEY CONFIGURED ",
+            Style::default()
+                .fg(state.theme.error)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(ratatui::layout::Alignment::Center)
+        .padding(Padding::horizontal(1));
+
+    let inner = error_block.inner(error_area);
+    frame.render_widget(error_block, error_area);
+
+    let error_lines = vec![
+        Line::from(Span::styled(
+            msg.to_string(),
+            Style::default().fg(state.theme.error),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press 'P' to configure providers, or set ANTHROPIC_API_KEY env var",
+            Style::default()
+                .fg(state.theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        )),
+        Line::from(Span::styled(
+            "Press any other key to dismiss",
+            Style::default()
+                .fg(state.theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        )),
+    ];
+
+    let error_para =
+        Paragraph::new(error_lines).style(Style::default().bg(state.theme.background_element));
+    frame.render_widget(error_para, inner);
+}
+
+fn render_welcome_modal(frame: &mut Frame, state: &AppState, area: Rect) {
+    let modal_width = 52u16;
+    let modal_height = 18u16;
+    if area.width < modal_width + 2 || area.height < modal_height + 2 {
+        return;
+    }
+
+    let modal_area = Rect {
+        x: area.x + (area.width.saturating_sub(modal_width)) / 2,
+        y: area.y + (area.height.saturating_sub(modal_height)) / 2,
+        width: modal_width,
+        height: modal_height,
+    };
+
+    let border_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(state.theme.border_active))
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(
+            " Welcome to icode ",
+            Style::default()
+                .fg(state.theme.primary)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(ratatui::layout::Alignment::Center)
+        .style(Style::default().bg(state.theme.background_panel))
+        .padding(Padding::horizontal(1));
+
+    let inner = border_block.inner(modal_area);
+    frame.render_widget(border_block, modal_area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "No API provider configured yet.",
+            Style::default().fg(state.theme.text),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "To get started, you need to set up an API key:",
+            Style::default().fg(state.theme.text_muted),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "1. Select a provider below and press Enter",
+            Style::default().fg(state.theme.text),
+        )),
+        Line::from(Span::styled(
+            "2. Enter your API key",
+            Style::default().fg(state.theme.text),
+        )),
+        Line::from(Span::styled(
+            "3. Your key is saved locally",
+            Style::default().fg(state.theme.text),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Supported: Anthropic, OpenAI, Gemini, and more.",
+            Style::default().fg(state.theme.text_muted),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "You can also set env vars:",
+            Style::default().fg(state.theme.text_muted),
+        )),
+        Line::from(Span::styled(
+            "  export ANTHROPIC_API_KEY=your-key",
+            Style::default().fg(state.theme.info),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press Enter to configure providers",
+            Style::default()
+                .fg(state.theme.success)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "Press Esc to skip (turns will fail)",
+            Style::default()
+                .fg(state.theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        )),
+    ];
+
+    let para = Paragraph::new(lines)
+        .style(Style::default().bg(state.theme.background_panel))
+        .alignment(ratatui::layout::Alignment::Left);
+    frame.render_widget(para, inner);
 }
 
 fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {

@@ -614,6 +614,7 @@ mod tests {
     }
 
     fn with_test_workspace<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = crate::env_lock();
         let test_dir = std::env::temp_dir().join("icode-workspace-test");
         let _ = fs::remove_dir_all(&test_dir);
         let sessions = test_dir.join(".icode").join("sessions");
@@ -622,8 +623,10 @@ mod tests {
         let session_file = sessions.join("test.json");
         fs::write(&session_file, "{}").unwrap();
 
+        let previous = std::env::current_dir().unwrap();
         std::env::set_current_dir(&test_dir).unwrap();
         let result = f();
+        std::env::set_current_dir(previous).unwrap();
         let _ = fs::remove_dir_all(&test_dir);
         result
     }

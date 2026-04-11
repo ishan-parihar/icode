@@ -339,6 +339,7 @@ mod tests {
             pending_slash_command: None,
             permission_dialog: crate::tui::dialog_permission::PermissionDialogState::new(),
             question_prompt: crate::tui::dialog_question::QuestionPromptState::new(),
+            has_shown_welcome: false,
         }
     }
 

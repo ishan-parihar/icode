@@ -47,7 +47,7 @@ mod tui;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::net::TcpListener;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -149,6 +149,8 @@ const CLI_OPTION_SUGGESTIONS: &[&str] = &[
     "--resume",
     "--print",
     "-p",
+    "--debug",
+    "--log-level",
 ];
 
 type AllowedToolSet = BTreeSet<String>;
@@ -159,11 +161,7 @@ fn main() {
         if message.contains("`icode --help`") {
             eprintln!("error: {message}");
         } else {
-            eprintln!(
-                "error: {message}
-
-Run `icode --help` for usage."
-            );
+            eprintln!("error: {message}\n\nRun `icode --help` for usage.");
         }
         std::process::exit(1);
     }
@@ -171,8 +169,31 @@ Run `icode --help` for usage."
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     apply_env_from_config();
+
+    // Install crash reporter panic hook
+    let mut crash_context = std::collections::HashMap::new();
+    crash_context.insert("binary".to_string(), "icode-cli".to_string());
+    telemetry::install_panic_hook(crash_context);
+
     let args: Vec<String> = env::args().skip(1).collect();
-    match parse_args(&args)? {
+    let (action, log_level) = parse_args(&args)?;
+
+    // Initialize logging ONCE for ALL modes
+    if let Some(ref level) = log_level {
+        if std::env::var("RUST_LOG").is_err() && (level == "debug" || level == "trace") {
+            std::env::set_var("RUST_LOG", format!("{level},hyper=info,h2=info"));
+        }
+    }
+    crate::tui::debug::init_logging(log_level.as_deref());
+    std::env::set_var("ICODE_LOGGING_INITIALIZED", "1");
+    if log_level
+        .as_deref()
+        .is_some_and(|level| matches!(level, "debug" | "trace"))
+    {
+        tracing::info!("debug mode enabled via --debug or --log-level flag");
+    }
+
+    match action {
         CliAction::DumpManifests => dump_manifests(),
         CliAction::BootstrapPlan => print_bootstrap_plan(),
         CliAction::Agents { args } => LiveCli::print_agents(args.as_deref())?,
@@ -195,8 +216,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output_format,
             allowed_tools,
             permission_mode,
-        } => LiveCli::new(model, true, allowed_tools, permission_mode)?
-            .run_turn_with_output(&prompt, output_format)?,
+        } => {
+            LiveCli::new(model, true, allowed_tools, permission_mode)?
+                .run_turn_with_output(&prompt, output_format)?;
+        }
         CliAction::Login => run_login()?,
         CliAction::Logout => run_logout()?,
         CliAction::Init => run_init()?,
@@ -206,6 +229,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             permission_mode,
         } => run_repl(model, allowed_tools, permission_mode)?,
         CliAction::Help => print_help(),
+        CliAction::CrashReport => {
+            print_crash_report();
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -254,6 +281,7 @@ enum CliAction {
     },
     // prompt-mode formatting is only supported for non-interactive runs
     Help,
+    CrashReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,12 +303,13 @@ impl CliOutputFormat {
 }
 
 #[allow(clippy::too_many_lines)]
-fn parse_args(args: &[String]) -> Result<CliAction, String> {
+fn parse_args(args: &[String]) -> Result<(CliAction, Option<String>), String> {
     let mut model = default_model_from_config().unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let mut output_format = CliOutputFormat::Text;
     let mut permission_mode = default_permission_mode();
     let mut wants_help = false;
     let mut wants_version = false;
+    let mut log_level: Option<String> = None;
     let mut allowed_tool_values = Vec::new();
     let mut rest = Vec::new();
     let mut index = 0;
@@ -332,19 +361,49 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 permission_mode = PermissionMode::DangerFullAccess;
                 index += 1;
             }
+            "--debug" => {
+                log_level = Some("debug".to_string());
+                index += 1;
+            }
+            flag if flag.starts_with("--debug=") => {
+                let value = &flag[8..];
+                log_level = if value.is_empty() {
+                    Some("debug".to_string())
+                } else {
+                    Some(parse_log_level(value)?)
+                };
+                index += 1;
+            }
+            "--log-level" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --log-level".to_string())?;
+                log_level = Some(parse_log_level(value)?);
+                index += 2;
+            }
+            flag if flag.starts_with("--log-level=") => {
+                log_level = Some(parse_log_level(&flag[12..])?);
+                index += 1;
+            }
+            "--crash-report" => {
+                return Ok((CliAction::CrashReport, log_level));
+            }
             "-p" => {
                 // icode compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
                 if prompt.trim().is_empty() {
                     return Err("-p requires a prompt string".to_string());
                 }
-                return Ok(CliAction::Prompt {
-                    prompt,
-                    model: resolve_model_alias(&model).to_string(),
-                    output_format,
-                    allowed_tools: normalize_allowed_tools(&allowed_tool_values)?,
-                    permission_mode,
-                });
+                return Ok((
+                    CliAction::Prompt {
+                        prompt,
+                        model: resolve_model_alias(&model).to_string(),
+                        output_format,
+                        allowed_tools: normalize_allowed_tools(&allowed_tool_values)?,
+                        permission_mode,
+                    },
+                    log_level,
+                ));
             }
             "--print" => {
                 // icode compat: --print makes output non-interactive
@@ -386,66 +445,86 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     }
 
     if wants_help {
-        return Ok(CliAction::Help);
+        return Ok((CliAction::Help, log_level));
     }
 
     if wants_version {
-        return Ok(CliAction::Version);
+        return Ok((CliAction::Version, log_level));
     }
 
     let allowed_tools = normalize_allowed_tools(&allowed_tool_values)?;
 
     if rest.is_empty() {
-        return Ok(CliAction::Repl {
-            model,
-            allowed_tools,
-            permission_mode,
-        });
+        return Ok((
+            CliAction::Repl {
+                model,
+                allowed_tools,
+                permission_mode,
+            },
+            log_level,
+        ));
     }
     if rest.first().map(String::as_str) == Some("--resume") {
-        return parse_resume_args(&rest[1..]);
+        return parse_resume_args(&rest[1..], log_level);
     }
-    if let Some(action) = parse_single_word_command_alias(&rest, &model, permission_mode) {
-        return action;
+    if let Some(result) = parse_single_word_command_alias(&rest, &model, permission_mode) {
+        return result.map(|a| (a, log_level));
     }
 
     match rest[0].as_str() {
-        "dump-manifests" => Ok(CliAction::DumpManifests),
-        "bootstrap-plan" => Ok(CliAction::BootstrapPlan),
-        "agents" => Ok(CliAction::Agents {
-            args: join_optional_args(&rest[1..]),
-        }),
-        "mcp" => Ok(CliAction::Mcp {
-            args: join_optional_args(&rest[1..]),
-        }),
-        "skills" => Ok(CliAction::Skills {
-            args: join_optional_args(&rest[1..]),
-        }),
-        "system-prompt" => parse_system_prompt_args(&rest[1..]),
-        "login" => Ok(CliAction::Login),
-        "logout" => Ok(CliAction::Logout),
-        "init" => Ok(CliAction::Init),
+        "dump-manifests" => Ok((CliAction::DumpManifests, log_level)),
+        "bootstrap-plan" => Ok((CliAction::BootstrapPlan, log_level)),
+        "agents" => Ok((
+            CliAction::Agents {
+                args: join_optional_args(&rest[1..]),
+            },
+            log_level,
+        )),
+        "mcp" => Ok((
+            CliAction::Mcp {
+                args: join_optional_args(&rest[1..]),
+            },
+            log_level,
+        )),
+        "skills" => Ok((
+            CliAction::Skills {
+                args: join_optional_args(&rest[1..]),
+            },
+            log_level,
+        )),
+        "system-prompt" => parse_system_prompt_args(&rest[1..]).map(|a| (a, log_level)),
+        "login" => Ok((CliAction::Login, log_level)),
+        "logout" => Ok((CliAction::Logout, log_level)),
+        "init" => Ok((CliAction::Init, log_level)),
         "prompt" => {
             let prompt = rest[1..].join(" ");
             if prompt.trim().is_empty() {
                 return Err("prompt subcommand requires a prompt string".to_string());
             }
-            Ok(CliAction::Prompt {
-                prompt,
+            Ok((
+                CliAction::Prompt {
+                    prompt,
+                    model,
+                    output_format,
+                    allowed_tools,
+                    permission_mode,
+                },
+                log_level,
+            ))
+        }
+        other if other.starts_with('/') => {
+            parse_direct_slash_cli_action(&rest).map(|a| (a, log_level))
+        }
+        _other => Ok((
+            CliAction::Prompt {
+                prompt: rest.join(" "),
                 model,
                 output_format,
                 allowed_tools,
                 permission_mode,
-            })
-        }
-        other if other.starts_with('/') => parse_direct_slash_cli_action(&rest),
-        _other => Ok(CliAction::Prompt {
-            prompt: rest.join(" "),
-            model,
-            output_format,
-            allowed_tools,
-            permission_mode,
-        }),
+            },
+            log_level,
+        )),
     }
 }
 
@@ -684,13 +763,22 @@ fn parse_permission_mode_arg(value: &str) -> Result<PermissionMode, String> {
         .map(permission_mode_from_label)
 }
 
+fn parse_log_level(value: &str) -> Result<String, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "error" | "warn" | "info" | "debug" | "trace" => Ok(value.to_ascii_lowercase()),
+        other => Err(format!(
+            "unsupported value for --log-level: {other}. Use error, warn, info, debug, or trace."
+        )),
+    }
+}
+
 fn permission_mode_from_label(mode: &str) -> PermissionMode {
     match mode {
         "read-only" => PermissionMode::ReadOnly,
         "workspace-write" => PermissionMode::WorkspaceWrite,
         "danger-full-access" => PermissionMode::DangerFullAccess,
         other => {
-            eprintln!(
+            tracing::warn!(
                 "warning: unsupported permission mode '{other}', defaulting to danger-full-access"
             );
             PermissionMode::DangerFullAccess
@@ -780,7 +868,10 @@ fn parse_system_prompt_args(args: &[String]) -> Result<CliAction, String> {
     Ok(CliAction::PrintSystemPrompt { cwd, date })
 }
 
-fn parse_resume_args(args: &[String]) -> Result<CliAction, String> {
+fn parse_resume_args(
+    args: &[String],
+    log_level: Option<String>,
+) -> Result<(CliAction, Option<String>), String> {
     let (session_path, command_tokens): (PathBuf, &[String]) = match args.first() {
         None => (PathBuf::from(LATEST_SESSION_REFERENCE), &[]),
         Some(first) if looks_like_slash_command_token(first) => {
@@ -817,10 +908,13 @@ fn parse_resume_args(args: &[String]) -> Result<CliAction, String> {
         commands.push(current_command);
     }
 
-    Ok(CliAction::ResumeSession {
-        session_path,
-        commands,
-    })
+    Ok((
+        CliAction::ResumeSession {
+            session_path,
+            commands,
+        },
+        log_level,
+    ))
 }
 
 fn resume_command_can_absorb_token(current_command: &str, token: &str) -> bool {
@@ -857,7 +951,7 @@ fn dump_manifests() {
             println!("bootstrap phases: {}", manifest.bootstrap.phases().len());
         }
         Err(error) => {
-            eprintln!("failed to extract manifests: {error}");
+            tracing::warn!("failed to extract manifests: {error}");
             std::process::exit(1);
         }
     }
@@ -900,7 +994,7 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting Claude OAuth login...");
     println!("Listening for callback on {redirect_uri}");
     if let Err(error) = open_browser(&authorize_url) {
-        eprintln!("warning: failed to open browser automatically: {error}");
+        tracing::warn!("warning: failed to open browser automatically: {error}");
         println!("Open this URL manually:\n{authorize_url}");
     }
 
@@ -1003,7 +1097,7 @@ fn print_system_prompt(cwd: PathBuf, date: String) {
     match load_system_prompt(cwd, date, env::consts::OS, "unknown") {
         Ok(sections) => println!("{}", sections.join("\n\n")),
         Err(error) => {
-            eprintln!("failed to build system prompt: {error}");
+            tracing::warn!("failed to build system prompt: {error}");
             std::process::exit(1);
         }
     }
@@ -1013,6 +1107,29 @@ fn print_version() {
     println!("{}", render_version_report());
 }
 
+fn print_crash_report() {
+    match telemetry::CrashReport::load_latest() {
+        Ok(Some(report)) => {
+            println!("{}", report.summary());
+            println!(
+                "\nFull report: {}",
+                telemetry::latest_crash_report_path().display()
+            );
+        }
+        Ok(None) => {
+            println!("No crash reports found.");
+            println!(
+                "Crash reports are saved to: {}",
+                telemetry::crash_reports_dir().display()
+            );
+        }
+        Err(e) => {
+            tracing::warn!("Error loading crash report: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn resume_session(session_path: &Path, commands: &[String]) {
     let resolved_path = if session_path.exists() {
         session_path.to_path_buf()
@@ -1020,7 +1137,7 @@ fn resume_session(session_path: &Path, commands: &[String]) {
         match resolve_session_reference(&session_path.display().to_string()) {
             Ok(handle) => handle.path,
             Err(error) => {
-                eprintln!("failed to restore session: {error}");
+                tracing::warn!("failed to restore session: {error}");
                 std::process::exit(1);
             }
         }
@@ -1029,7 +1146,7 @@ fn resume_session(session_path: &Path, commands: &[String]) {
     let session = match Session::load_from_path(&resolved_path) {
         Ok(session) => session,
         Err(error) => {
-            eprintln!("failed to restore session: {error}");
+            tracing::warn!("failed to restore session: {error}");
             std::process::exit(1);
         }
     };
@@ -1048,11 +1165,11 @@ fn resume_session(session_path: &Path, commands: &[String]) {
         let command = match SlashCommand::parse(raw_command) {
             Ok(Some(command)) => command,
             Ok(None) => {
-                eprintln!("unsupported resumed command: {raw_command}");
+                tracing::warn!("unsupported resumed command: {raw_command}");
                 std::process::exit(2);
             }
             Err(error) => {
-                eprintln!("{error}");
+                tracing::warn!("{error}");
                 std::process::exit(2);
             }
         };
@@ -1067,7 +1184,7 @@ fn resume_session(session_path: &Path, commands: &[String]) {
                 }
             }
             Err(error) => {
-                eprintln!("{error}");
+                tracing::warn!("{error}");
                 std::process::exit(2);
             }
         }
@@ -1561,6 +1678,7 @@ fn run_resume_command(
         | SlashCommand::Ultraplan { .. }
         | SlashCommand::Teleport { .. }
         | SlashCommand::DebugToolCall { .. }
+        | SlashCommand::Debug { .. }
         | SlashCommand::Resume { .. }
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
@@ -1609,7 +1727,8 @@ fn run_resume_command(
         | SlashCommand::Undo
         | SlashCommand::Redo
         | SlashCommand::Db
-        | SlashCommand::Revert { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Revert { .. }
+        | SlashCommand::CrashReport => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -2146,7 +2265,7 @@ fn run_repl(
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        eprintln!("{error}");
+                        tracing::warn!("{error}");
                         continue;
                     }
                 }
@@ -2174,7 +2293,7 @@ fn run_repl(
 
     for handle in turn_handles {
         if let Err(e) = handle.join() {
-            eprintln!("turn thread panicked: {e:?}");
+            tracing::warn!("turn thread panicked: {e:?}");
         }
     }
 
@@ -2751,7 +2870,7 @@ impl LiveCli {
             Ok(summary) => {
                 self.replace_runtime(runtime)?;
                 if let Some(event) = summary.auto_compaction {
-                    eprintln!(
+                    tracing::warn!(
                         "{}",
                         format_auto_compaction_notice(event.removed_message_count)
                     );
@@ -2780,99 +2899,111 @@ impl LiveCli {
         let permission_mode = self.permission_mode;
 
         thread::spawn(move || {
-            let _enter = tokio_handle.enter();
-            let hook_abort_signal = runtime::HookAbortSignal::new();
-            let runtime_result = build_runtime(
-                session,
-                &session_id,
-                model,
-                system_prompt,
-                true,
-                false,
-                allowed_tools,
-                permission_mode,
-                None,
-            );
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _enter = tokio_handle.enter();
+                let hook_abort_signal = runtime::HookAbortSignal::new();
+                let runtime_result = build_runtime(
+                    session,
+                    &session_id,
+                    model,
+                    system_prompt,
+                    true,
+                    false,
+                    allowed_tools,
+                    permission_mode,
+                    None,
+                );
 
-            let Ok(mut runtime) = runtime_result else {
-                let _ = tx.send(TurnEvent::TurnError("Failed to build runtime".to_string()));
-                return;
-            };
-            runtime = runtime.with_hook_abort_signal(hook_abort_signal.clone());
-            let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
-
-            let progress_tx = tx.clone();
-            let progress_callback = |event: AssistantEvent| {
-                let turn_event = match event {
-                    AssistantEvent::TextDelta(text) => Some(TurnEvent::TokenDelta(text)),
-                    AssistantEvent::ToolUse { id, name, input } => {
-                        Some(TurnEvent::ToolCallStarted { name, input })
-                    }
-                    AssistantEvent::Usage(_) => None,
-                    AssistantEvent::PromptCache(_) => None,
-                    AssistantEvent::MessageStop => None,
+                let Ok(mut runtime) = runtime_result else {
+                    let _ = tx.send(TurnEvent::TurnError("Failed to build runtime".to_string()));
+                    return;
                 };
-                if let Some(ev) = turn_event {
-                    let _ = progress_tx.send(ev);
-                }
-            };
+                runtime = runtime.with_hook_abort_signal(hook_abort_signal.clone());
+                let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
 
-            let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
-            let result = runtime.run_turn(
-                &input,
-                Some(&mut permission_prompter),
-                Some(&progress_callback),
-            );
-            hook_abort_monitor.stop();
-
-            if let Ok(ref summary) = result {
-                if let Some(path) = runtime.session().persistence_path() {
-                    if let Err(e) = runtime.session().save_to_path(path) {
-                        eprintln!("[ERROR] Failed to persist session: {e}");
-                    }
-                }
-                let text = final_assistant_text(summary);
-                let tool_calls: Vec<TurnToolCallInfo> = summary
-                    .assistant_messages
-                    .iter()
-                    .flat_map(|msg| msg.blocks.iter())
-                    .filter_map(|block| match block {
-                        ContentBlock::ToolUse { id, name, input } => {
-                            let output = summary
-                                .tool_results
-                                .iter()
-                                .flat_map(|rmsg| rmsg.blocks.iter())
-                                .find_map(|block| match block {
-                                    ContentBlock::ToolResult {
-                                        tool_use_id,
-                                        output,
-                                        is_error,
-                                        ..
-                                    } if tool_use_id == id => Some((output.clone(), *is_error)),
-                                    _ => None,
-                                });
-                            let (output, success) = output.unwrap_or_default();
-                            Some(TurnToolCallInfo {
-                                name: name.clone(),
-                                input: input.clone(),
-                                output,
-                                success: !success,
-                            })
+                let progress_tx = tx.clone();
+                let progress_callback = |event: AssistantEvent| {
+                    let turn_event = match event {
+                        AssistantEvent::TextDelta(text) => Some(TurnEvent::TokenDelta(text)),
+                        AssistantEvent::ToolUse { id, name, input } => {
+                            Some(TurnEvent::ToolCallStarted { name, input })
                         }
-                        _ => None,
-                    })
-                    .collect();
-                let _ = tx.send(TurnEvent::TurnCompleted {
-                    text,
-                    tool_calls,
-                    input_tokens: summary.usage.input_tokens,
-                    output_tokens: summary.usage.output_tokens,
-                });
-            } else if let Err(ref e) = result {
-                if let Some(path) = runtime.session().persistence_path() {
-                    let _ = runtime.session().save_to_path(path);
+                        AssistantEvent::Usage(_) => None,
+                        AssistantEvent::PromptCache(_) => None,
+                        AssistantEvent::MessageStop => None,
+                    };
+                    if let Some(ev) = turn_event {
+                        let _ = progress_tx.send(ev);
+                    }
+                };
+
+                let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
+                let result = runtime.run_turn(
+                    &input,
+                    Some(&mut permission_prompter),
+                    Some(&progress_callback),
+                );
+                hook_abort_monitor.stop();
+
+                if let Ok(ref summary) = result {
+                    if let Some(path) = runtime.session().persistence_path() {
+                        if let Err(e) = runtime.session().save_to_path(path) {
+                            tracing::warn!("[ERROR] Failed to persist session: {e}");
+                        }
+                    }
+                    let text = final_assistant_text(summary);
+                    let tool_calls: Vec<TurnToolCallInfo> = summary
+                        .assistant_messages
+                        .iter()
+                        .flat_map(|msg| msg.blocks.iter())
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { id, name, input } => {
+                                let output = summary
+                                    .tool_results
+                                    .iter()
+                                    .flat_map(|rmsg| rmsg.blocks.iter())
+                                    .find_map(|block| match block {
+                                        ContentBlock::ToolResult {
+                                            tool_use_id,
+                                            output,
+                                            is_error,
+                                            ..
+                                        } if tool_use_id == id => Some((output.clone(), *is_error)),
+                                        _ => None,
+                                    });
+                                let (output, success) = output.unwrap_or_default();
+                                Some(TurnToolCallInfo {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                    output,
+                                    success: !success,
+                                })
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let _ = tx.send(TurnEvent::TurnCompleted {
+                        text,
+                        tool_calls,
+                        input_tokens: summary.usage.input_tokens,
+                        output_tokens: summary.usage.output_tokens,
+                    });
+                } else if let Err(ref e) = result {
+                    if let Some(path) = runtime.session().persistence_path() {
+                        let _ = runtime.session().save_to_path(path);
+                    }
+                    let _ = tx.send(TurnEvent::TurnError(e.to_string()));
                 }
-                let _ = tx.send(TurnEvent::TurnError(e.to_string()));
+            }));
+            if let Err(panic_info) = result {
+                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    format!("Model error: {s}")
+                } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                    format!("Model error: {s}")
+                } else {
+                    "Model error: unknown panic".to_string()
+                };
+                let _ = tx.send(TurnEvent::TurnError(msg));
             }
         })
     }
@@ -2966,6 +3097,11 @@ impl LiveCli {
             }
             SlashCommand::DebugToolCall => {
                 self.run_debug_tool_call(None)?;
+                false
+            }
+            SlashCommand::Debug { action } => {
+                let msg = handle_debug_slash_command(action.as_deref())?;
+                println!("{msg}");
                 false
             }
             SlashCommand::Sandbox => {
@@ -3075,12 +3211,13 @@ impl LiveCli {
             | SlashCommand::Undo
             | SlashCommand::Redo
             | SlashCommand::Db
-            | SlashCommand::Revert { .. } => {
-                eprintln!("Use the TUI command palette (Ctrl+P) or /undo / /redo in the TUI.");
+            | SlashCommand::Revert { .. }
+            | SlashCommand::CrashReport => {
+                tracing::warn!("Use the TUI command palette (Ctrl+P) or /crash-report in the TUI.");
                 false
             }
             SlashCommand::Unknown(name) => {
-                eprintln!("{}", format_unknown_slash_command(&name));
+                tracing::warn!("{}", format_unknown_slash_command(&name));
                 false
             }
         })
@@ -4148,6 +4285,142 @@ fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn handle_debug_slash_command(action: Option<&str>) -> Result<String, String> {
+    match action {
+        None => {
+            // Bare /debug — show current log status
+            let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info (default)".to_string());
+            let log_dir = tui::debug::icode_log_dir();
+            let log_path = log_dir.join("icode");
+            let file_size = std::fs::metadata(&log_path)
+                .map_or_else(|_| "file not found".to_string(), |m| format!("{} bytes", m.len()));
+
+            // List recent log files sorted by modification time (newest first)
+            let mut recent_logs = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&log_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if let Ok(name) = entry.file_name().into_string() {
+                            let modified = meta.modified()
+                                .map(|t| {
+                                    use std::time::SystemTime;
+                                    let dur = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+                                    dur.as_secs()
+                                })
+                                .unwrap_or(0);
+                            recent_logs.push((modified, format!("  {} ({} bytes)", name, meta.len())));
+                        }
+                    }
+                }
+            }
+            recent_logs.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
+
+            let recent = if recent_logs.is_empty() {
+                "  (no log files found)".to_string()
+            } else {
+                recent_logs.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("\n")
+            };
+
+            Ok(format!(
+                "Debug Log Status:\n  Log level:     {log_level}\n  Log directory: {}\n  File size:     {file_size}\n\nRecent log files:\n{recent}",
+                log_dir.display(),
+            ))
+        }
+        Some("on") => {
+            std::env::set_var("RUST_LOG", "debug,hyper=info,h2=info");
+            Ok("Debug logging enabled (RUST_LOG=debug,hyper=info,h2=info).\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart.".to_string())
+        }
+        Some("off") => {
+            std::env::set_var("RUST_LOG", "info");
+            Ok("Debug logging disabled (RUST_LOG=info).\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart.".to_string())
+        }
+        Some("level") => {
+            Err("Usage: /debug level <level>\nValid levels: error, warn, info, debug, trace".to_string())
+        }
+        Some(level_str) if level_str.starts_with("level ") => {
+            let level = level_str.strip_prefix("level ").unwrap().trim();
+            if level.is_empty() {
+                Err("Usage: /debug level <level>\nValid levels: error, warn, info, debug, trace".to_string())
+            } else {
+                let valid_levels = ["error", "warn", "info", "debug", "trace"];
+                if valid_levels.contains(&level) {
+                    std::env::set_var("RUST_LOG", level);
+                    Ok(format!(
+                        "Log level set to '{level}'.\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart."
+                    ))
+                } else {
+                    Err(format!(
+                        "Invalid log level '{level}'. Valid levels: error, warn, info, debug, trace"
+                    ))
+                }
+            }
+        }
+        Some("logs") => {
+            let log_dir = tui::debug::icode_log_dir();
+            let mut log_files = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&log_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if let Ok(modified) = meta.modified() {
+                            log_files.push((modified, entry.path()));
+                        }
+                    }
+                }
+            }
+            log_files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+
+            let most_recent = log_files.first().map(|(_, path)| path.clone());
+
+            let mut output = format!("Log directory: {}\n", log_dir.display());
+            if let Some(path) = &most_recent {
+                use std::fmt::Write as _;
+                let _ = write!(output, "Most recent: {}\n\n", path.display());
+                // Tail last 20 lines using a ring buffer (avoids loading entire file)
+                let file = std::fs::File::open(path).map_err(|e| format!("Cannot open log file: {e}"))?;
+                let reader = std::io::BufReader::new(file);
+                let mut ring = std::collections::VecDeque::with_capacity(20);
+                for line in reader.lines() {
+                    let line = line.map_err(|e| format!("Error reading log: {e}"))?;
+                    if ring.len() >= 20 {
+                        ring.pop_front();
+                    }
+                    ring.push_back(line);
+                }
+                output.push_str("Last 20 lines:\n");
+                output.push_str("---\n");
+                for line in &ring {
+                    output.push_str(line);
+                    output.push('\n');
+                }
+                output.push_str("---\n");
+            } else {
+                output.push_str("No log files found.\n");
+            }
+            Ok(output)
+        }
+        Some("clean") => {
+            let log_dir = tui::debug::icode_log_dir();
+            let before_count = std::fs::read_dir(&log_dir)
+                .map(|e| e.flatten().count())
+                .unwrap_or(0);
+            tui::debug::cleanup_old_logs(7);
+            let after_count = std::fs::read_dir(&log_dir)
+                .map(|e| e.flatten().count())
+                .unwrap_or(0);
+            let cleaned = before_count.saturating_sub(after_count);
+            Ok(format!("Log cleanup complete. {cleaned} old log file(s) removed (older than 7 days)."))
+        }
+        Some("help" | "-h" | "--help") => {
+            Ok("/debug [subcommand]\n\nSubcommands:\n  /debug              Show current log status (level, path, size)\n  /debug on           Enable debug logging (RUST_LOG=debug,hyper=info,h2=info)\n  /debug off          Disable verbose logging (RUST_LOG=info)\n  /debug level <lvl>  Set specific log level (error|warn|info|debug|trace)\n  /debug logs         Show log path and tail last 20 lines\n  /debug clean        Cleanup old log files (older than 7 days)\n  /debug help         Show this help text\n\nNote: Log level changes apply to new entries after restart.\nThe active tracing subscriber cannot be re-initialized at runtime.".to_string())
+        }
+        Some(other) => {
+            Err(format!(
+                "Unknown /debug action '{other}'. Use /debug help for usage information."
+            ))
+        }
+    }
+}
+
 fn normalize_permission_mode(mode: &str) -> Option<&'static str> {
     match mode.trim() {
         "read-only" => Some("read-only"),
@@ -5050,7 +5323,7 @@ impl runtime::HookProgressReporter for CliHookProgressReporter {
                 event,
                 tool_name,
                 command,
-            } => eprintln!(
+            } => tracing::warn!(
                 "[hook {event_name}] {tool_name}: {command}",
                 event_name = event.as_str()
             ),
@@ -5058,7 +5331,7 @@ impl runtime::HookProgressReporter for CliHookProgressReporter {
                 event,
                 tool_name,
                 command,
-            } => eprintln!(
+            } => tracing::warn!(
                 "[hook done {event_name}] {tool_name}: {command}",
                 event_name = event.as_str()
             ),
@@ -5066,7 +5339,7 @@ impl runtime::HookProgressReporter for CliHookProgressReporter {
                 event,
                 tool_name,
                 command,
-            } => eprintln!(
+            } => tracing::warn!(
                 "[hook cancelled {event_name}] {tool_name}: {command}",
                 event_name = event.as_str()
             ),
@@ -6382,6 +6655,10 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "  --allowedTools TOOLS       Restrict enabled tools (repeatable; comma-separated aliases supported)")?;
     writeln!(
         out,
+        "  --debug                    Enable verbose debug logging to stderr and log files"
+    )?;
+    writeln!(
+        out,
         "  --version, -V              Print version and build information locally"
     )?;
     writeln!(out)?;
@@ -6436,6 +6713,15 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
 
 fn print_help() {
     let _ = print_help_to(&mut io::stdout());
+}
+
+#[cfg(test)]
+pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -6521,13 +6807,6 @@ mod tests {
         );
     }
 
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     fn with_current_dir<T>(cwd: &Path, f: impl FnOnce() -> T) -> T {
         let previous = std::env::current_dir().expect("cwd should load");
         std::env::set_current_dir(cwd).expect("cwd should change");
@@ -6580,21 +6859,23 @@ mod tests {
     }
     #[test]
     fn defaults_to_repl_when_no_args() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        let (action, log_level) = parse_args(&[]).expect("args should parse");
         assert_eq!(
-            parse_args(&[]).expect("args should parse"),
+            action,
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
     fn default_permission_mode_uses_project_config_when_env_is_unset() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         let root = temp_dir();
         let cwd = root.join("project");
         let config_home = root.join("config-home");
@@ -6628,7 +6909,7 @@ mod tests {
 
     #[test]
     fn env_permission_mode_overrides_project_config_default() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         let root = temp_dir();
         let cwd = root.join("project");
         let config_home = root.join("config-home");
@@ -6662,15 +6943,16 @@ mod tests {
 
     #[test]
     fn parses_prompt_subcommand() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "prompt".to_string(),
             "hello".to_string(),
             "world".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::Prompt {
                 prompt: "hello world".to_string(),
                 model: DEFAULT_MODEL.to_string(),
@@ -6679,11 +6961,12 @@ mod tests {
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
     fn parses_bare_prompt_and_json_output_flag() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "--output-format=json".to_string(),
@@ -6692,8 +6975,9 @@ mod tests {
             "explain".to_string(),
             "this".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
                 model: "claude-opus".to_string(),
@@ -6702,11 +6986,12 @@ mod tests {
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
     fn resolves_model_aliases_in_args() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "--model".to_string(),
@@ -6714,8 +6999,9 @@ mod tests {
             "explain".to_string(),
             "this".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
                 model: "claude-opus-4-6".to_string(),
@@ -6724,6 +7010,7 @@ mod tests {
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
@@ -6737,11 +7024,15 @@ mod tests {
     #[test]
     fn parses_version_flags_without_initializing_prompt_mode() {
         assert_eq!(
-            parse_args(&["--version".to_string()]).expect("args should parse"),
+            parse_args(&["--version".to_string()])
+                .expect("args should parse")
+                .0,
             CliAction::Version
         );
         assert_eq!(
-            parse_args(&["-V".to_string()]).expect("args should parse"),
+            parse_args(&["-V".to_string()])
+                .expect("args should parse")
+                .0,
             CliAction::Version
         );
     }
@@ -6749,27 +7040,30 @@ mod tests {
     #[test]
     fn parses_permission_mode_flag() {
         let args = vec!["--permission-mode=read-only".to_string()];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
                 permission_mode: PermissionMode::ReadOnly,
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
     fn parses_allowed_tools_flags_with_aliases_and_lists() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "--allowedTools".to_string(),
             "read,glob".to_string(),
             "--allowed-tools=write_file".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: Some(
@@ -6781,6 +7075,7 @@ mod tests {
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
@@ -6800,7 +7095,7 @@ mod tests {
             "2026-04-01".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args(&args).expect("args should parse").0,
             CliAction::PrintSystemPrompt {
                 cwd: PathBuf::from("/tmp/project"),
                 date: "2026-04-01".to_string(),
@@ -6811,32 +7106,45 @@ mod tests {
     #[test]
     fn parses_login_and_logout_subcommands() {
         assert_eq!(
-            parse_args(&["login".to_string()]).expect("login should parse"),
+            parse_args(&["login".to_string()])
+                .expect("login should parse")
+                .0,
             CliAction::Login
         );
         assert_eq!(
-            parse_args(&["logout".to_string()]).expect("logout should parse"),
+            parse_args(&["logout".to_string()])
+                .expect("logout should parse")
+                .0,
             CliAction::Logout
         );
         assert_eq!(
-            parse_args(&["init".to_string()]).expect("init should parse"),
+            parse_args(&["init".to_string()])
+                .expect("init should parse")
+                .0,
             CliAction::Init
         );
         assert_eq!(
-            parse_args(&["agents".to_string()]).expect("agents should parse"),
+            parse_args(&["agents".to_string()])
+                .expect("agents should parse")
+                .0,
             CliAction::Agents { args: None }
         );
         assert_eq!(
-            parse_args(&["mcp".to_string()]).expect("mcp should parse"),
+            parse_args(&["mcp".to_string()])
+                .expect("mcp should parse")
+                .0,
             CliAction::Mcp { args: None }
         );
         assert_eq!(
-            parse_args(&["skills".to_string()]).expect("skills should parse"),
+            parse_args(&["skills".to_string()])
+                .expect("skills should parse")
+                .0,
             CliAction::Skills { args: None }
         );
         assert_eq!(
             parse_args(&["agents".to_string(), "--help".to_string()])
-                .expect("agents help should parse"),
+                .expect("agents help should parse")
+                .0,
             CliAction::Agents {
                 args: Some("--help".to_string())
             }
@@ -6845,25 +7153,33 @@ mod tests {
 
     #[test]
     fn parses_single_word_command_aliases_without_falling_back_to_prompt_mode() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         assert_eq!(
-            parse_args(&["help".to_string()]).expect("help should parse"),
+            parse_args(&["help".to_string()])
+                .expect("help should parse")
+                .0,
             CliAction::Help
         );
         assert_eq!(
-            parse_args(&["version".to_string()]).expect("version should parse"),
+            parse_args(&["version".to_string()])
+                .expect("version should parse")
+                .0,
             CliAction::Version
         );
         assert_eq!(
-            parse_args(&["status".to_string()]).expect("status should parse"),
+            parse_args(&["status".to_string()])
+                .expect("status should parse")
+                .0,
             CliAction::Status {
                 model: DEFAULT_MODEL.to_string(),
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
         assert_eq!(
-            parse_args(&["sandbox".to_string()]).expect("sandbox should parse"),
+            parse_args(&["sandbox".to_string()])
+                .expect("sandbox should parse")
+                .0,
             CliAction::Sandbox
         );
     }
@@ -6877,11 +7193,13 @@ mod tests {
 
     #[test]
     fn multi_word_prompt_still_uses_shorthand_prompt_mode() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
-        assert_eq!(
+        let (action, log_level) =
             parse_args(&["help".to_string(), "me".to_string(), "debug".to_string()])
-                .expect("prompt shorthand should still work"),
+                .expect("prompt shorthand should still work");
+        assert_eq!(
+            action,
             CliAction::Prompt {
                 prompt: "help me debug".to_string(),
                 model: DEFAULT_MODEL.to_string(),
@@ -6890,28 +7208,35 @@ mod tests {
                 permission_mode: PermissionMode::WorkspaceWrite,
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
     fn parses_direct_agents_mcp_and_skills_slash_commands() {
         assert_eq!(
-            parse_args(&["/agents".to_string()]).expect("/agents should parse"),
+            parse_args(&["/agents".to_string()])
+                .expect("/agents should parse")
+                .0,
             CliAction::Agents { args: None }
         );
         assert_eq!(
             parse_args(&["/mcp".to_string(), "show".to_string(), "demo".to_string()])
-                .expect("/mcp show demo should parse"),
+                .expect("/mcp show demo should parse")
+                .0,
             CliAction::Mcp {
                 args: Some("show demo".to_string())
             }
         );
         assert_eq!(
-            parse_args(&["/skills".to_string()]).expect("/skills should parse"),
+            parse_args(&["/skills".to_string()])
+                .expect("/skills should parse")
+                .0,
             CliAction::Skills { args: None }
         );
         assert_eq!(
             parse_args(&["/skills".to_string(), "help".to_string()])
-                .expect("/skills help should parse"),
+                .expect("/skills help should parse")
+                .0,
             CliAction::Skills {
                 args: Some("help".to_string())
             }
@@ -6922,7 +7247,8 @@ mod tests {
                 "install".to_string(),
                 "./fixtures/help-skill".to_string(),
             ])
-            .expect("/skills install should parse"),
+            .expect("/skills install should parse")
+            .0,
             CliAction::Skills {
                 args: Some("install ./fixtures/help-skill".to_string())
             }
@@ -6965,19 +7291,23 @@ mod tests {
             "session.jsonl".to_string(),
             "/compact".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::ResumeSession {
                 session_path: PathBuf::from("session.jsonl"),
                 commands: vec!["/compact".to_string()],
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
     fn parses_resume_flag_without_path_as_latest_session() {
         assert_eq!(
-            parse_args(&["--resume".to_string()]).expect("args should parse"),
+            parse_args(&["--resume".to_string()])
+                .expect("args should parse")
+                .0,
             CliAction::ResumeSession {
                 session_path: PathBuf::from("latest"),
                 commands: vec![],
@@ -6985,7 +7315,8 @@ mod tests {
         );
         assert_eq!(
             parse_args(&["--resume".to_string(), "/status".to_string()])
-                .expect("resume shortcut should parse"),
+                .expect("resume shortcut should parse")
+                .0,
             CliAction::ResumeSession {
                 session_path: PathBuf::from("latest"),
                 commands: vec!["/status".to_string()],
@@ -7002,8 +7333,9 @@ mod tests {
             "/compact".to_string(),
             "/cost".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::ResumeSession {
                 session_path: PathBuf::from("session.jsonl"),
                 commands: vec![
@@ -7013,6 +7345,7 @@ mod tests {
                 ],
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
@@ -7033,8 +7366,9 @@ mod tests {
             "/clear".to_string(),
             "--confirm".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::ResumeSession {
                 session_path: PathBuf::from("session.jsonl"),
                 commands: vec![
@@ -7043,6 +7377,7 @@ mod tests {
                 ],
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
@@ -7054,13 +7389,15 @@ mod tests {
             "/tmp/notes.txt".to_string(),
             "/status".to_string(),
         ];
+        let (action, log_level) = parse_args(&args).expect("args should parse");
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            action,
             CliAction::ResumeSession {
                 session_path: PathBuf::from("session.jsonl"),
                 commands: vec!["/export /tmp/notes.txt".to_string(), "/status".to_string()],
             }
         );
+        assert!(log_level.is_none());
     }
 
     #[test]
@@ -7159,7 +7496,7 @@ mod tests {
 
     #[test]
     fn startup_banner_mentions_workflow_completions() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         // Inject dummy credentials so LiveCli can construct without real Anthropic key
         std::env::set_var("ANTHROPIC_API_KEY", "test-dummy-key-for-banner-test");
         let root = temp_dir();
@@ -7439,7 +7776,7 @@ mod tests {
 
     #[test]
     fn parses_git_status_metadata() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         let temp_root = temp_dir();
         fs::create_dir_all(&temp_root).expect("root dir");
         let (project_root, branch) = parse_git_status_metadata_for(
@@ -7456,7 +7793,7 @@ mod tests {
 
     #[test]
     fn parses_detached_head_from_status_snapshot() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         assert_eq!(
             parse_git_status_branch(Some(
                 "## HEAD (no branch)
@@ -7494,7 +7831,7 @@ UU conflicted.rs",
 
     #[test]
     fn render_diff_report_shows_clean_tree_for_committed_repo() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);
@@ -7512,7 +7849,7 @@ UU conflicted.rs",
 
     #[test]
     fn render_diff_report_includes_staged_and_unstaged_sections() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);
@@ -7537,7 +7874,7 @@ UU conflicted.rs",
 
     #[test]
     fn render_diff_report_omits_ignored_files() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);
@@ -7562,7 +7899,7 @@ UU conflicted.rs",
 
     #[test]
     fn resume_diff_command_renders_report_for_saved_session() {
-        let _guard = env_lock();
+        let _guard = crate::env_lock();
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);

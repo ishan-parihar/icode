@@ -143,7 +143,7 @@ async fn dispatch_ipc_loop(
         let guards = transports.lock().await;
         for transport in guards.iter() {
             if let Err(e) = transport.send(&envelope) {
-                eprintln!("event_bus: IPC send failed: {e}");
+                tracing::warn!("event_bus: IPC send failed: {e}");
             }
         }
     }
@@ -213,12 +213,12 @@ impl EventBus {
 
     pub fn publish(&self, event: Event) {
         if let Err(e) = self.sender.send(event.clone()) {
-            eprintln!("event_bus: broadcast send failed (no subscribers): {e}");
+            tracing::warn!("event_bus: broadcast send failed (no subscribers): {e}");
         }
 
         let envelope = Envelope::new(self.instance_id.clone(), event);
         if let Err(e) = self.ipc_tx.try_send(envelope) {
-            eprintln!("event_bus: IPC event dropped: {e}");
+            tracing::warn!("event_bus: IPC event dropped: {e}");
         }
     }
 
@@ -253,12 +253,12 @@ impl EventBus {
         let event_data = match serde_json::to_string(event) {
             Ok(json) => json,
             Err(e) => {
-                eprintln!("event_bus: failed to serialize event: {e}");
+                tracing::warn!("event_bus: failed to serialize event: {e}");
                 return;
             }
         };
         if let Err(e) = store.insert_event(session_id, event.event_type_name(), &event_data) {
-            eprintln!("event_bus: failed to persist event: {e}");
+            tracing::warn!("event_bus: failed to persist event: {e}");
         }
     }
 }

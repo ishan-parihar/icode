@@ -187,7 +187,8 @@ pub fn anchored_popup(
     let width = anchor_width
         .clamp(20, 60)
         .min(area.width.saturating_sub(anchor_x));
-    let height = item_count.min(max_items).min(anchor_y).max(1);
+    // Minimum height of 3 ensures at least 1 visible row after layout padding
+    let height = item_count.min(max_items).min(anchor_y).max(3);
 
     // Position the popup ABOVE the anchor line (opencode renders above the input)
     let popup_y = anchor_y.saturating_sub(height);
@@ -208,10 +209,11 @@ pub fn anchored_popup_below(
     let width = anchor_width
         .clamp(20, 60)
         .min(area.width.saturating_sub(anchor_rect.x));
+    // Minimum height of 3 ensures at least 1 visible row after layout padding
     let height = item_count
         .min(max_items)
         .min(area.height.saturating_sub(anchor_rect.bottom()))
-        .max(1);
+        .max(3);
     let popup_y = anchor_rect
         .bottom()
         .min(area.bottom().saturating_sub(height));
@@ -409,7 +411,7 @@ mod tests {
     fn test_anchored_popup_min_height() {
         let area = Rect::new(0, 0, 100, 50);
         let popup = anchored_popup(area, 10, 20, 40, 0, 10);
-        assert_eq!(popup.height, 1);
+        assert_eq!(popup.height, 3);
     }
 
     #[test]

@@ -67,6 +67,7 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/version",
     "/undo",
     "/redo",
+    "/debug",
 ];
 
 fn command_help_text(cmd: &str) -> &'static str {
@@ -86,6 +87,7 @@ fn command_help_text(cmd: &str) -> &'static str {
         "/version" => "Show CLI version",
         "/undo" => "Undo the last action",
         "/redo" => "Redo the last undone action",
+        "/debug" => "Manage debug logging",
         _ => "",
     }
 }
@@ -282,12 +284,25 @@ impl AutocompleteState {
     pub fn cursor_up(&mut self) {
         if self.idx > 0 {
             self.idx -= 1;
+            self.ensure_visible(self.max_items);
         }
     }
 
     pub fn cursor_down(&mut self) {
         if !self.entries.is_empty() && self.idx + 1 < self.entries.len() {
             self.idx += 1;
+            self.ensure_visible(self.max_items);
+        }
+    }
+
+    fn ensure_visible(&mut self, visible_count: usize) {
+        if visible_count == 0 {
+            return;
+        }
+        if self.idx < self.scroll {
+            self.scroll = self.idx;
+        } else if self.idx >= self.scroll + visible_count {
+            self.scroll = self.idx - visible_count + 1;
         }
     }
 
@@ -436,6 +451,7 @@ pub fn render_autocomplete_overlay(
     }
 
     let block = left_border_block(theme, theme.border, "", Some(theme.background_panel));
+    let max_line_width = popup_rect.width.saturating_sub(2) as usize;
 
     let scroll_start = state.scroll;
     let items: Vec<ListItem> = state
@@ -448,28 +464,54 @@ pub fn render_autocomplete_overlay(
             let global_idx = scroll_start + offset;
             let is_selected = global_idx == state.idx;
 
-            let mut spans = vec![Span::styled(
-                entry.title.clone(),
-                if is_selected {
-                    Style::default()
-                        .bg(theme.primary)
-                        .fg(theme.text_inverse)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                },
-            )];
+            let sel_style = if is_selected {
+                Style::default()
+                    .bg(theme.primary)
+                    .fg(theme.text_inverse)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let sub_style = if is_selected {
+                Style::default().bg(theme.primary).fg(theme.text_inverse)
+            } else {
+                Style::default().fg(theme.text_muted)
+            };
 
-            if !entry.subtitle.is_empty() {
+            let mut spans = Vec::new();
+            if entry.subtitle.is_empty() {
+                let max_title = max_line_width.saturating_sub(3);
+                let title = if entry.title.chars().count() > max_title && max_title > 3 {
+                    format!(
+                        "{}...",
+                        entry
+                            .title
+                            .chars()
+                            .take(max_title.saturating_sub(3))
+                            .collect::<String>()
+                    )
+                } else {
+                    entry.title.clone()
+                };
+                spans.push(Span::styled(title, sel_style));
+            } else {
+                let sub_w = entry.subtitle.chars().count().saturating_add(2);
+                let max_title = max_line_width.saturating_sub(sub_w).saturating_sub(3);
+                let title = if entry.title.chars().count() > max_title && max_title > 3 {
+                    format!(
+                        "{}...",
+                        entry
+                            .title
+                            .chars()
+                            .take(max_title.saturating_sub(3))
+                            .collect::<String>()
+                    )
+                } else {
+                    entry.title.clone()
+                };
+                spans.push(Span::styled(title, sel_style));
                 spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    entry.subtitle.clone(),
-                    if is_selected {
-                        Style::default().bg(theme.primary).fg(theme.text_inverse)
-                    } else {
-                        Style::default().fg(theme.text_muted)
-                    },
-                ));
+                spans.push(Span::styled(entry.subtitle.clone(), sub_style));
             }
 
             ListItem::new(Line::from(spans))

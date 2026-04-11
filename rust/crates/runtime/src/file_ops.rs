@@ -168,6 +168,7 @@ pub fn read_file(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> io::Result<ReadFileOutput> {
+    tracing::info!(path = path, "reading file");
     let absolute_path = normalize_path(path)?;
 
     // Check file size before reading
@@ -192,6 +193,7 @@ pub fn read_file(
     }
 
     let content = fs::read_to_string(&absolute_path)?;
+    tracing::info!(path = path, bytes = content.len(), "file read completed");
     let lines: Vec<&str> = content.lines().collect();
     let start_index = offset.unwrap_or(0).min(lines.len());
     let end_index = limit.map_or(lines.len(), |limit| {
@@ -212,6 +214,7 @@ pub fn read_file(
 }
 
 pub fn write_file(path: &str, content: &str) -> io::Result<WriteFileOutput> {
+    tracing::info!(path = path, bytes = content.len(), "writing file");
     if content.len() > MAX_WRITE_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -230,6 +233,7 @@ pub fn write_file(path: &str, content: &str) -> io::Result<WriteFileOutput> {
         fs::create_dir_all(parent)?;
     }
     fs::write(&absolute_path, content)?;
+    tracing::info!(path = path, bytes = content.len(), "file write completed");
 
     let kind = if file_exists {
         String::from("update")
@@ -254,6 +258,12 @@ pub fn edit_file(
     new_string: &str,
     replace_all: bool,
 ) -> io::Result<EditFileOutput> {
+    tracing::info!(
+        path = path,
+        old_bytes = old_string.len(),
+        new_bytes = new_string.len(),
+        "editing file"
+    );
     let absolute_path = normalize_path(path)?;
     let original_file = fs::read_to_string(&absolute_path)?;
     if old_string == new_string {
@@ -275,6 +285,7 @@ pub fn edit_file(
         original_file.replacen(old_string, new_string, 1)
     };
     fs::write(&absolute_path, &updated)?;
+    tracing::info!(path = path, bytes = updated.len(), "file edit completed");
 
     Ok(EditFileOutput {
         file_path: absolute_path.to_string_lossy().into_owned(),

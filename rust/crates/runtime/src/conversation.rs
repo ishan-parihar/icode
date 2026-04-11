@@ -414,6 +414,9 @@ where
         progress: Option<&dyn Fn(AssistantEvent)>,
     ) -> Result<TurnSummary, RuntimeError> {
         let user_input = user_input.into();
+        let _span =
+            tracing::info_span!("turn_execute", session_id = %self.session.session_id).entered();
+        tracing::info!("starting turn execution");
         self.record_turn_started(&user_input);
         self.session
             .push_user_text(user_input)
@@ -430,6 +433,7 @@ where
                 let error = RuntimeError::new(
                     "conversation loop exceeded the maximum number of iterations",
                 );
+                tracing::error!(error = %error, "turn failed");
                 self.record_turn_failed(iterations, &error);
                 return Err(error);
             }
@@ -457,6 +461,7 @@ where
             let events = match self.api_client.stream(request, progress) {
                 Ok(events) => events,
                 Err(error) => {
+                    tracing::error!(error = %error, "turn failed");
                     let error_str = error.to_string().to_lowercase();
                     if error_str.contains("overloaded")
                         || error_str.contains("429")
@@ -478,6 +483,7 @@ where
                 match build_assistant_message(events) {
                     Ok(result) => result,
                     Err(error) => {
+                        tracing::error!(error = %error, "turn failed");
                         self.record_turn_failed(iterations, &error);
                         return Err(error);
                     }
@@ -624,6 +630,12 @@ where
             auto_compaction,
         };
         self.record_turn_completed(&summary);
+
+        tracing::info!(
+            input_tokens = summary.usage.input_tokens,
+            output_tokens = summary.usage.output_tokens,
+            "turn completed"
+        );
 
         Ok(summary)
     }

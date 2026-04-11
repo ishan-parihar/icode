@@ -1,3 +1,4 @@
+pub mod diagnostics;
 mod handlers;
 pub mod schemas;
 
