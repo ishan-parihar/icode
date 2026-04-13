@@ -10,6 +10,8 @@ use crate::providers::openai_compat::{self, OpenAiCompatClient, OpenAiCompatConf
 use crate::providers::openrouter::OpenRouterClient;
 use crate::providers::{self, ProviderKind};
 use crate::types::{MessageRequest, MessageResponse, StreamEvent};
+use runtime::ProviderConfig;
+use std::collections::BTreeMap;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
@@ -24,6 +26,8 @@ pub enum ProviderClient {
     OpenRouter(OpenRouterClient),
     Mistral(MistralClient),
     Groq(GroqClient),
+    /// Custom OpenAI-compatible provider configured via settings.json.
+    CustomOpenAi(OpenAiCompatClient),
     Unconfigured { model: String },
 }
 
@@ -41,15 +45,23 @@ pub enum MessageStream {
 
 impl ProviderClient {
     pub fn from_model(model: &str) -> Result<Self, ApiError> {
-        Self::from_model_with_anthropic_auth(model, None)
+        Self::from_model_with_providers(model, None, None)
     }
 
     pub fn from_model_with_anthropic_auth(
         model: &str,
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
+        Self::from_model_with_providers(model, None, anthropic_auth)
+    }
+
+    pub fn from_model_with_providers(
+        model: &str,
+        providers: Option<&BTreeMap<String, ProviderConfig>>,
+        anthropic_auth: Option<AuthSource>,
+    ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        let result = match providers::detect_provider_kind(&resolved_model) {
+        let result = match providers::detect_provider_kind(&resolved_model, providers) {
             ProviderKind::Anthropic => match anthropic_auth {
                 Some(auth) => Ok(Self::Anthropic(AnthropicClient::from_auth(auth))),
                 None => AnthropicClient::from_env().map(Self::Anthropic),
@@ -60,16 +72,13 @@ impl ProviderClient {
                 .map(Self::OpenAi),
             ProviderKind::QwenProxy => {
                 let config = OpenAiCompatConfig::qwen_proxy();
-                match std::env::var("QWEN_PROXY_API_KEY") {
-                    Ok(api_key) => Ok(Self::QwenProxy(
-                        OpenAiCompatClient::new(api_key, config)
-                            .with_base_url(read_qwen_proxy_base_url()),
-                    )),
-                    Err(_) => Err(ApiError::missing_credentials(
-                        "qwen-proxy",
-                        &["QWEN_PROXY_API_KEY"],
-                    )),
-                }
+                // QwenProxy uses an OpenAI-compatible local proxy that doesn't validate API keys.
+                // Use env var if set, otherwise fall back to "none" (matches opencode config).
+                let api_key = std::env::var("QWEN_PROXY_API_KEY").unwrap_or_else(|_| "none".to_string());
+                Ok(Self::QwenProxy(
+                    OpenAiCompatClient::new(api_key, config)
+                        .with_base_url(read_qwen_proxy_base_url()),
+                ))
             }
             ProviderKind::Azure => AzureClient::from_env().map(Self::Azure),
             ProviderKind::Gemini => GeminiClient::from_env().map(Self::Gemini),
@@ -77,6 +86,9 @@ impl ProviderClient {
             ProviderKind::OpenRouter => OpenRouterClient::from_env().map(Self::OpenRouter),
             ProviderKind::Mistral => MistralClient::from_env().map(Self::Mistral),
             ProviderKind::Groq => GroqClient::from_env().map(Self::Groq),
+            ProviderKind::CustomOpenAi { provider, model: model_name } => {
+                Self::from_custom_openai(&provider, &model_name, providers)
+            }
             ProviderKind::Unconfigured => Ok(Self::Unconfigured { model: resolved_model.clone() }),
         };
         // If credentials are missing, return Unconfigured instead of erroring.
@@ -89,6 +101,20 @@ impl ProviderClient {
                 })
             }
             other => other,
+        }
+    }
+
+    fn from_custom_openai(
+        provider: &str,
+        model_name: &str,
+        providers: Option<&BTreeMap<String, ProviderConfig>>,
+    ) -> Result<Self, ApiError> {
+        match providers.and_then(|p| p.get(provider)) {
+            Some(pc) => {
+                OpenAiCompatClient::custom_from_config(provider, pc)
+                    .map(Self::CustomOpenAi)
+            }
+            None => OpenAiCompatClient::custom(provider, model_name).map(Self::CustomOpenAi),
         }
     }
 
@@ -105,7 +131,7 @@ impl ProviderClient {
             Self::OpenRouter(_) => ProviderKind::OpenRouter,
             Self::Mistral(_) => ProviderKind::Mistral,
             Self::Groq(_) => ProviderKind::Groq,
-            Self::Unconfigured { .. } => ProviderKind::Unconfigured,
+            Self::CustomOpenAi(_) | Self::Unconfigured { .. } => ProviderKind::Unconfigured,
         }
     }
 
@@ -139,7 +165,7 @@ impl ProviderClient {
     ) -> Result<MessageResponse, ApiError> {
         match self {
             Self::Anthropic(client) => client.send_message(request).await,
-            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) => {
+            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) | Self::CustomOpenAi(client) => {
                 client.send_message(request).await
             }
             Self::Azure(client) => client.send_message(request).await,
@@ -154,6 +180,7 @@ impl ProviderClient {
                     || model_lower.starts_with("claude")
                     || model_lower.starts_with("gpt")
                     || model_lower.starts_with("grok")
+                    || model_lower.starts_with("qwen")
                     || model_lower.starts_with("gemini/")
                     || model_lower.starts_with("azure/")
                     || model_lower.starts_with("bedrock/");
@@ -182,6 +209,13 @@ impl ProviderClient {
                         "Model '{model}' requires XAI credentials. \
                          Set XAI_API_KEY env var or save a key to ~/.icode/auth.json."
                     )
+                } else if model_lower.starts_with("qwen") {
+                    format!(
+                        "Model '{model}' uses the Qwen Proxy provider. \
+                         Ensure the proxy is running at {base_url} (set QWEN_PROXY_BASE_URL to override). \
+                         No API key is required.",
+                        base_url = openai_compat::DEFAULT_QWEN_PROXY_BASE_URL
+                    )
                 } else if model_lower.starts_with("gemini/") {
                     format!(
                         "Model '{model}' requires Gemini credentials. \
@@ -208,7 +242,7 @@ impl ProviderClient {
                 .stream_message(request)
                 .await
                 .map(MessageStream::Anthropic),
-            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) => client
+            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) | Self::CustomOpenAi(client) => client
                 .stream_message(request)
                 .await
                 .map(MessageStream::OpenAiCompat),
@@ -248,6 +282,7 @@ impl ProviderClient {
                     || model_lower.starts_with("claude")
                     || model_lower.starts_with("gpt")
                     || model_lower.starts_with("grok")
+                    || model_lower.starts_with("qwen")
                     || model_lower.starts_with("gemini/")
                     || model_lower.starts_with("azure/")
                     || model_lower.starts_with("bedrock/");
@@ -275,6 +310,13 @@ impl ProviderClient {
                     format!(
                         "Model '{model}' requires XAI credentials. \
                          Set XAI_API_KEY env var or save a key to ~/.icode/auth.json."
+                    )
+                } else if model_lower.starts_with("qwen") {
+                    format!(
+                        "Model '{model}' uses the Qwen Proxy provider. \
+                         Ensure the proxy is running at {base_url} (set QWEN_PROXY_BASE_URL to override). \
+                         No API key is required.",
+                        base_url = openai_compat::DEFAULT_QWEN_PROXY_BASE_URL
                     )
                 } else if model_lower.starts_with("gemini/") {
                     format!(
@@ -354,9 +396,9 @@ mod tests {
 
     #[test]
     fn provider_detection_prefers_model_family() {
-        assert_eq!(detect_provider_kind("grok-3"), ProviderKind::Xai);
+        assert_eq!(detect_provider_kind("grok-3", None), ProviderKind::Xai);
         assert_eq!(
-            detect_provider_kind("claude-sonnet-4-6"),
+            detect_provider_kind("claude-sonnet-4-6", None),
             ProviderKind::Anthropic
         );
     }

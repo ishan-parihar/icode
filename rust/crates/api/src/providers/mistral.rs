@@ -759,7 +759,7 @@ mod tests {
     fn detects_mistral_from_model_prefix() {
         let _lock = env_lock();
         assert_eq!(
-            detect_provider_kind("mistral/mistral-large-latest"),
+            detect_provider_kind("mistral/mistral-large-latest", None),
             ProviderKind::Mistral
         );
     }

@@ -118,6 +118,12 @@ pub struct TuiConfig {
     /// Whether per-message timestamps are displayed.
     #[serde(default = "default_true")]
     pub show_timestamps: bool,
+
+    /// Default model to use on startup (e.g. "sonnet", "opus", "gpt-4o").
+    /// Resolved through the model alias system. Falls back to config.json
+    /// `model` field, then the built-in default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
 }
 
 fn default_scroll_speed() -> f64 {
@@ -138,6 +144,7 @@ impl Default for TuiConfig {
             sidebar_visible: true,
             show_thinking: true,
             show_timestamps: true,
+            default_model: None,
         }
     }
 }
@@ -238,14 +245,17 @@ mod tui_config_tests {
         assert!(!config.scroll_acceleration);
         assert!(config.sidebar_visible);
         assert!(config.show_thinking);
+        assert!(config.default_model.is_none());
     }
 
     #[test]
     fn test_serialize_roundtrip() {
-        let mut config = TuiConfig::default();
-        config.theme = Some("dark".into());
-        config.scroll_speed = 5.0;
-        config.scroll_acceleration = true;
+        let config = TuiConfig {
+            theme: Some("dark".into()),
+            scroll_speed: 5.0,
+            scroll_acceleration: true,
+            ..Default::default()
+        };
 
         let json = serde_json::to_string(&config).unwrap();
         let loaded: TuiConfig = serde_json::from_str(&json).unwrap();

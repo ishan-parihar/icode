@@ -1,7 +1,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use runtime::{PermissionMode, PermissionRequest};
@@ -392,6 +392,7 @@ fn permission_mode_badge(mode: PermissionMode) -> (&'static str, ratatui::style:
 // ---------------------------------------------------------------------------
 
 /// State for the permission dialog overlay with multi-stage flow.
+#[derive(Clone)]
 pub struct PermissionDialogState {
     pub open: bool,
     pub request: Option<PermissionRequest>,
@@ -671,11 +672,33 @@ fn render_permission_stage(
 
     let content_height = lines.len() as u16 + 3u16; // buttons (1) + gap (1) + hint (1)
 
-    let popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
+    let mut popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
 
-    // Block with left border
-    let block =
-        popup_utils::left_border_block(theme, theme.warning, "", Some(theme.background_panel));
+    // Clamp popup to the available frame area
+    popup_area = Rect {
+        x: popup_area.x.max(area.x),
+        y: popup_area.y.max(area.y),
+        width: popup_area.width.min(area.width.saturating_sub(2)),
+        height: popup_area.height.min(area.height.saturating_sub(2)),
+    };
+
+    // Early return if popup is too small to render meaningfully
+    if popup_area.width < 30 || popup_area.height < 8 {
+        return;
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.warning))
+        .border_type(BorderType::Rounded)
+        .title(" Permission Required ")
+        .title_style(
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        )
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(theme.background_panel));
     popup_utils::clear_area(frame, popup_area);
     frame.render_widget(block.clone(), popup_area);
 
@@ -695,7 +718,7 @@ fn render_permission_stage(
     frame.render_widget(text_widget, text_area);
 
     // Button bar
-    let buttons_y = inner.bottom().saturating_sub(3);
+    let buttons_y = inner.bottom().saturating_sub(3).max(inner.y);
     let buttons = vec![(BTN_APPROVE, 0), (BTN_DENY, 1), (BTN_ALWAYS, 2)];
 
     let total_btn_text: usize = buttons.iter().map(|(label, _)| label.len() + 4).sum();
@@ -705,6 +728,7 @@ fn render_permission_stage(
         1
     };
 
+    let inner_right = inner.right();
     let mut x = inner.x + gap as u16;
     for (label, idx) in &buttons {
         let is_focused = state.focused_button == *idx;
@@ -729,10 +753,11 @@ fn render_permission_stage(
 
         let text = format!(" [{label}] ");
         let btn_width = text.len() as u16;
+        let btn_x = x.min(inner_right.saturating_sub(btn_width));
         let btn_area = Rect {
-            x,
+            x: btn_x,
             y: buttons_y,
-            width: btn_width,
+            width: btn_width.min(inner_right.saturating_sub(btn_x)),
             height: 1,
         };
         frame.render_widget(Paragraph::new(text).style(btn_style), btn_area);
@@ -747,9 +772,14 @@ fn render_permission_stage(
         ("A", "always"),
         ("Esc", "reject"),
     ];
+    let hint_y = inner
+        .bottom()
+        .saturating_sub(1)
+        .max(inner.y)
+        .min(inner.bottom().saturating_sub(1));
     let hint_area = Rect {
         x: inner.x,
-        y: inner.bottom().saturating_sub(1),
+        y: hint_y,
         width: inner.width,
         height: 1,
     };
@@ -813,10 +843,33 @@ fn render_always_stage(
 
     let content_height = lines.len() as u16 + 3u16;
 
-    let popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
+    let mut popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
 
-    let block =
-        popup_utils::left_border_block(theme, theme.primary, "", Some(theme.background_panel));
+    // Clamp popup to the available frame area
+    popup_area = Rect {
+        x: popup_area.x.max(area.x),
+        y: popup_area.y.max(area.y),
+        width: popup_area.width.min(area.width.saturating_sub(2)),
+        height: popup_area.height.min(area.height.saturating_sub(2)),
+    };
+
+    // Early return if popup is too small to render meaningfully
+    if popup_area.width < 30 || popup_area.height < 8 {
+        return;
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.primary))
+        .border_type(BorderType::Rounded)
+        .title(" Always Allow ")
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(theme.background_panel));
     popup_utils::clear_area(frame, popup_area);
     frame.render_widget(block.clone(), popup_area);
 
@@ -835,10 +888,13 @@ fn render_always_stage(
     frame.render_widget(text_widget, text_area);
 
     // Confirm button
+    let btn_y = inner.bottom().saturating_sub(3).max(inner.y);
+    let btn_x = inner.x + 2;
+    let btn_width = 14u16.min(inner.width.saturating_sub(2));
     let btn_area = Rect {
-        x: inner.x + 2,
-        y: inner.bottom().saturating_sub(3),
-        width: 14,
+        x: btn_x,
+        y: btn_y,
+        width: btn_width,
         height: 1,
     };
     let btn_style = Style::default()
@@ -849,9 +905,10 @@ fn render_always_stage(
 
     // Hint bar
     let hint_hints = [("Enter", "confirm"), ("Esc", "cancel")];
+    let hint_y = inner.bottom().saturating_sub(1).max(inner.y);
     let hint_area = Rect {
         x: inner.x,
-        y: inner.bottom().saturating_sub(1),
+        y: hint_y,
         width: inner.width,
         height: 1,
     };
@@ -923,10 +980,33 @@ fn render_reject_stage(
 
     let content_height = lines.len() as u16 + 3u16;
 
-    let popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
+    let mut popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
 
-    let block =
-        popup_utils::left_border_block(theme, theme.error, "", Some(theme.background_panel));
+    // Clamp popup to the available frame area
+    popup_area = Rect {
+        x: popup_area.x.max(area.x),
+        y: popup_area.y.max(area.y),
+        width: popup_area.width.min(area.width.saturating_sub(2)),
+        height: popup_area.height.min(area.height.saturating_sub(2)),
+    };
+
+    // Early return if popup is too small to render meaningfully
+    if popup_area.width < 30 || popup_area.height < 8 {
+        return;
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.error))
+        .border_type(BorderType::Rounded)
+        .title(" Reject Request ")
+        .title_style(
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+        )
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(theme.background_panel));
     popup_utils::clear_area(frame, popup_area);
     frame.render_widget(block.clone(), popup_area);
 
@@ -945,10 +1025,13 @@ fn render_reject_stage(
     frame.render_widget(text_widget, text_area);
 
     // Submit button
+    let btn_y = inner.bottom().saturating_sub(3).max(inner.y);
+    let btn_x = inner.x + 2;
+    let btn_width = 12u16.min(inner.width.saturating_sub(2));
     let btn_area = Rect {
-        x: inner.x + 2,
-        y: inner.bottom().saturating_sub(3),
-        width: 12,
+        x: btn_x,
+        y: btn_y,
+        width: btn_width,
         height: 1,
     };
     let btn_style = Style::default()
@@ -959,9 +1042,10 @@ fn render_reject_stage(
 
     // Hint bar
     let hint_hints = [("Enter", "submit"), ("Esc", "cancel")];
+    let hint_y = inner.bottom().saturating_sub(1).max(inner.y);
     let hint_area = Rect {
         x: inner.x,
-        y: inner.bottom().saturating_sub(1),
+        y: hint_y,
         width: inner.width,
         height: 1,
     };

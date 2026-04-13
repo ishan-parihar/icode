@@ -1,7 +1,7 @@
 use crate::tui::frecency::FrecencyStore;
 use crate::tui::theme::Theme;
 use ratatui::prelude::Widget;
-use ratatui::widgets::{StatefulWidget, Wrap};
+use ratatui::widgets::StatefulWidget;
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, text::Span, widgets::Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -279,31 +279,67 @@ impl InputState {
         let first_line_avail = max_width.saturating_sub(prefix_w);
         let subsequent_line_avail = max_width;
 
-        let byte_idx = self.char_to_byte(self.cursor);
-        let prefix = &self.value[..byte_idx];
-
+        let target_char = self.cursor;
         let mut row = 0usize;
         let mut col = 0usize;
-        let mut avail = first_line_avail;
+        let mut char_offset = 0usize;
 
-        for ch in prefix.chars() {
-            if ch == '\n' {
+        let logical_lines: Vec<&str> = self.value.split('\n').collect();
+        for (line_idx, line_text) in logical_lines.iter().enumerate() {
+            let mut avail = if row == 0 {
+                first_line_avail
+            } else {
+                subsequent_line_avail
+            };
+
+            let segments = parse_input_segments(line_text);
+            for seg in &segments {
+                let (seg_text, seg_display_width) = match seg {
+                    InputSegment::Text(t) => (t.as_str(), t.width()),
+                    InputSegment::FileChip(t) | InputSegment::AgentChip(t) => {
+                        let rendered = format!(" {t} ");
+                        (t.as_str(), rendered.width())
+                    }
+                };
+
+                let seg_char_count = seg_text.chars().count();
+                if target_char >= char_offset && target_char < char_offset + seg_char_count {
+                    let offset_in_seg = target_char - char_offset;
+                    let chars_in_seg: Vec<char> = seg_text.chars().collect();
+                    let prefix_of_seg: String = chars_in_seg[..offset_in_seg].iter().collect();
+                    let display_col = match seg {
+                        InputSegment::Text(_) => prefix_of_seg.width(),
+                        InputSegment::FileChip(_) | InputSegment::AgentChip(_) => {
+                            prefix_of_seg.width()
+                        }
+                    };
+
+                    if avail > 0 && col + display_col > avail && col > 0 {
+                        row += 1;
+                        col = 0;
+                    }
+                    return (row, col + display_col);
+                }
+                char_offset += seg_char_count;
+
+                if col + seg_display_width > avail && col > 0 {
+                    row += 1;
+                    col = 0;
+                    avail = subsequent_line_avail;
+                }
+                col += seg_display_width.min(avail);
+            }
+
+            if line_idx + 1 < logical_lines.len() {
+                if target_char == char_offset {
+                    return (row, col);
+                }
+                char_offset += 1;
                 row += 1;
                 col = 0;
-                avail = subsequent_line_avail;
-                continue;
-            }
-            let w = ch.width().unwrap_or(1);
-            if avail > 0 && col + w > avail {
-                row += 1;
-                col = 0;
-                avail = subsequent_line_avail;
-            }
-            if avail > 0 {
-                col += w;
-                avail = avail.saturating_sub(w);
             }
         }
+
         (row, col)
     }
 
@@ -314,24 +350,44 @@ impl InputState {
 
         let mut row = 0usize;
         let mut col = 0usize;
-        let mut avail = first_line_avail;
 
-        for ch in self.value.chars() {
-            if ch == '\n' {
+        let logical_lines: Vec<&str> = self.value.split('\n').collect();
+        for (line_idx, line_text) in logical_lines.iter().enumerate() {
+            let mut avail = if row == 0 {
+                first_line_avail
+            } else {
+                subsequent_line_avail
+            };
+
+            let segments = parse_input_segments(line_text);
+            for seg in &segments {
+                let seg_display_width = match seg {
+                    InputSegment::Text(t) => t.width(),
+                    InputSegment::FileChip(t) | InputSegment::AgentChip(t) => {
+                        format!(" {t} ").width()
+                    }
+                };
+
+                // If segment doesn't fit and we already have content on this row, wrap
+                if col + seg_display_width > avail && col > 0 {
+                    row += 1;
+                    col = 0;
+                    avail = subsequent_line_avail;
+                }
+                // If segment still doesn't fit on a fresh row, it spans multiple rows
+                if seg_display_width > avail && avail > 0 {
+                    let rows_needed = seg_display_width.div_ceil(avail);
+                    row += rows_needed;
+                    col = 0;
+                    avail = subsequent_line_avail;
+                } else {
+                    col += seg_display_width.min(avail);
+                }
+            }
+
+            if line_idx + 1 < logical_lines.len() {
                 row += 1;
                 col = 0;
-                avail = subsequent_line_avail;
-                continue;
-            }
-            let w = ch.width().unwrap_or(1);
-            if avail > 0 && col + w > avail {
-                row += 1;
-                col = 0;
-                avail = subsequent_line_avail;
-            }
-            if avail > 0 {
-                col += w;
-                avail = avail.saturating_sub(w);
             }
         }
         row + 1
@@ -349,37 +405,65 @@ impl InputState {
 
         let mut row = 0usize;
         let mut col = 0usize;
-        let mut avail = first_line_avail;
         let mut char_offset = 0usize;
 
-        for ch in self.value.chars() {
-            if row == target_row && col >= target_col {
-                return char_offset;
+        let logical_lines: Vec<&str> = self.value.split('\n').collect();
+        for (line_idx, line_text) in logical_lines.iter().enumerate() {
+            let mut avail = if row == 0 {
+                first_line_avail
+            } else {
+                subsequent_line_avail
+            };
+
+            let segments = parse_input_segments(line_text);
+            for seg in &segments {
+                if row == target_row && col >= target_col {
+                    return char_offset;
+                }
+
+                let (seg_text, seg_display_width) = match seg {
+                    InputSegment::Text(t) => (t.as_str(), t.width()),
+                    InputSegment::FileChip(t) | InputSegment::AgentChip(t) => {
+                        let rendered = format!(" {t} ");
+                        (t.as_str(), rendered.width())
+                    }
+                };
+
+                let seg_char_count = seg_text.chars().count();
+
+                if col + seg_display_width > avail && col > 0 {
+                    if row == target_row {
+                        return char_offset;
+                    }
+                    row += 1;
+                    col = 0;
+                    avail = subsequent_line_avail;
+                }
+
+                if row == target_row {
+                    let chars_in_seg: Vec<char> = seg_text.chars().collect();
+                    let mut seg_col = 0usize;
+                    for (ci, &ch) in chars_in_seg.iter().enumerate() {
+                        if seg_col >= target_col {
+                            return char_offset + ci;
+                        }
+                        seg_col += ch.width().unwrap_or(1);
+                    }
+                    return char_offset + seg_char_count;
+                }
+
+                char_offset += seg_char_count;
+                col += seg_display_width.min(avail);
             }
-            if ch == '\n' {
+
+            if line_idx + 1 < logical_lines.len() {
                 if row == target_row {
                     return char_offset;
                 }
-                row += 1;
-                col = 0;
-                avail = subsequent_line_avail;
                 char_offset += 1;
-                continue;
-            }
-            let w = ch.width().unwrap_or(1);
-            if avail > 0 && col + w > avail {
-                if row == target_row {
-                    return char_offset;
-                }
                 row += 1;
                 col = 0;
-                avail = subsequent_line_avail;
             }
-            if avail > 0 {
-                col += w;
-                avail = avail.saturating_sub(w);
-            }
-            char_offset += 1;
         }
         char_offset
     }
@@ -564,6 +648,55 @@ impl Default for InputWidget {
     }
 }
 
+/// Wraps a single logical line's spans into multiple visual rows based on
+/// available width. Chips (FileChip, AgentChip) are kept intact and never split.
+/// `first_row_avail` is used for the first visual row, `subsequent_avail` for all
+/// following rows of this logical line.
+fn wrap_line_into_visual_rows(
+    spans: Vec<Span<'_>>,
+    first_row_avail: usize,
+    subsequent_avail: usize,
+) -> Vec<ratatui::text::Line<'_>> {
+    if spans.is_empty() {
+        return vec![ratatui::text::Line::from(Vec::<Span<'_>>::new())];
+    }
+
+    let mut rows: Vec<ratatui::text::Line<'_>> = Vec::new();
+    let mut current_spans: Vec<Span<'_>> = Vec::new();
+    let mut current_width = 0usize;
+    let mut avail = first_row_avail;
+
+    for span in spans {
+        let span_w = span.width();
+
+        if span_w > 0 && !current_spans.is_empty() && current_width + span_w > avail {
+            rows.push(ratatui::text::Line::from(std::mem::take(
+                &mut current_spans,
+            )));
+            current_width = 0;
+            avail = subsequent_avail;
+        }
+
+        if current_width + span_w <= avail || current_spans.is_empty() {
+            current_spans.push(span);
+            current_width += span_w.min(avail);
+        } else {
+            rows.push(ratatui::text::Line::from(std::mem::take(
+                &mut current_spans,
+            )));
+            avail = subsequent_avail;
+            current_spans.push(span);
+            current_width = span_w;
+        }
+    }
+
+    if !current_spans.is_empty() {
+        rows.push(ratatui::text::Line::from(current_spans));
+    }
+
+    rows
+}
+
 impl StatefulWidget for InputWidget {
     type State = InputState;
 
@@ -584,27 +717,36 @@ impl StatefulWidget for InputWidget {
             self.theme.border_active
         };
         let prompt = Span::styled(&state.prompt, Style::default().fg(prompt_color));
+        let prompt_w = state.prompt.width();
+        let first_line_avail = max_width.saturating_sub(prompt_w);
+        let subsequent_line_avail = max_width;
 
-        let all_lines: Vec<ratatui::text::Line<'_>> = if state.value.is_empty() {
+        let all_visual_rows: Vec<ratatui::text::Line<'_>> = if state.value.is_empty() {
             let placeholder = Span::styled(
                 &state.placeholder,
                 Style::default()
                     .fg(muted_color)
                     .add_modifier(ratatui::style::Modifier::ITALIC),
             );
-            vec![ratatui::text::Line::from(vec![prompt.clone(), placeholder])]
+            let spans = vec![prompt.clone(), placeholder];
+            wrap_line_into_visual_rows(spans, first_line_avail, subsequent_line_avail)
         } else {
             let mut result = Vec::new();
-            for (line_idx, segment) in state.value.split('\n').enumerate() {
-                if line_idx == 0 {
-                    let mut spans = vec![prompt.clone()];
+            let logical_lines: Vec<&str> = state.value.split('\n').collect();
+            for (line_idx, segment) in logical_lines.iter().enumerate() {
+                let spans: Vec<Span<'_>> = {
+                    let mut s = if line_idx == 0 {
+                        vec![prompt.clone()]
+                    } else {
+                        Vec::new()
+                    };
                     for chip in parse_input_segments(segment) {
                         match chip {
                             InputSegment::Text(t) => {
-                                spans.push(Span::styled(t, Style::default().fg(text_color)));
+                                s.push(Span::styled(t, Style::default().fg(text_color)));
                             }
                             InputSegment::FileChip(t) => {
-                                spans.push(Span::styled(
+                                s.push(Span::styled(
                                     format!(" {t} "),
                                     Style::default()
                                         .fg(self.theme.info)
@@ -612,7 +754,7 @@ impl StatefulWidget for InputWidget {
                                 ));
                             }
                             InputSegment::AgentChip(t) => {
-                                spans.push(Span::styled(
+                                s.push(Span::styled(
                                     format!(" {t} "),
                                     Style::default()
                                         .fg(self.theme.accent)
@@ -621,34 +763,18 @@ impl StatefulWidget for InputWidget {
                             }
                         }
                     }
-                    result.push(ratatui::text::Line::from(spans));
-                } else {
-                    let mut spans = Vec::new();
-                    for chip in parse_input_segments(segment) {
-                        match chip {
-                            InputSegment::Text(t) => {
-                                spans.push(Span::styled(t, Style::default().fg(text_color)));
-                            }
-                            InputSegment::FileChip(t) => {
-                                spans.push(Span::styled(
-                                    format!(" {t} "),
-                                    Style::default()
-                                        .fg(self.theme.info)
-                                        .bg(self.theme.background_hover),
-                                ));
-                            }
-                            InputSegment::AgentChip(t) => {
-                                spans.push(Span::styled(
-                                    format!(" {t} "),
-                                    Style::default()
-                                        .fg(self.theme.accent)
-                                        .bg(self.theme.background_hover),
-                                ));
-                            }
-                        }
-                    }
-                    result.push(ratatui::text::Line::from(spans));
-                }
+                    s
+                };
+                let visual_rows = wrap_line_into_visual_rows(
+                    spans,
+                    if line_idx == 0 {
+                        first_line_avail
+                    } else {
+                        subsequent_line_avail
+                    },
+                    subsequent_line_avail,
+                );
+                result.extend(visual_rows);
             }
             if result.is_empty() {
                 result.push(ratatui::text::Line::from(vec![prompt]));
@@ -656,57 +782,23 @@ impl StatefulWidget for InputWidget {
             result
         };
 
-        let visible_lines: Vec<_> = all_lines
+        let visible_lines: Vec<_> = all_visual_rows
             .iter()
             .skip(state.scroll_offset)
             .take(max_visible_lines)
             .cloned()
             .collect();
 
-        let paragraph = Paragraph::new(visible_lines)
-            .wrap(Wrap { trim: false })
-            .style(
-                Style::default()
-                    .fg(text_color)
-                    .bg(self.theme.background_element),
-            );
+        let paragraph = Paragraph::new(visible_lines).style(
+            Style::default()
+                .fg(text_color)
+                .bg(self.theme.background_element),
+        );
         paragraph.render(area, buf);
 
-        let prompt_w = state.prompt.width();
-        let first_line_avail = max_width.saturating_sub(prompt_w);
-        let subsequent_line_avail = max_width;
+        let (cursor_visual_row, col) = state.cursor_position(max_width);
 
-        let byte_idx = state
-            .value
-            .char_indices()
-            .nth(state.cursor.min(state.value.chars().count()))
-            .map_or(state.value.len(), |(i, _)| i);
-        let prefix = &state.value[..byte_idx];
-
-        let mut row = 0u16;
-        let mut col = 0usize;
-        let mut avail = first_line_avail;
-
-        for ch in prefix.chars() {
-            if ch == '\n' {
-                row += 1;
-                col = 0;
-                avail = subsequent_line_avail;
-                continue;
-            }
-            let w = ch.width().unwrap_or(1);
-            if avail > 0 && col + w > avail {
-                row += 1;
-                col = 0;
-                avail = subsequent_line_avail;
-            }
-            if avail > 0 {
-                col += w;
-                avail = avail.saturating_sub(w);
-            }
-        }
-
-        let visible_row = row as isize - state.scroll_offset as isize;
+        let visible_row = cursor_visual_row as isize - state.scroll_offset as isize;
         let cursor_x = match visible_row.cmp(&0) {
             std::cmp::Ordering::Equal => area.x + prompt_w as u16 + col as u16,
             std::cmp::Ordering::Greater => area.x + col as u16,

@@ -340,6 +340,8 @@ mod tests {
             permission_dialog: crate::tui::dialog_permission::PermissionDialogState::new(),
             question_prompt: crate::tui::dialog_question::QuestionPromptState::new(),
             has_shown_welcome: false,
+            active_modal: None,
+            permission_response_tx: None,
         }
     }
 

@@ -38,7 +38,7 @@ pub struct BranchEntry {
     pub sub_agent_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionBranchingState {
     pub open: bool,
     pub branches: Vec<BranchEntry>,

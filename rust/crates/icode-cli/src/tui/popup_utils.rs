@@ -128,12 +128,19 @@ pub fn render_popup_frame(
 }
 
 /// Render a semi-transparent backdrop behind modal dialogs.
-/// Useful for permission dialogs, question prompts that block interaction.
-pub fn render_backdrop(frame: &mut Frame, area: Rect, _theme: Theme) {
-    // In ratatui, Clear + layering is the standard backdrop approach.
-    // The actual "dimming" is achieved by the popup's Clear widget + border.
-    // This function is a placeholder for future backdrop tinting support.
-    let _ = (frame, area);
+/// Fills the entire area with darkened cells to create a dimming effect.
+/// Call this BEFORE rendering the modal itself so the modal appears on top.
+pub fn render_backdrop(frame: &mut Frame, area: Rect, theme: Theme) {
+    let buffer = frame.buffer_mut();
+    let backdrop_color = ratatui::style::Color::Rgb(0, 0, 0);
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_bg(backdrop_color);
+            }
+        }
+    }
+    frame.render_widget(Clear, area);
 }
 
 // =============================================================================

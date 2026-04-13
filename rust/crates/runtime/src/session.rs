@@ -69,6 +69,7 @@ struct SessionPersistence {
 pub struct Session {
     pub version: u32,
     pub session_id: String,
+    pub title: String,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub messages: Vec<ConversationMessage>,
@@ -81,6 +82,7 @@ impl PartialEq for Session {
     fn eq(&self, other: &Self) -> bool {
         self.version == other.version
             && self.session_id == other.session_id
+            && self.title == other.title
             && self.created_at_ms == other.created_at_ms
             && self.updated_at_ms == other.updated_at_ms
             && self.messages == other.messages
@@ -124,11 +126,33 @@ impl From<JsonError> for SessionError {
 
 impl Session {
     #[must_use]
+    pub fn default_parent_title() -> String {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        format!("New session - {now}")
+    }
+
+    #[must_use]
+    pub fn default_child_title() -> String {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        format!("Child session - {now}")
+    }
+
+    #[must_use]
+    pub fn is_default_title(title: &str) -> bool {
+        let re = regex::Regex::new(
+            r"^((New session|Child session) - )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$",
+        )
+        .unwrap();
+        re.is_match(title)
+    }
+
+    #[must_use]
     pub fn new() -> Self {
         let now = current_time_millis();
         Self {
             version: SESSION_VERSION,
             session_id: generate_session_id(),
+            title: Self::default_parent_title(),
             created_at_ms: now,
             updated_at_ms: now,
             messages: Vec::new(),
@@ -213,6 +237,7 @@ impl Session {
         Self {
             version: self.version,
             session_id: generate_session_id(),
+            title: Self::default_child_title(),
             created_at_ms: now,
             updated_at_ms: now,
             messages: self.messages.clone(),
@@ -298,9 +323,14 @@ impl Session {
             .map(SessionCompaction::from_json)
             .transpose()?;
         let fork = object.get("fork").map(SessionFork::from_json).transpose()?;
+        let title = object
+            .get("title")
+            .and_then(JsonValue::as_str)
+            .map_or_else(Self::default_parent_title, ToOwned::to_owned);
         Ok(Self {
             version,
             session_id,
+            title,
             created_at_ms,
             updated_at_ms,
             messages,
@@ -313,6 +343,7 @@ impl Session {
     fn from_jsonl(contents: &str) -> Result<Self, SessionError> {
         let mut version = SESSION_VERSION;
         let mut session_id = None;
+        let mut title = None;
         let mut created_at_ms = None;
         let mut updated_at_ms = None;
         let mut messages = Vec::new();
@@ -349,6 +380,10 @@ impl Session {
                 "session_meta" => {
                     version = required_u32(object, "version")?;
                     session_id = Some(required_string(object, "session_id")?);
+                    title = object
+                        .get("title")
+                        .and_then(JsonValue::as_str)
+                        .map(ToOwned::to_owned);
                     created_at_ms = Some(required_u64(object, "created_at_ms")?);
                     updated_at_ms = Some(required_u64(object, "updated_at_ms")?);
                     fork = object.get("fork").map(SessionFork::from_json).transpose()?;
@@ -380,6 +415,7 @@ impl Session {
         Ok(Self {
             version,
             session_id: session_id.unwrap_or_else(generate_session_id),
+            title: title.unwrap_or_else(Self::default_parent_title),
             created_at_ms: created_at_ms.unwrap_or(now),
             updated_at_ms: updated_at_ms.unwrap_or(created_at_ms.unwrap_or(now)),
             messages,
@@ -434,6 +470,7 @@ impl Session {
             "session_id".to_string(),
             JsonValue::String(self.session_id.clone()),
         );
+        object.insert("title".to_string(), JsonValue::String(self.title.clone()));
         object.insert(
             "created_at_ms".to_string(),
             JsonValue::Number(i64_from_u64(self.created_at_ms, "created_at_ms")?),
@@ -450,6 +487,16 @@ impl Session {
 
     fn touch(&mut self) {
         self.updated_at_ms = current_time_millis();
+    }
+
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+        self.touch();
+        if let Some(p) = self.persistence.as_ref() {
+            if p.path.exists() {
+                let _ = self.save_to_path(&p.path);
+            }
+        }
     }
 }
 

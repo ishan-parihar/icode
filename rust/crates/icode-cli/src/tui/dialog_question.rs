@@ -133,6 +133,7 @@ pub struct QuestionPromptState {
     pub scroll_offset: usize,
     pub custom_input: String,
     pub editing_custom: bool,
+    pub custom_cursor: usize,
     pub answer_tx: Option<std::sync::mpsc::Sender<String>>,
 }
 
@@ -158,6 +159,7 @@ impl QuestionPromptState {
         self.scroll_offset = 0;
         self.custom_input.clear();
         self.editing_custom = false;
+        self.custom_cursor = 0;
         self.answer_tx = answer_tx;
     }
 
@@ -194,6 +196,7 @@ impl QuestionPromptState {
         self.scroll_offset = 0;
         self.custom_input.clear();
         self.editing_custom = false;
+        self.custom_cursor = 0;
         self.answer_tx = None;
     }
 
@@ -208,6 +211,7 @@ impl QuestionPromptState {
             self.scroll_offset = 0;
             self.custom_input.clear();
             self.editing_custom = false;
+            self.custom_cursor = 0;
         }
     }
 
@@ -284,6 +288,7 @@ impl QuestionPromptState {
             self.scroll_offset = 0;
             self.custom_input.clear();
             self.editing_custom = false;
+            self.custom_cursor = 0;
         }
     }
 
@@ -295,6 +300,7 @@ impl QuestionPromptState {
             self.scroll_offset = 0;
             self.custom_input.clear();
             self.editing_custom = false;
+            self.custom_cursor = 0;
         }
     }
 
@@ -464,10 +470,11 @@ impl QuestionPromptState {
     fn handle_custom_editing_key(
         &mut self,
         code: ratatui::crossterm::event::KeyCode,
+        ctrl: bool,
     ) -> Option<QuestionResponse> {
         use ratatui::crossterm::event::KeyCode;
         match code {
-            KeyCode::Enter => {
+            KeyCode::Enter if ctrl => {
                 if !self.custom_input.trim().is_empty() {
                     self.answers[self.active_tab] = vec![self.custom_input.clone()];
                     self.editing_custom = false;
@@ -478,28 +485,64 @@ impl QuestionPromptState {
                 }
                 None
             }
+            KeyCode::Enter => {
+                let cursor_byte = self
+                    .custom_input
+                    .char_indices()
+                    .nth(self.custom_cursor)
+                    .map_or(self.custom_input.len(), |(i, _)| i);
+                self.custom_input.insert(cursor_byte, '\n');
+                self.custom_cursor += 1;
+                None
+            }
             KeyCode::Esc => {
                 self.editing_custom = false;
                 self.custom_input.clear();
+                self.custom_cursor = 0;
                 None
             }
             KeyCode::Char(c) => {
-                self.custom_input.push(c);
+                let cursor_byte = self
+                    .custom_input
+                    .char_indices()
+                    .nth(self.custom_cursor)
+                    .map_or(self.custom_input.len(), |(i, _)| i);
+                self.custom_input.insert(cursor_byte, c);
+                self.custom_cursor += 1;
                 None
             }
             KeyCode::Backspace => {
-                self.custom_input.pop();
+                if self.custom_cursor > 0 {
+                    let cursor_byte = self
+                        .custom_input
+                        .char_indices()
+                        .nth(self.custom_cursor)
+                        .map_or(self.custom_input.len(), |(i, _)| i);
+                    let prev_char_byte = self
+                        .custom_input
+                        .char_indices()
+                        .nth(self.custom_cursor - 1)
+                        .map_or(0, |(i, _)| i);
+                    self.custom_input
+                        .replace_range(prev_char_byte..cursor_byte, "");
+                    self.custom_cursor -= 1;
+                }
                 None
             }
             KeyCode::Left => {
-                self.tab_left();
+                if self.custom_cursor > 0 {
+                    self.custom_cursor -= 1;
+                }
                 None
             }
             KeyCode::Right => {
-                if self.active_tab < self.questions.len() {
+                if self.custom_cursor < self.custom_input.chars().count() {
+                    self.custom_cursor += 1;
+                } else if self.active_tab < self.questions.len() {
                     self.active_tab += 1;
                     self.cursor_idx = 0;
                     self.editing_custom = false;
+                    self.custom_cursor = 0;
                     self.custom_input.clear();
                 }
                 None
@@ -522,14 +565,17 @@ impl QuestionPromptState {
 
     pub fn handle_key(
         &mut self,
-        code: ratatui::crossterm::event::KeyCode,
+        key: ratatui::crossterm::event::KeyEvent,
     ) -> Option<QuestionResponse> {
         use ratatui::crossterm::event::KeyCode;
+        use ratatui::crossterm::event::KeyModifiers;
+        let code = key.code;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if self.active_tab >= self.questions.len() {
             return self.handle_confirm_tab_key(code);
         }
         if self.editing_custom {
-            return self.handle_custom_editing_key(code);
+            return self.handle_custom_editing_key(code, ctrl);
         }
         match code {
             KeyCode::Up => self.cursor_up(),
@@ -966,6 +1012,14 @@ fn render_confirm_tab(frame: &mut Frame, area: Rect, state: &QuestionPromptState
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+
+    fn kc(code: ratatui::crossterm::event::KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn ctrl_kc(code: ratatui::crossterm::event::KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
 
     fn make_state() -> QuestionPromptState {
         QuestionPromptState::new()
@@ -1064,7 +1118,7 @@ mod tests {
         let mut s = make_state();
         s.open(make_single_select(), "agent".into(), String::new(), None);
         s.cursor_idx = 1;
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Char('2'));
+        let r = s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('2')));
         assert!(r.is_some());
         assert_eq!(r.unwrap().answer, "Beta");
     }
@@ -1073,7 +1127,7 @@ mod tests {
     fn single_select_non_last_advances() {
         let mut s = make_state();
         s.open(make_multi(), "agent".into(), String::new(), None);
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Char('1'));
+        let r = s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('1')));
         assert!(r.is_none());
         assert_eq!(s.active_tab, 1);
         assert_eq!(s.answers[0], vec!["Choice 1"]);
@@ -1084,12 +1138,12 @@ mod tests {
         let mut s = make_state();
         s.open(make_multi_select(), "agent".into(), String::new(), None);
         s.cursor_idx = 0;
-        s.handle_key(ratatui::crossterm::event::KeyCode::Char(' '));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char(' ')));
         assert_eq!(s.answers[0], vec!["Option A"]);
-        s.handle_key(ratatui::crossterm::event::KeyCode::Char(' '));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char(' ')));
         assert!(s.answers[0].is_empty());
         s.cursor_down();
-        s.handle_key(ratatui::crossterm::event::KeyCode::Char(' '));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char(' ')));
         assert_eq!(s.answers[0], vec!["Option B"]);
     }
 
@@ -1098,7 +1152,7 @@ mod tests {
         let mut s = make_state();
         s.open(make_multi_select(), "agent".into(), String::new(), None);
         s.cursor_idx = 0;
-        s.handle_key(ratatui::crossterm::event::KeyCode::Enter);
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Enter));
         assert_eq!(s.active_tab, 1);
     }
 
@@ -1117,7 +1171,7 @@ mod tests {
     fn numbered_shortcut_selects() {
         let mut s = make_state();
         s.open(make_single_select(), "agent".into(), String::new(), None);
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Char('3'));
+        let r = s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('3')));
         assert!(r.is_some());
         assert_eq!(r.unwrap().answer, "Gamma");
     }
@@ -1126,7 +1180,7 @@ mod tests {
     fn numbered_shortcut_ooo_ignored() {
         let mut s = make_state();
         s.open(make_single_select(), "agent".into(), String::new(), None);
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Char('5'));
+        let r = s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('5')));
         assert!(r.is_none());
         assert!(s.answers[0].is_empty());
     }
@@ -1135,7 +1189,7 @@ mod tests {
     fn numbered_one_selects_first() {
         let mut s = make_state();
         s.open(make_single_select(), "agent".into(), String::new(), None);
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Char('1'));
+        let r = s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('1')));
         assert!(r.is_some());
         assert_eq!(r.unwrap().answer, "Alpha");
     }
@@ -1157,7 +1211,7 @@ mod tests {
             None,
         );
         s.cursor_idx = 1;
-        s.handle_key(ratatui::crossterm::event::KeyCode::Enter);
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Enter));
         assert!(s.editing_custom);
     }
 
@@ -1175,12 +1229,12 @@ mod tests {
             None,
         );
         s.cursor_idx = 0;
-        s.handle_key(ratatui::crossterm::event::KeyCode::Enter);
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Enter));
         for c in ['h', 'e', 'l', 'l', 'o'] {
-            s.handle_key(ratatui::crossterm::event::KeyCode::Char(c));
+            s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char(c)));
         }
         assert_eq!(s.custom_input, "hello");
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Enter);
+        let r = s.handle_key(ctrl_kc(ratatui::crossterm::event::KeyCode::Enter));
         assert!(r.is_some());
         assert_eq!(r.unwrap().answer, "hello");
     }
@@ -1199,11 +1253,11 @@ mod tests {
             None,
         );
         s.cursor_idx = 0;
-        s.handle_key(ratatui::crossterm::event::KeyCode::Enter);
-        s.handle_key(ratatui::crossterm::event::KeyCode::Char('a'));
-        s.handle_key(ratatui::crossterm::event::KeyCode::Char('b'));
-        s.handle_key(ratatui::crossterm::event::KeyCode::Char('c'));
-        s.handle_key(ratatui::crossterm::event::KeyCode::Backspace);
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Enter));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('a')));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('b')));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('c')));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Backspace));
         assert_eq!(s.custom_input, "ab");
     }
 
@@ -1221,10 +1275,10 @@ mod tests {
             None,
         );
         s.cursor_idx = 0;
-        s.handle_key(ratatui::crossterm::event::KeyCode::Enter);
-        s.handle_key(ratatui::crossterm::event::KeyCode::Char('x'));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Enter));
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Char('x')));
         assert!(s.editing_custom);
-        s.handle_key(ratatui::crossterm::event::KeyCode::Esc);
+        s.handle_key(kc(ratatui::crossterm::event::KeyCode::Esc));
         assert!(!s.editing_custom);
         assert!(s.custom_input.is_empty());
         assert!(s.open);
@@ -1235,7 +1289,7 @@ mod tests {
         let mut s = make_state();
         s.open(make_single_select(), "agent".into(), String::new(), None);
         s.active_tab = 1;
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Esc);
+        let r = s.handle_key(kc(ratatui::crossterm::event::KeyCode::Esc));
         assert!(r.is_some());
         assert!(r.unwrap().cancelled);
         assert!(!s.open);
@@ -1275,7 +1329,7 @@ mod tests {
     fn esc_dismisses() {
         let mut s = make_state();
         s.open(make_single_select(), "agent".into(), String::new(), None);
-        let r = s.handle_key(ratatui::crossterm::event::KeyCode::Esc);
+        let r = s.handle_key(kc(ratatui::crossterm::event::KeyCode::Esc));
         assert!(r.is_some());
         assert!(r.unwrap().cancelled);
         assert!(!s.open);

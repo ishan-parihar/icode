@@ -765,7 +765,7 @@ mod tests {
     fn detects_openrouter_from_model_prefix() {
         let _lock = env_lock();
         assert_eq!(
-            detect_provider_kind("openrouter/anthropic/claude-3.5-sonnet"),
+            detect_provider_kind("openrouter/anthropic/claude-3.5-sonnet", None),
             ProviderKind::OpenRouter
         );
     }

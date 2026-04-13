@@ -759,7 +759,7 @@ mod tests {
     fn detects_groq_from_model_prefix() {
         let _lock = env_lock();
         assert_eq!(
-            detect_provider_kind("groq/llama-3.3-70b-versatile"),
+            detect_provider_kind("groq/llama-3.3-70b-versatile", None),
             ProviderKind::Groq
         );
     }

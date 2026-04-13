@@ -872,7 +872,7 @@ mod tests {
     fn detects_bedrock_from_model_prefix() {
         let _lock = env_lock();
         assert_eq!(
-            detect_provider_kind("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            detect_provider_kind("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", None),
             ProviderKind::Bedrock
         );
     }

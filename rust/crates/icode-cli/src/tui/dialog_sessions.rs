@@ -28,6 +28,7 @@ fn dialog_height(term_height: u16) -> u16 {
 #[derive(Debug, Clone)]
 pub struct SessionEntry {
     pub id: String,
+    pub title: String,
     pub path: PathBuf,
     pub modified: u128,
     pub message_count: usize,
@@ -36,7 +37,7 @@ pub struct SessionEntry {
     pub usage_summary: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionsDialogState {
     pub open: bool,
     pub sessions: Vec<SessionEntry>,
@@ -99,7 +100,7 @@ impl SessionsDialogState {
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown")
                     .to_string();
-                let (msg_count, parent_id, branch_name, usage_summary) =
+                let (msg_count, parent_id, branch_name, usage_summary, title) =
                     match runtime::Session::load_from_path(&path) {
                         Ok(session) => {
                             let parent_id =
@@ -107,17 +108,19 @@ impl SessionsDialogState {
                             let branch_name =
                                 session.fork.as_ref().and_then(|f| f.branch_name.clone());
                             let mc = session.messages.len();
+                            let title = session.title.clone();
                             let usage_summary = if idx < usage_budget {
                                 compute_usage_summary(&session)
                             } else {
                                 Some(format!("{mc} msgs"))
                             };
-                            (mc, parent_id, branch_name, usage_summary)
+                            (mc, parent_id, branch_name, usage_summary, title)
                         }
-                        Err(_) => (0, None, None, None),
+                        Err(_) => (0, None, None, None, id.clone()),
                     };
                 self.sessions.push(SessionEntry {
                     id,
+                    title,
                     path,
                     modified,
                     message_count: msg_count,
@@ -142,6 +145,7 @@ impl SessionsDialogState {
                 .iter()
                 .filter(|s| {
                     s.id.to_lowercase().contains(&q)
+                        || s.title.to_lowercase().contains(&q)
                         || s.branch_name
                             .as_ref()
                             .is_some_and(|b| b.to_lowercase().contains(&q))
@@ -448,21 +452,35 @@ pub fn render_sessions_dialog(
                         .add_modifier(Modifier::BOLD),
                 ));
             } else {
-                title_spans.push(Span::styled(
-                    truncate(&session.id, 20),
-                    Style::default().fg(if is_selected {
-                        theme.background
-                    } else {
-                        theme.text
-                    }),
-                ));
+                let primary_color = if is_selected {
+                    theme.background
+                } else {
+                    theme.text
+                };
+                let muted_color = if is_selected {
+                    theme.background
+                } else {
+                    theme.text_muted
+                };
+
+                if session.title.starts_with("New session - ") {
+                    title_spans.push(Span::styled(
+                        truncate(&session.id, 20),
+                        Style::default().fg(primary_color),
+                    ));
+                } else {
+                    title_spans.push(Span::styled(
+                        truncate(&session.title, 32),
+                        Style::default().fg(primary_color),
+                    ));
+                    title_spans.push(Span::styled(
+                        format!("({}) ", truncate(&session.id, 12)),
+                        Style::default().fg(muted_color),
+                    ));
+                }
                 title_spans.push(Span::styled(
                     format!(" ({} msgs) ", session.message_count),
-                    Style::default().fg(if is_selected {
-                        theme.background
-                    } else {
-                        theme.text_muted
-                    }),
+                    Style::default().fg(muted_color),
                 ));
                 if let Some(ref branch) = session.branch_name {
                     title_spans.push(Span::styled(

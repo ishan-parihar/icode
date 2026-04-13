@@ -652,7 +652,7 @@ mod tests {
     fn detects_gemini_from_model_prefix() {
         let _lock = env_lock();
         assert_eq!(
-            detect_provider_kind("gemini/gemini-2.5-pro"),
+            detect_provider_kind("gemini/gemini-2.5-pro", None),
             ProviderKind::Gemini
         );
     }

@@ -4,6 +4,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
+use runtime::ProviderConfig;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use crate::tui::dialog_connect::{ConnectAction, ConnectDialogState};
@@ -58,7 +60,7 @@ impl ProviderDialogState {
     pub fn new() -> Self {
         Self {
             open: false,
-            providers: Self::detect_providers(),
+            providers: Self::detect_providers(None),
             selected: 0,
             scroll_offset: 0,
             search: String::new(),
@@ -72,7 +74,7 @@ impl ProviderDialogState {
         self.selected = 0;
         self.scroll_offset = 0;
         self.search.clear();
-        self.providers = Self::detect_providers();
+        self.providers = Self::detect_providers(None);
         self.apply_filter();
     }
 
@@ -81,13 +83,15 @@ impl ProviderDialogState {
         self.connect_dialog.close();
     }
 
-    fn detect_providers() -> Vec<ProviderEntry> {
-        let auth_statuses = scan_provider_auth_status();
+    fn detect_providers(
+        providers: Option<&BTreeMap<String, ProviderConfig>>,
+    ) -> Vec<ProviderEntry> {
+        let auth_statuses = scan_provider_auth_status(providers);
 
         let mut models_by_provider: HashMap<ProviderKind, Vec<String>> = HashMap::new();
         for entry in list_all_models() {
             models_by_provider
-                .entry(entry.provider)
+                .entry(entry.provider.clone())
                 .or_default()
                 .push(entry.alias.to_string());
         }
@@ -133,9 +137,9 @@ impl ProviderDialogState {
         if self.connect_dialog.open {
             match self.connect_dialog.handle_key(key) {
                 ConnectAction::Submit(api_key) => {
-                    let kind = self.connect_dialog.provider_kind;
+                    let kind = &self.connect_dialog.provider_kind;
                     let display = self.connect_dialog.provider_name.clone();
-                    return ProviderAction::ConnectProvider(kind, display, api_key);
+                    return ProviderAction::ConnectProvider(kind.clone(), display, api_key);
                 }
                 ConnectAction::Close => {
                     self.connect_dialog.close();
@@ -163,7 +167,7 @@ impl ProviderDialogState {
                         ProviderAction::Toggle(idx)
                     } else {
                         self.connect_dialog
-                            .open(provider.name.clone(), provider.kind);
+                            .open(provider.name.clone(), provider.kind.clone());
                         ProviderAction::None
                     }
                 } else {
@@ -220,7 +224,7 @@ impl ProviderDialogState {
     }
 
     pub fn refresh_providers(&mut self) {
-        self.providers = Self::detect_providers();
+        self.providers = Self::detect_providers(None);
         self.apply_filter();
     }
 }
@@ -448,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_detect_providers() {
-        let providers = ProviderDialogState::detect_providers();
+        let providers = ProviderDialogState::detect_providers(None);
         assert!(providers.len() >= 3);
         let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"Anthropic"));
@@ -557,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_provider_entry_has_models() {
-        let providers = ProviderDialogState::detect_providers();
+        let providers = ProviderDialogState::detect_providers(None);
         for provider in &providers {
             assert!(!provider.models.is_empty());
         }
@@ -565,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_provider_has_kind() {
-        let providers = ProviderDialogState::detect_providers();
+        let providers = ProviderDialogState::detect_providers(None);
         for provider in &providers {
             match provider.kind {
                 ProviderKind::Anthropic
@@ -578,7 +582,8 @@ mod tests {
                 | ProviderKind::OpenRouter
                 | ProviderKind::Mistral
                 | ProviderKind::Groq
-                | ProviderKind::Unconfigured => {}
+                | ProviderKind::Unconfigured
+                | ProviderKind::CustomOpenAi { .. } => {}
             }
         }
     }

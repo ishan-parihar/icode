@@ -1,0 +1,17 @@
+[
+  {
+    "content": "Run cargo fmt check",
+    "activeForm": "Running cargo fmt check",
+    "status": "in_progress"
+  },
+  {
+    "content": "Run cargo clippy",
+    "activeForm": "Running cargo clippy",
+    "status": "pending"
+  },
+  {
+    "content": "Run cargo test",
+    "activeForm": "Running cargo test",
+    "status": "pending"
+  }
+]

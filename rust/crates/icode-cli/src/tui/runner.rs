@@ -6,6 +6,7 @@ use crate::tui::frecency::FrecencyStore;
 use crate::tui::input::InputState;
 use crate::tui::kitty::KittyKeyboard;
 use crate::tui::layout::render_ui;
+use crate::tui::modal_manager::ActiveModal;
 use crate::tui::Theme;
 use crate::TurnEvent;
 use color_eyre::eyre::Result;
@@ -27,6 +28,12 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 
+enum PaletteAction {
+    NewSession,
+    ForkSession,
+    Exit,
+}
+
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     event_loop: EventLoop,
@@ -34,6 +41,7 @@ pub struct Tui {
     theme: Theme,
     turn_rx: Option<Receiver<TurnEvent>>,
     skill_manager: Arc<SkillManager>,
+    pending_palette_action: Option<PaletteAction>,
 }
 
 impl Tui {
@@ -83,7 +91,9 @@ impl Tui {
         state.prompt.frecency = Some(frecency);
 
         // Show welcome/setup flow when no providers are configured
-        let any_configured = api::scan_provider_auth_status().iter().any(|p| p.has_auth);
+        let any_configured = api::scan_provider_auth_status(None)
+            .iter()
+            .any(|p| p.has_auth);
         if !any_configured {
             state.mode = AppMode::Welcome;
             state.provider_dialog.refresh_providers();
@@ -96,6 +106,7 @@ impl Tui {
             theme,
             turn_rx: None,
             skill_manager,
+            pending_palette_action: None,
         })
     }
 
@@ -121,6 +132,16 @@ impl Tui {
                             render_ui(frame, &mut self.state, self.theme);
                         })?;
                         return Ok(input);
+                    }
+                    if let Some(action) = self.pending_palette_action.take() {
+                        self.terminal.draw(|frame| {
+                            render_ui(frame, &mut self.state, self.theme);
+                        })?;
+                        return Ok(match action {
+                            PaletteAction::NewSession => "__new_session__".to_string(),
+                            PaletteAction::ForkSession => "__fork_session__".to_string(),
+                            PaletteAction::Exit => String::new(),
+                        });
                     }
                 }
                 Ok(Event::Resize(_, _)) => {
@@ -220,20 +241,42 @@ impl Tui {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<String> {
-        if self.state.permission_dialog.open {
-            return self.handle_permission_key(key);
-        }
-
-        if self.state.question_prompt.open {
-            return self.handle_question_key(key);
-        }
-
-        if self.state.model_picker.open {
-            return self.handle_picker_key(key);
-        }
-
-        if self.state.command_palette.open {
-            return self.handle_palette_key(key);
+        let modal = self.state.active_modal.take();
+        if let Some(mut modal) = modal {
+            let result = match &mut modal {
+                ActiveModal::Permission(s) => self.handle_permission_action_from_modal(key, s),
+                ActiveModal::Question(s) => self.handle_question_action_from_modal(key, s),
+                ActiveModal::ModelPicker(s) => self.handle_picker_action_from_modal(key, s),
+                ActiveModal::CommandPalette(s) => self.handle_palette_action_from_modal(key, s),
+                ActiveModal::Mcp(s) => self.handle_mcp_action_from_modal(key, s),
+                ActiveModal::Skills(s) => self.handle_skills_action_from_modal(key, s),
+                ActiveModal::ThemeList(s) => self.handle_theme_list_action_from_modal(key, s),
+                ActiveModal::Plugins(s) => self.handle_plugins_action_from_modal(key, s),
+                ActiveModal::Sessions(s) => self.handle_sessions_action_from_modal(key, s),
+                ActiveModal::MessageAction(s) => {
+                    self.handle_message_action_action_from_modal(key, s)
+                }
+                ActiveModal::Help(s) => self.handle_help_action_from_modal(key, s),
+                ActiveModal::ContextViz(s) => self.handle_context_viz_action_from_modal(key, s),
+                ActiveModal::SessionBranching(s) => self.handle_branching_action_from_modal(key, s),
+                ActiveModal::PromptStash(s) => self.handle_stash_action_from_modal(key, s),
+                ActiveModal::ExportOptions(s) => {
+                    self.handle_export_options_action_from_modal(key, s)
+                }
+                ActiveModal::DebugPanel(s) => self.handle_debug_panel_action_from_modal(key, s),
+                ActiveModal::Provider(s) => self.handle_provider_action_from_modal(key, s),
+                ActiveModal::Workspace(s) => self.handle_workspace_action_from_modal(key, s),
+                ActiveModal::DiffView(s) => self.handle_diff_view_action_from_modal(key, s),
+                ActiveModal::Pager(s) => self.handle_pager_action_from_modal(key, s),
+                ActiveModal::Autocomplete(s) => self.handle_autocomplete_action_from_modal(key, s),
+            };
+            if self.state.active_modal.is_none()
+                && !matches!(key.code, KeyCode::Esc)
+                && result.is_none()
+            {
+                self.state.active_modal = Some(modal);
+            }
+            return result;
         }
 
         let content_width = self.content_width() as usize;
@@ -246,70 +289,6 @@ impl Tui {
             })
             .width as usize)
             .saturating_sub(4);
-
-        if self.state.mcp_dialog.open {
-            return self.handle_mcp_key(key);
-        }
-
-        if self.state.skills_dialog.open {
-            return self.handle_skills_key(key);
-        }
-
-        if self.state.theme_list_dialog.open {
-            return self.handle_theme_list_key(key);
-        }
-
-        if self.state.plugins_dialog.open {
-            return self.handle_plugins_key(key);
-        }
-
-        if self.state.sessions_dialog.open {
-            return self.handle_sessions_key(key);
-        }
-
-        if self.state.message_action_dialog.open {
-            return self.handle_message_action_key(key);
-        }
-
-        if self.state.help_dialog.open {
-            return self.handle_help_key(key);
-        }
-
-        if self.state.context_viz_dialog.open {
-            return self.handle_context_viz_key(key);
-        }
-
-        if self.state.branching_dialog.open {
-            return self.handle_branching_key(key);
-        }
-
-        if self.state.prompt_stash.open {
-            return self.handle_stash_key(key);
-        }
-
-        if self.state.export_options.open {
-            return self.handle_export_options_key(key);
-        }
-
-        if self.state.debug_panel.open {
-            return self.handle_debug_panel_key(key);
-        }
-
-        if self.state.provider_dialog.open {
-            return self.handle_provider_key(key);
-        }
-
-        if self.state.workspace_dialog.open {
-            return self.handle_workspace_key(key);
-        }
-
-        if self.state.pager.open {
-            return self.handle_pager_key(key);
-        }
-
-        if self.state.diff_view.is_some() {
-            return self.handle_diff_view_key(key);
-        }
 
         // Error mode: any key resets to Normal
         if matches!(self.state.mode, AppMode::Error(_)) {
@@ -375,6 +354,10 @@ impl Tui {
                 self.state.selection = None;
                 return None;
             }
+            if self.state.toasts.iter().any(|t| t.persistent) {
+                self.state.dismiss_persistent_toast();
+                return None;
+            }
             return None;
         }
 
@@ -390,15 +373,23 @@ impl Tui {
                 }
             }
             (KeyModifiers::CONTROL, KeyCode::Char('m')) => {
-                self.state.model_picker.open();
+                self.state.open_model_picker();
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
-                self.state.command_palette.open();
+                self.state.open_command_palette();
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
                 self.state.prompt.insert_char('\n');
+                None
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
+                if self.terminal.size().is_ok() {
+                    self.terminal.clear().ok();
+                }
+                self.state
+                    .add_toast("Screen refreshed", crate::tui::app::ToastKind::Info);
                 None
             }
             (KeyModifiers::SHIFT, KeyCode::Enter) => {
@@ -552,12 +543,12 @@ impl Tui {
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
-                self.state.branching_dialog.open(&self.state.session.id);
+                let session_id = self.state.session.id.clone();
+                self.state.open_session_branching(&session_id);
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
-                self.state.prompt_stash.open();
-                self.state.prompt_stash.load();
+                self.state.open_prompt_stash();
                 None
             }
             (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
@@ -610,7 +601,7 @@ impl Tui {
             }
             (KeyModifiers::ALT, KeyCode::Char('e')) => self.open_external_editor(),
             (_, KeyCode::Char('?')) => {
-                self.state.help_dialog.open();
+                self.state.open_help();
                 None
             }
             (_, KeyCode::PageUp) => {
@@ -701,13 +692,12 @@ impl Tui {
                             None
                         }
                         'm' => {
-                            self.state.model_picker.open();
+                            self.state.open_model_picker();
                             None
                         }
                         'n' => Some("__new_session__".to_string()),
                         'l' => {
-                            self.state.sessions_dialog.load_sessions();
-                            self.state.sessions_dialog.open();
+                            self.state.open_sessions();
                             None
                         }
                         'b' => {
@@ -715,11 +705,11 @@ impl Tui {
                             None
                         }
                         'a' => {
-                            self.state.command_palette.open();
+                            self.state.open_command_palette();
                             None
                         }
                         'd' => {
-                            self.state.debug_panel.toggle();
+                            self.state.open_debug_panel();
                             None
                         }
                         _ => {
@@ -796,7 +786,7 @@ impl Tui {
     }
 
     fn handle_question_key(&mut self, key: KeyEvent) -> Option<String> {
-        if let Some(response) = self.state.question_prompt.handle_key(key.code) {
+        if let Some(response) = self.state.question_prompt.handle_key(key) {
             if let Some(tx) = self.state.question_prompt.answer_tx.take() {
                 let _ = tx.send(response.answer.clone());
             }
@@ -1249,6 +1239,21 @@ impl Tui {
                     api::ProviderKind::Mistral => "mistral",
                     api::ProviderKind::Groq => "groq",
                     api::ProviderKind::Unconfigured => return None,
+                    api::ProviderKind::CustomOpenAi { provider, .. } => {
+                        let key = provider.to_lowercase().replace('-', "_");
+                        let mut store = runtime::AuthStore::load();
+                        store.set_api_key(key, api_key.clone());
+                        if let Err(e) = store.save() {
+                            self.state
+                                .add_toast(format!("Failed to save key: {e}"), ToastKind::Error);
+                        } else {
+                            self.state.add_toast(
+                                format!("{display} connected and saved"),
+                                ToastKind::Success,
+                            );
+                        }
+                        return None;
+                    }
                 };
                 let mut store = runtime::AuthStore::load();
                 store.set_api_key(store_key.to_string(), api_key.clone());
@@ -1286,6 +1291,864 @@ impl Tui {
                 self.state.workspace_dialog.apply_filter();
                 None
             }
+        }
+    }
+
+    fn handle_permission_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_permission::PermissionDialogState,
+    ) -> Option<String> {
+        if let Some(action) = s.handle_key(key.code) {
+            use runtime::PermissionPromptDecision;
+            let decision = match action {
+                crate::tui::dialog_permission::PermissionAction::Approve
+                | crate::tui::dialog_permission::PermissionAction::AlwaysAllow => {
+                    PermissionPromptDecision::Allow
+                }
+                crate::tui::dialog_permission::PermissionAction::Deny => {
+                    PermissionPromptDecision::Deny {
+                        reason: "denied by user in TUI".into(),
+                    }
+                }
+            };
+            if let Some(tx) = self.state.permission_response_tx.take() {
+                let _ = tx.send(decision);
+            }
+            self.handle_permission_action(action);
+            self.state.close_modal();
+        } else if matches!(key.code, KeyCode::Esc) {
+            if let Some(tx) = self.state.permission_response_tx.take() {
+                let _ = tx.send(runtime::PermissionPromptDecision::Deny {
+                    reason: "dismissed by user".into(),
+                });
+            }
+            self.state.close_modal();
+        }
+        None
+    }
+
+    fn handle_question_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_question::QuestionPromptState,
+    ) -> Option<String> {
+        if let Some(response) = s.handle_key(key) {
+            if let Some(tx) = s.answer_tx.take() {
+                let _ = tx.send(response.answer.clone());
+            }
+            self.state.close_modal();
+        }
+        None
+    }
+
+    fn handle_picker_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::model_picker::ModelPickerState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Enter) => {
+                s.confirm();
+                if let Some(model) = s.selected.take() {
+                    self.state.session.model.clone_from(&model);
+                    self.state
+                        .add_toast(format!("Model changed to {model}"), ToastKind::Info);
+                    self.state.close_modal();
+                    Some(format!("/model {model}"))
+                } else {
+                    None
+                }
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
+                s.toggle_favorite();
+                None
+            }
+            (_, KeyCode::Char('/')) => {
+                s.type_char('/');
+                None
+            }
+            (_, KeyCode::Up) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                s.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                s.type_char(c);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                s.backspace();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Execute a command palette action directly, without returning a string
+    /// to the main loop.
+    fn dispatch_command_palette_action(&mut self, action: CommandAction) {
+        match action {
+            CommandAction::ToggleThinking => {
+                self.state.toggle_thinking();
+                let status = if self.state.show_thinking {
+                    "Thinking enabled"
+                } else {
+                    "Thinking disabled"
+                };
+                self.state.add_toast(status, ToastKind::Info);
+            }
+            CommandAction::ShowMcp => {
+                self.state.open_mcp();
+            }
+            CommandAction::ShowSkills => {
+                self.state.open_skills();
+            }
+            CommandAction::ShowPlugins => {
+                self.state.open_plugins();
+            }
+            CommandAction::NewSession => {
+                // Return a sentinel that main.rs handles for full session reset
+                self.state.close_modal();
+                self.pending_palette_action = Some(PaletteAction::NewSession);
+            }
+            CommandAction::SwitchSession => {
+                self.state.open_sessions();
+            }
+            CommandAction::ForkSession => {
+                self.state.close_modal();
+                self.pending_palette_action = Some(PaletteAction::ForkSession);
+            }
+            CommandAction::ClearConversation => {
+                self.state.messages.clear();
+                self.state.tools.clear();
+                self.state
+                    .add_toast("Conversation cleared", ToastKind::Info);
+            }
+            CommandAction::Undo => {
+                if self.state.revert.is_some() {
+                    self.handle_undo();
+                }
+            }
+            CommandAction::Redo => {
+                self.handle_redo();
+            }
+            CommandAction::ExportSession => {
+                self.state.open_export_options();
+            }
+            CommandAction::CompactContext => {
+                self.state.add_toast("Context compacted", ToastKind::Info);
+            }
+            CommandAction::ShowContextViz => {
+                self.state.open_context_viz();
+            }
+            CommandAction::ShowPromptStash => {
+                self.state.open_prompt_stash();
+            }
+            CommandAction::OpenExternalEditor => {
+                self.open_external_editor();
+            }
+            CommandAction::ShowExportOptions => {
+                self.state.open_export_options();
+            }
+            CommandAction::ShowProviders => {
+                self.state.open_provider();
+            }
+            CommandAction::ShowWorkspaces => {
+                self.state.open_workspace();
+            }
+            CommandAction::AttachSession => {
+                self.state.open_sessions();
+            }
+            CommandAction::ToggleSidebar => {
+                self.state.sidebar_visible = !self.state.sidebar_visible;
+            }
+            CommandAction::ShowStatus => {
+                self.show_status_pager();
+            }
+            CommandAction::ShowCost => {
+                self.show_cost_pager();
+            }
+            CommandAction::ToggleTheme => {
+                self.state.toggle_theme();
+            }
+            CommandAction::ShowHelp => {
+                self.state.open_help();
+            }
+            CommandAction::Exit => {
+                self.state.close_modal();
+                self.pending_palette_action = Some(PaletteAction::Exit);
+            }
+            CommandAction::SwitchModel => {
+                self.state.open_model_picker();
+            }
+        }
+    }
+
+    fn handle_palette_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::command_palette::CommandPaletteState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Enter) => {
+                // Get the CommandAction from the selected entry before confirming
+                let action = s
+                    .filtered
+                    .get(s.cursor)
+                    .and_then(|&entry_idx| s.entries.get(entry_idx).map(|e| e.action.clone()));
+                s.confirm();
+                self.state.close_modal();
+                if let Some(action) = action {
+                    self.dispatch_command_palette_action(action);
+                }
+                None
+            }
+            (_, KeyCode::Char('/')) => {
+                s.type_char('/');
+                None
+            }
+            (_, KeyCode::Up) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                s.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                s.type_char(c);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                s.backspace();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_mcp_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_mcp::McpDialogState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Enter) => {
+                s.toggle_server();
+                None
+            }
+            (_, KeyCode::Char('/')) => {
+                s.type_char('/');
+                None
+            }
+            (_, KeyCode::Up) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                s.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                s.type_char(c);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                s.backspace();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_skills_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_skills::SkillsDialogState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Char('/')) => {
+                s.type_char('/');
+                None
+            }
+            (_, KeyCode::Up) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                s.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                s.type_char(c);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                s.backspace();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_theme_list_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_theme_list::ThemeListDialogState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Enter) => {
+                if let Some(theme_id) = s.selected_theme_id() {
+                    let theme_id = theme_id.to_string();
+                    s.selected_id = theme_id.clone();
+                    self.state.set_theme(&theme_id);
+                    let display = Theme::display_name(&theme_id);
+                    self.state
+                        .add_toast(format!("Theme: {display}"), ToastKind::Success);
+                }
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Up) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                s.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                s.type_char(c);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                s.backspace();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_plugins_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_plugins::PluginsDialogState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Enter) => {
+                s.toggle_plugin();
+                None
+            }
+            (_, KeyCode::Char('/')) => {
+                s.type_char('/');
+                None
+            }
+            (_, KeyCode::Up) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                s.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                s.type_char(c);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                s.backspace();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_sessions_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_sessions::SessionsDialogState,
+    ) -> Option<String> {
+        use crate::tui::dialog_sessions::SessionAction;
+        match s.handle_key(key) {
+            SessionAction::None => None,
+            SessionAction::Close => {
+                self.state.close_modal();
+                None
+            }
+            SessionAction::StartSearch => None,
+            SessionAction::Switch(path) => {
+                self.state.close_modal();
+                Some(format!("__session_switch__{}", path.display()))
+            }
+        }
+    }
+
+    fn handle_message_action_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_message_actions::MessageActionDialogState,
+    ) -> Option<String> {
+        use crate::tui::MessageAction;
+        match s.handle_key(key.code) {
+            None => None,
+            Some(MessageAction::Revert) => {
+                if self.state.undo_message() {
+                    let text = self
+                        .state
+                        .revert
+                        .as_ref()
+                        .map(|r| r.prompt_text.clone())
+                        .unwrap_or_default();
+                    self.state.prompt.value = text;
+                    self.state.prompt.cursor = self.state.prompt.value.chars().count();
+                }
+                self.state.close_modal();
+                None
+            }
+            Some(MessageAction::Copy) => {
+                let text = s.message_content.clone();
+                self.state.prompt.value = text;
+                self.state.prompt.cursor = self.state.prompt.value.chars().count();
+                self.state.close_modal();
+                None
+            }
+            Some(MessageAction::Fork) => {
+                self.state.close_modal();
+                Some("__fork_session__".to_string())
+            }
+        }
+    }
+
+    fn handle_help_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_help::HelpDialogState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
+                self.state.close_modal();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_context_viz_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_context_viz::ContextVizDialogState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
+                self.state.close_modal();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_branching_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_session_branching::SessionBranchingState,
+    ) -> Option<String> {
+        use crate::tui::dialog_session_branching::BranchingAction;
+        match s.handle_key(key) {
+            BranchingAction::None => None,
+            BranchingAction::Close => {
+                self.state.close_modal();
+                None
+            }
+            BranchingAction::Switch(path) => {
+                self.state.close_modal();
+                Some(format!("__session_switch__{}", path.display()))
+            }
+            BranchingAction::NewBranch => {
+                self.state.close_modal();
+                Some("__fork_session__".to_string())
+            }
+        }
+    }
+
+    fn handle_stash_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_prompt_stash::PromptStashState,
+    ) -> Option<String> {
+        use crate::tui::dialog_prompt_stash::StashAction;
+        match s.handle_key(key) {
+            StashAction::None => None,
+            StashAction::Close => {
+                self.state.close_modal();
+                None
+            }
+            StashAction::StartSearch => None,
+            StashAction::Select(content) => {
+                self.state.prompt.clear();
+                self.state.prompt.insert_str(&content);
+                self.state.close_modal();
+                None
+            }
+            StashAction::SaveNew(name, _content) => {
+                let prompt_text = self.state.prompt.value.clone();
+                if prompt_text.is_empty() {
+                    self.state
+                        .add_toast("No prompt content to stash", ToastKind::Warning);
+                    return None;
+                }
+                s.save_new(&name, &prompt_text);
+                self.state
+                    .add_toast(format!("Prompt stashed as '{name}'"), ToastKind::Success);
+                self.state.close_modal();
+                None
+            }
+            StashAction::Delete(_idx) => {
+                s.delete_entry(_idx);
+                self.state.add_toast("Prompt deleted", ToastKind::Info);
+                None
+            }
+        }
+    }
+
+    fn handle_export_options_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_export_options::ExportOptionsState,
+    ) -> Option<String> {
+        use crate::tui::dialog_export_options::ExportAction;
+        match s.handle_key(key) {
+            ExportAction::None => None,
+            ExportAction::Close => {
+                self.state.close_modal();
+                None
+            }
+            ExportAction::Confirm => {
+                let filename = s.filename.clone();
+                let opts = s.clone();
+                self.state.close_modal();
+                self.perform_export(&filename, &opts);
+                None
+            }
+            ExportAction::Toggle(_) => None,
+            ExportAction::EditFilename => None,
+        }
+    }
+
+    fn handle_debug_panel_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::debug_panel::DebugPanelState,
+    ) -> Option<String> {
+        use crate::tui::debug_panel::DebugAction;
+        match s.handle_key(key) {
+            DebugAction::None => None,
+            DebugAction::Close => {
+                self.state.close_modal();
+                None
+            }
+            DebugAction::NextTab => None,
+            DebugAction::PrevTab => None,
+        }
+    }
+
+    fn handle_provider_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_providers::ProviderDialogState,
+    ) -> Option<String> {
+        use crate::tui::dialog_providers::ProviderAction;
+        match s.handle_key(key) {
+            ProviderAction::None => None,
+            ProviderAction::Close => {
+                self.state.close_modal();
+                None
+            }
+            ProviderAction::Toggle(idx) => {
+                let name = s
+                    .providers
+                    .get(idx)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                self.state
+                    .add_toast(format!("Provider {name} toggled"), ToastKind::Info);
+                None
+            }
+            ProviderAction::ViewDocs(idx) => {
+                let name = s
+                    .providers
+                    .get(idx)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                self.state.add_toast(
+                    format!("Docs for {name}: visit provider website"),
+                    ToastKind::Info,
+                );
+                None
+            }
+            ProviderAction::ConnectProvider(kind, display, api_key) => {
+                let store_key = match kind {
+                    api::ProviderKind::Anthropic => "anthropic",
+                    api::ProviderKind::OpenAi => "openai",
+                    api::ProviderKind::Xai => "xai",
+                    api::ProviderKind::QwenProxy => "qwen_proxy",
+                    api::ProviderKind::Azure => "azure",
+                    api::ProviderKind::Gemini => "gemini",
+                    api::ProviderKind::Bedrock => "bedrock",
+                    api::ProviderKind::OpenRouter => "openrouter",
+                    api::ProviderKind::Mistral => "mistral",
+                    api::ProviderKind::Groq => "groq",
+                    api::ProviderKind::Unconfigured => return None,
+                    api::ProviderKind::CustomOpenAi { provider, .. } => {
+                        let key = provider.to_lowercase().replace('-', "_");
+                        let mut store = runtime::AuthStore::load();
+                        store.set_api_key(key, api_key.clone());
+                        if let Err(e) = store.save() {
+                            self.state
+                                .add_toast(format!("Failed to save key: {e}"), ToastKind::Error);
+                        } else {
+                            self.state.add_toast(
+                                format!("{display} connected and saved"),
+                                ToastKind::Success,
+                            );
+                        }
+                        return None;
+                    }
+                };
+                let mut store = runtime::AuthStore::load();
+                store.set_api_key(store_key.to_string(), api_key.clone());
+                if let Err(e) = store.save() {
+                    self.state
+                        .add_toast(format!("Failed to save key: {e}"), ToastKind::Error);
+                } else {
+                    self.state
+                        .add_toast(format!("{display} connected"), ToastKind::Success);
+                    s.refresh_providers();
+                }
+                None
+            }
+        }
+    }
+
+    fn handle_workspace_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::dialog_workspaces::WorkspaceDialogState,
+    ) -> Option<String> {
+        use crate::tui::dialog_workspaces::WorkspaceAction;
+        match s.handle_key(key) {
+            WorkspaceAction::None => None,
+            WorkspaceAction::Close => {
+                self.state.close_modal();
+                None
+            }
+            WorkspaceAction::Switch(path) => {
+                self.state.close_modal();
+                Some(format!("__workspace_switch__{path}"))
+            }
+            WorkspaceAction::StartSearch => None,
+            WorkspaceAction::Delete(path) => {
+                self.state
+                    .add_toast(format!("Delete workspace: {path}"), ToastKind::Info);
+                s.scan_workspaces();
+                s.apply_filter();
+                None
+            }
+            WorkspaceAction::Create(path) => {
+                self.state
+                    .add_toast(format!("Create workspace: {path}"), ToastKind::Info);
+                s.scan_workspaces();
+                s.apply_filter();
+                None
+            }
+        }
+    }
+
+    fn handle_diff_view_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::widgets::DiffView,
+    ) -> Option<String> {
+        let height = self
+            .terminal
+            .size()
+            .map(|s| s.height as usize)
+            .unwrap_or(24);
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Char('j') | KeyCode::Down) => {
+                s.scroll_down();
+                None
+            }
+            (_, KeyCode::Char('k') | KeyCode::Up) => {
+                s.scroll_up();
+                None
+            }
+            (_, KeyCode::Char('g')) if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                s.go_to_top();
+                None
+            }
+            (_, KeyCode::Char('G')) | (KeyModifiers::SHIFT, KeyCode::Char('g')) => {
+                s.go_to_bottom(height.saturating_sub(6));
+                None
+            }
+            (_, KeyCode::PageDown) => {
+                s.scroll_page_down(height.saturating_sub(6));
+                None
+            }
+            (_, KeyCode::PageUp) => {
+                s.scroll_page_up(height.saturating_sub(6));
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_pager_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::widgets::PagerState,
+    ) -> Option<String> {
+        let height = self
+            .terminal
+            .size()
+            .map(|s| s.height as usize)
+            .unwrap_or(24);
+        let visible_lines = height.saturating_sub(8);
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc | KeyCode::Char('q')) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Char('j') | KeyCode::Down) => {
+                s.scroll_down();
+                None
+            }
+            (_, KeyCode::Char('k') | KeyCode::Up) => {
+                s.scroll_up();
+                None
+            }
+            (_, KeyCode::Char('g')) if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                s.go_to_top();
+                None
+            }
+            (_, KeyCode::Char('G')) | (KeyModifiers::SHIFT, KeyCode::Char('g')) => {
+                s.go_to_bottom(visible_lines);
+                None
+            }
+            (_, KeyCode::PageDown) => {
+                s.scroll_page_down(visible_lines);
+                None
+            }
+            (_, KeyCode::PageUp) => {
+                s.scroll_page_up(visible_lines);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_autocomplete_action_from_modal(
+        &mut self,
+        key: KeyEvent,
+        s: &mut crate::tui::autocomplete::AutocompleteState,
+    ) -> Option<String> {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Esc) => {
+                self.state.close_modal();
+                None
+            }
+            (_, KeyCode::Enter) => {
+                let was_slash_command = s.slash_command_selected;
+                s.select(&mut self.state.prompt);
+                if let Some(ref mut frecency) = self.state.prompt.frecency {
+                    if let Some(entry) = s.entries.get(s.idx) {
+                        frecency.record(&entry.title);
+                    }
+                }
+                self.state.close_modal();
+                if was_slash_command {
+                    s.slash_command_selected = false;
+                    let cmd = self.state.prompt.value.clone();
+                    self.state.prompt.clear();
+                    self.execute_slash_command(&cmd);
+                }
+                None
+            }
+            (_, KeyCode::Tab) => {
+                s.select(&mut self.state.prompt);
+                if let Some(ref mut frecency) = self.state.prompt.frecency {
+                    if let Some(entry) = s.entries.get(s.idx) {
+                        frecency.record(&entry.title);
+                    }
+                }
+                None
+            }
+            (_, KeyCode::BackTab) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Up) => {
+                s.cursor_up();
+                None
+            }
+            (_, KeyCode::Down) => {
+                s.cursor_down();
+                None
+            }
+            (_, KeyCode::Char(c)) => {
+                self.state.prompt.insert_char(c);
+                s.on_char_insert(c, self.state.prompt.cursor, &self.state.prompt.value);
+                None
+            }
+            (_, KeyCode::Backspace) => {
+                self.state.prompt.backspace();
+                s.on_backspace(self.state.prompt.cursor);
+                None
+            }
+            (_, KeyCode::Delete) => {
+                self.state.prompt.delete();
+                None
+            }
+            (_, KeyCode::Left) => {
+                self.state.prompt.move_left();
+                None
+            }
+            (_, KeyCode::Right) => {
+                self.state.prompt.move_right();
+                None
+            }
+            _ => None,
         }
     }
 
@@ -1471,7 +2334,7 @@ impl Tui {
         if let Some(action) = find_slash_command_action(cmd) {
             match action {
                 CommandAction::ShowHelp => {
-                    self.state.help_dialog.open();
+                    self.state.open_help();
                 }
                 CommandAction::ShowStatus => {
                     self.show_status_pager();
@@ -1489,13 +2352,13 @@ impl Tui {
                         .add_toast("Conversation cleared", ToastKind::Info);
                 }
                 CommandAction::SwitchModel => {
-                    self.state.model_picker.open();
+                    self.state.open_model_picker();
                 }
                 CommandAction::ShowExportOptions => {
-                    self.state.export_options.open();
+                    self.state.open_export_options();
                 }
                 CommandAction::SwitchSession => {
-                    self.state.sessions_dialog.open();
+                    self.state.open_sessions();
                 }
                 CommandAction::Undo => {
                     if self.state.revert.is_some() {
@@ -1530,7 +2393,7 @@ impl Tui {
             _ if cmd.starts_with("/theme") => {
                 let args = cmd.strip_prefix("/theme").unwrap_or("").trim();
                 if args.is_empty() || args == "list" {
-                    self.state.theme_list_dialog.open();
+                    self.state.open_theme_list();
                 } else if let Some(theme_name) = args.strip_prefix("set ") {
                     let theme_name = theme_name.trim();
                     if Theme::from_name(theme_name).is_some() {
@@ -1781,6 +2644,16 @@ impl Tui {
                 } else {
                     self.state.show_error(msg);
                 }
+            }
+            TurnEvent::PermissionRequested {
+                request,
+                response_tx,
+            } => {
+                self.state.permission_response_tx = Some(response_tx);
+                self.state.permission_dialog.open(request);
+                self.state.active_modal = Some(ActiveModal::Permission(
+                    self.state.permission_dialog.clone(),
+                ));
             }
         }
     }
@@ -2935,7 +3808,7 @@ mod tests {
         let value_before = input.value.clone();
 
         // For single-select with single question, pressing '1' auto-submits
-        let result = dialog.handle_key(KeyCode::Char('1'));
+        let result = dialog.handle_key(key(KeyCode::Char('1')));
 
         assert_eq!(input.value, value_before);
         // Single question + single select = auto-submits on number key
@@ -2959,10 +3832,10 @@ mod tests {
         ];
         dialog.open(questions, "build".to_string(), "test".to_string(), None);
 
-        dialog.handle_key(KeyCode::Char('1'));
-        dialog.handle_key(KeyCode::Char('1'));
+        dialog.handle_key(key(KeyCode::Char('1')));
+        dialog.handle_key(key(KeyCode::Char('1')));
 
-        let result = dialog.handle_key(KeyCode::Enter);
+        let result = dialog.handle_key(key(KeyCode::Enter));
         assert!(result.is_some());
         assert!(!dialog.open);
     }
@@ -2980,7 +3853,7 @@ mod tests {
         )];
         dialog.open(questions, "build".to_string(), "test".to_string(), None);
 
-        let result = dialog.handle_key(KeyCode::Esc);
+        let result = dialog.handle_key(key(KeyCode::Esc));
         assert!(result.is_some());
         assert!(!dialog.open);
     }
@@ -2999,8 +3872,8 @@ mod tests {
         )];
         dialog.open(questions, "build".to_string(), "test".to_string(), None);
 
-        dialog.handle_key(KeyCode::Down);
-        dialog.handle_key(KeyCode::Up);
+        dialog.handle_key(key(KeyCode::Down));
+        dialog.handle_key(key(KeyCode::Up));
 
         assert!(dialog.open);
     }
@@ -3041,7 +3914,7 @@ mod tests {
         let value_before = input.value.clone();
 
         for c in ['h', 'e', 'l', 'l', 'o'] {
-            dialog.handle_key(KeyCode::Char(c));
+            dialog.handle_key(key(KeyCode::Char(c)));
         }
 
         assert_eq!(input.value, value_before);

@@ -1,7 +1,7 @@
 use crate::tui::app::{AppMode, AppState, ToastKind};
 use crate::tui::autocomplete::render_autocomplete_overlay;
 use crate::tui::command_palette::render_command_palette;
-use crate::tui::debug_panel::render_debug_panel;
+use crate::tui::debug_panel::render_debug_panel_ext;
 use crate::tui::dialog_context_viz::render_context_viz_dialog;
 use crate::tui::dialog_export_options::render_export_options_dialog;
 use crate::tui::dialog_help::render_help_dialog;
@@ -18,6 +18,7 @@ use crate::tui::dialog_skills::render_skills_dialog;
 use crate::tui::dialog_theme_list::render_theme_list_dialog;
 use crate::tui::dialog_workspaces::render_workspace_dialog;
 use crate::tui::home_screen::render_home_content;
+use crate::tui::modal_manager::ActiveModal;
 use crate::tui::model_picker::render_model_picker;
 use crate::tui::prompt_bar::{PromptBar, PromptBarMode};
 use crate::tui::widgets::{render_pager, DiffView, MessageList, Sidebar};
@@ -44,7 +45,11 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     } else {
         area.width
     };
-    let prompt_lines = state.prompt.line_count(content_width as usize).clamp(1, 6);
+    let prompt_lines = if is_welcome {
+        state.prompt.line_count(content_width as usize).clamp(3, 6)
+    } else {
+        state.prompt.line_count(content_width as usize).clamp(1, 6)
+    };
     let prompt_height = (prompt_lines as u16) + 3;
 
     let constraints = vec![
@@ -120,115 +125,87 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     render_footer(frame, state, footer_area);
     render_toasts(frame, state, area);
 
-    if state.model_picker.open {
-        render_model_picker(frame, &mut state.model_picker, area, theme);
+    let theme = state.theme;
+    if state.is_modal_blocking() {
+        crate::tui::popup_utils::render_backdrop(frame, area, theme);
     }
-
-    if state.command_palette.open {
-        render_command_palette(frame, &mut state.command_palette, area, theme);
-    }
-
-    if state.mcp_dialog.open {
-        render_mcp_dialog(frame, &state.mcp_dialog, area, state.theme);
-    }
-
-    if state.skills_dialog.open {
-        render_skills_dialog(frame, &state.skills_dialog, area, theme);
-    }
-
-    render_theme_list_dialog(frame, &state.theme_list_dialog, area, state.theme);
-
-    if state.plugins_dialog.open {
-        render_plugins_dialog(frame, &mut state.plugins_dialog, area, theme);
-    }
-
-    if state.sessions_dialog.open {
-        render_sessions_dialog(frame, &mut state.sessions_dialog, area, state.theme);
-    }
-
-    if state.message_action_dialog.open {
-        render_message_action_dialog(frame, &state.message_action_dialog, area, state.theme);
-    }
-
-    if state.help_dialog.open {
-        render_help_dialog(frame, &state.help_dialog, area, state.theme);
-    }
-
-    if state.context_viz_dialog.open {
-        render_context_viz_dialog(
-            frame,
-            &state.context_viz_dialog,
-            area,
-            state.theme,
-            &state.session.model,
-            state.session.input_tokens,
-            state.session.output_tokens,
-            state.session.cache_create_tokens,
-            state.session.cache_read_tokens,
-            state.context_window,
-            state.session.turns,
-            state.session.message_count,
-            state.session.cumulative_cost,
-            state.session.budget_max,
-            state.session.budget_remaining,
-            state.session.compaction_count,
-            state.session.compaction_removed_messages,
-            &state.session.effort_level,
-        );
-    }
-
-    if state.branching_dialog.open {
-        render_session_branching(frame, &mut state.branching_dialog, area, state.theme);
-    }
-
-    if state.prompt_stash.open {
-        render_prompt_stash_dialog(frame, &state.prompt_stash, area, state.theme);
-    }
-
-    if state.export_options.open {
-        render_export_options_dialog(frame, &state.export_options, area, state.theme);
-    }
-
-    if state.debug_panel.open {
-        render_debug_panel(frame, &state.debug_panel, area, state.theme, state);
-    }
-
-    if state.provider_dialog.open {
-        render_provider_dialog(frame, &mut state.provider_dialog, area, state.theme);
-    }
-
-    if state.workspace_dialog.open {
-        render_workspace_dialog(frame, &mut state.workspace_dialog, area, state.theme);
-    }
-
-    if let Some(ref mut diff_view) = state.diff_view {
-        render_diff_view_overlay(frame, diff_view, area, &state.theme);
-    }
-
-    if state.pager.open {
-        let theme = state.theme;
-        render_pager(frame, &state.pager, area, || {
-            (
-                theme.background_panel,
-                theme.text,
-                theme.border_active,
-                theme.border,
-            )
-        });
-    }
-
-    if state.autocomplete.open {
-        render_autocomplete_overlay(frame, &state.autocomplete, area, state.theme);
-    }
-
-    // Permission dialog — MODAL, renders on top of everything
-    if state.permission_dialog.open {
-        render_permission_dialog(frame, &mut state.permission_dialog, area, state.theme);
-    }
-
-    // Question prompt — MODAL, renders on top of everything
-    if state.question_prompt.open {
-        render_question_prompt(frame, area, &mut state.question_prompt, &state.theme);
+    if let Some(ref mut modal) = state.active_modal {
+        match modal {
+            ActiveModal::Permission(s) => render_permission_dialog(frame, s, area, theme),
+            ActiveModal::Question(s) => render_question_prompt(frame, area, s, &theme),
+            ActiveModal::ModelPicker(s) => render_model_picker(frame, s, area, theme),
+            ActiveModal::CommandPalette(s) => render_command_palette(frame, s, area, theme),
+            ActiveModal::Mcp(s) => render_mcp_dialog(frame, s, area, theme),
+            ActiveModal::Skills(s) => render_skills_dialog(frame, s, area, theme),
+            ActiveModal::ThemeList(s) => render_theme_list_dialog(frame, s, area, theme),
+            ActiveModal::Plugins(s) => render_plugins_dialog(frame, s, area, theme),
+            ActiveModal::Sessions(s) => render_sessions_dialog(frame, s, area, theme),
+            ActiveModal::MessageAction(s) => render_message_action_dialog(frame, s, area, theme),
+            ActiveModal::Help(s) => render_help_dialog(frame, s, area, theme),
+            ActiveModal::ContextViz(s) => render_context_viz_dialog(
+                frame,
+                s,
+                area,
+                theme,
+                &state.session.model,
+                state.session.input_tokens,
+                state.session.output_tokens,
+                state.session.cache_create_tokens,
+                state.session.cache_read_tokens,
+                state.context_window,
+                state.session.turns,
+                state.session.message_count,
+                state.session.cumulative_cost,
+                state.session.budget_max,
+                state.session.budget_remaining,
+                state.session.compaction_count,
+                state.session.compaction_removed_messages,
+                &state.session.effort_level,
+            ),
+            ActiveModal::SessionBranching(s) => render_session_branching(frame, s, area, theme),
+            ActiveModal::PromptStash(s) => render_prompt_stash_dialog(frame, s, area, theme),
+            ActiveModal::ExportOptions(s) => render_export_options_dialog(frame, s, area, theme),
+            ActiveModal::DebugPanel(s) => {
+                let model = state.session.model.clone();
+                let input_tokens = state.session.input_tokens;
+                let output_tokens = state.session.output_tokens;
+                let context_window = state.context_window;
+                let turns = state.session.turns;
+                let message_count = state.session.message_count;
+                let is_streaming = state.is_streaming;
+                let connected = state.connected;
+                let mode = state.mode.clone();
+                render_debug_panel_ext(
+                    frame,
+                    s,
+                    area,
+                    theme,
+                    &model,
+                    input_tokens,
+                    output_tokens,
+                    context_window,
+                    turns,
+                    message_count,
+                    is_streaming,
+                    connected,
+                    &mode,
+                );
+            }
+            ActiveModal::Provider(s) => render_provider_dialog(frame, s, area, theme),
+            ActiveModal::Workspace(s) => render_workspace_dialog(frame, s, area, theme),
+            ActiveModal::DiffView(s) => render_diff_view_overlay(frame, s, area, &theme),
+            ActiveModal::Pager(s) => {
+                render_pager(frame, s, area, || {
+                    (
+                        theme.background_panel,
+                        theme.text,
+                        theme.border_active,
+                        theme.border,
+                    )
+                });
+            }
+            ActiveModal::Autocomplete(s) => render_autocomplete_overlay(frame, s, area, theme),
+        }
     }
 }
 
@@ -662,37 +639,39 @@ fn render_toasts(frame: &mut Frame, state: &AppState, area: Rect) {
     if state.toasts.is_empty() {
         return;
     }
-    let toast = state.toasts.first().unwrap();
-    let (icon, color) = match toast.kind {
-        ToastKind::Info => ("\u{2139}", state.theme.info),
-        ToastKind::Success => ("\u{2713}", state.theme.success),
-        ToastKind::Warning => ("\u{26A0}", state.theme.warning),
-        ToastKind::Error => ("\u{2717}", state.theme.error),
-    };
-    let text = format!(" {icon} {}", toast.message);
-    let toast_width = (text.chars().count() as u16 + 4)
-        .min(60)
-        .min(area.width.saturating_sub(4));
-    let toast_height = 3u16;
-    let toast_x = area.x + area.width.saturating_sub(toast_width + 2);
-    let toast_y = area.y + 2;
-    let toast_area = Rect {
-        x: toast_x,
-        y: toast_y,
-        width: toast_width,
-        height: toast_height,
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color))
-        .border_type(BorderType::Rounded)
-        .style(Style::default().bg(state.theme.background_panel));
-    let inner = block.inner(toast_area);
-    frame.render_widget(block, toast_area);
-    if inner.height > 0 {
-        let para = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
+    let visible = state.toasts.iter().rev().take(3).collect::<Vec<_>>();
+    for (i, toast) in visible.iter().enumerate() {
+        let (icon, color) = match toast.kind {
+            ToastKind::Info => ("\u{2139}", state.theme.info),
+            ToastKind::Success => ("\u{2713}", state.theme.success),
+            ToastKind::Warning => ("\u{26A0}", state.theme.warning),
+            ToastKind::Error => ("\u{2717}", state.theme.error),
+        };
+        let text = format!(" {icon} {}", toast.message);
+        let toast_width = (text.chars().count() as u16 + 4)
+            .min(60)
+            .min(area.width.saturating_sub(4));
+        let toast_height = 3u16;
+        let toast_x = area.x + area.width.saturating_sub(toast_width + 2);
+        let toast_y = area.y + 2 + (i as u16) * 4;
+        let toast_area = Rect {
+            x: toast_x,
+            y: toast_y,
+            width: toast_width,
+            height: toast_height,
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(color))
+            .border_type(BorderType::Rounded)
             .style(Style::default().bg(state.theme.background_panel));
-        frame.render_widget(para, inner);
+        let inner = block.inner(toast_area);
+        frame.render_widget(block, toast_area);
+        if inner.height > 0 {
+            let para = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
+                .style(Style::default().bg(state.theme.background_panel));
+            frame.render_widget(para, inner);
+        }
     }
 }
 

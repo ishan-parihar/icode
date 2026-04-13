@@ -61,7 +61,7 @@ impl ModelPickerState {
             .map(|e| ModelEntry {
                 alias: e.alias.to_string(),
                 canonical: e.canonical.to_string(),
-                provider: e.provider,
+                provider: e.provider.clone(),
                 capabilities: e.capabilities,
             })
             .collect();
@@ -86,7 +86,7 @@ impl ModelPickerState {
             .map(|e| ModelEntry {
                 alias: e.alias.to_string(),
                 canonical: e.canonical.to_string(),
-                provider: e.provider,
+                provider: e.provider.clone(),
                 capabilities: e.capabilities,
             })
             .collect();
@@ -353,7 +353,7 @@ pub fn render_model_picker(
             Style::default()
         };
 
-        let provider_color = provider_color(entry.provider, theme);
+        let provider_color = provider_color(entry.provider.clone(), theme);
         let cap_badge = capability_badge(entry.capabilities, theme);
 
         lines.push(Line::from(vec![

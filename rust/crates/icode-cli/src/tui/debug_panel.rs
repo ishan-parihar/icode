@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::app::AppMode;
 use crate::tui::app::AppState;
 use crate::tui::theme::Theme;
 
@@ -514,6 +515,88 @@ fn render_performance_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &App
     ]));
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+pub fn render_debug_panel_ext(
+    frame: &mut Frame,
+    state: &DebugPanelState,
+    area: Rect,
+    theme: Theme,
+    model: &str,
+    input_tokens: u32,
+    output_tokens: u32,
+    context_window: u32,
+    turns: u32,
+    message_count: usize,
+    is_streaming: bool,
+    connected: bool,
+    mode: &AppMode,
+) {
+    if !state.open {
+        return;
+    }
+
+    let width = dialog_width(area.width).min(area.width.saturating_sub(4));
+    let height = dialog_height(area.height).min(area.height.saturating_sub(4));
+    let x = area.x + (area.width - width) / 2;
+    let y = area.y + (area.height - height) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Debug Panel ");
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Model:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(model),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Tokens:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("  Input: {input_tokens}")),
+        Line::from(format!("  Output: {output_tokens}")),
+        Line::from(format!("  Context: {context_window}")),
+        Line::from(format!(
+            "  Used: {}%",
+            if context_window > 0 {
+                (input_tokens + output_tokens) as f64 / context_window as f64 * 100.0
+            } else {
+                0.0
+            } as u32
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Session:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("  Turns: {turns}")),
+        Line::from(format!("  Messages: {message_count}")),
+        Line::from(format!("  Streaming: {is_streaming}")),
+        Line::from(format!("  Connected: {connected}")),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Mode:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("  {mode:?}")),
+    ];
+
+    let max_lines = inner.height as usize;
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+    }
+
+    let para = Paragraph::new(lines);
+    frame.render_widget(para, inner);
 }
 
 #[cfg(test)]

@@ -44,6 +44,22 @@ pub struct RuntimePluginConfig {
     bundled_root: Option<String>,
 }
 
+/// Configuration for a custom OpenAI-compatible provider defined in settings.json.
+///
+/// Users can add arbitrary providers without code changes:
+/// ```json
+/// { "providers": { "myprovider": { "base_url": "http://localhost:8080/v1" } } }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProviderConfig {
+    /// Custom base URL override. If None, the provider has no default URL
+    /// and clients must rely on the provider's own default or env var.
+    pub base_url: Option<String>,
+    /// Environment variable name for the API key.
+    /// Defaults to `{PROVIDER_NAME_UPPER}_API_KEY` if not specified.
+    pub api_key_env: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimeFeatureConfig {
     hooks: RuntimeHookConfig,
@@ -54,6 +70,7 @@ pub struct RuntimeFeatureConfig {
     permission_mode: Option<ResolvedPermissionMode>,
     permission_rules: RuntimePermissionRuleConfig,
     sandbox: SandboxConfig,
+    providers: BTreeMap<String, ProviderConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -265,6 +282,7 @@ impl ConfigLoader {
             permission_mode: parse_optional_permission_mode(&merged_value)?,
             permission_rules: parse_optional_permission_rules(&merged_value)?,
             sandbox: parse_optional_sandbox_config(&merged_value)?,
+            providers: parse_optional_providers_config(&merged_value)?,
         };
 
         Ok(RuntimeConfig {
@@ -415,6 +433,11 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn sandbox(&self) -> &SandboxConfig {
         &self.sandbox
+    }
+
+    #[must_use]
+    pub fn providers(&self) -> &BTreeMap<String, ProviderConfig> {
+        &self.providers
     }
 }
 
@@ -887,6 +910,34 @@ fn parse_optional_oauth_config(
         manual_redirect_url,
         scopes,
     }))
+}
+
+fn parse_optional_providers_config(
+    root: &JsonValue,
+) -> Result<BTreeMap<String, ProviderConfig>, ConfigError> {
+    let Some(providers_value) = root.as_object().and_then(|object| object.get("providers")) else {
+        return Ok(BTreeMap::new());
+    };
+    let providers = expect_object(providers_value, "merged settings.providers")?;
+    let mut result = BTreeMap::new();
+    for (name, value) in providers {
+        let object = expect_object(value, &format!("merged settings.providers.{name}"))?;
+        let base_url =
+            optional_string(object, "base_url", "merged settings.providers")?.map(str::to_string);
+        let api_key_env = optional_string(object, "api_key_env", "merged settings.providers")?
+            .map_or_else(
+                || format!("{}_API_KEY", name.to_uppercase().replace('-', "_")),
+                str::to_string,
+            );
+        result.insert(
+            name.clone(),
+            ProviderConfig {
+                base_url,
+                api_key_env,
+            },
+        );
+    }
+    Ok(result)
 }
 
 fn parse_mcp_server_config(

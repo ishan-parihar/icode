@@ -44,6 +44,7 @@ mod input;
 mod render;
 mod tui;
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -79,15 +80,15 @@ use runtime::{
     save_oauth_credentials, ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader,
     ConfigSource, ContentBlock, ConversationMessage, ConversationRuntime, McpServerManager,
     McpTool, MessageRole, ModelPricing, OAuthAuthorizationRequest, OAuthConfig,
-    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
-    ResolvedPermissionMode, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
-    UsageTracker,
+    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, PermissionPromptDecision,
+    PermissionRequest, ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError,
+    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde::Deserialize;
 use serde_json::json;
 use tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum TurnEvent {
     ThinkingStarted,
     TokenDelta(String),
@@ -107,6 +108,10 @@ pub enum TurnEvent {
         output_tokens: u32,
     },
     TurnError(String),
+    PermissionRequested {
+        request: PermissionRequest,
+        response_tx: std::sync::mpsc::SyncSender<PermissionPromptDecision>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +159,69 @@ const CLI_OPTION_SUGGESTIONS: &[&str] = &[
 ];
 
 type AllowedToolSet = BTreeSet<String>;
+
+/// Generate a session title from the first user message via a fire-and-forget LLM call.
+fn generate_session_title(
+    user_message: &str,
+    session_path: &std::path::Path,
+    current_title: &str,
+) -> Result<(), String> {
+    use api::{AnthropicClient, AuthSource, InputMessage, MessageRequest};
+
+    let request = MessageRequest {
+        model: "claude-haiku-4-5-20251213".to_string(),
+        max_tokens: 50,
+        messages: vec![InputMessage::user_text(user_message)],
+        system: Some(
+            "Generate a concise title for this conversation (3-6 words). \
+             Return ONLY the title text — no quotes, no explanation, no markdown."
+                .to_string(),
+        ),
+        tools: None,
+        tool_choice: None,
+        stream: false,
+    };
+
+    let client = AnthropicClient::from_auth(AuthSource::None).with_base_url(api::read_base_url());
+
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("failed to create tokio runtime: {e}"))?;
+    let response = rt
+        .block_on(client.send_message(&request))
+        .map_err(|e| format!("LLM request failed: {e}"))?;
+
+    let raw_title = response
+        .content
+        .iter()
+        .find_map(|block| match block {
+            api::OutputContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let title = raw_title
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('`')
+        .chars()
+        .take(100)
+        .collect::<String>();
+
+    if title.is_empty() {
+        return Ok(());
+    }
+
+    // Re-read session to get latest state; only overwrite if still default or unchanged
+    if let Ok(mut session) = runtime::Session::load_from_path(session_path) {
+        if runtime::Session::is_default_title(&session.title) || session.title == current_title {
+            session.set_title(title);
+            let _ = session.save_to_path(session_path); // ensure persistence
+        }
+    }
+
+    Ok(())
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -304,7 +372,10 @@ impl CliOutputFormat {
 
 #[allow(clippy::too_many_lines)]
 fn parse_args(args: &[String]) -> Result<(CliAction, Option<String>), String> {
-    let mut model = default_model_from_config().unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let mut model = tui::TuiConfig::load()
+        .default_model
+        .or_else(default_model_from_config)
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let mut output_format = CliOutputFormat::Text;
     let mut permission_mode = default_permission_mode();
     let mut wants_help = false;
@@ -1749,20 +1820,7 @@ fn run_repl(
 
     let mut tui = tui::Tui::new(&model, permission_mode.as_str(), &cwd)?;
 
-    {
-        let state = tui.state_mut();
-        state.session.id = cli.session.id.clone();
-        let session = cli.runtime.session();
-        state.session.message_count = session.messages.len();
-
-        let tracker = runtime::UsageTracker::from_session(session);
-        let usage = tracker.cumulative_usage();
-        state.session.input_tokens = usage.input_tokens;
-        state.session.output_tokens = usage.output_tokens;
-        state.session.turns = tracker.turns();
-    }
-
-    cli.persist_session()?;
+    // Session is deferred — no session file created on startup
     tui.state_mut().sessions_dialog.load_sessions();
 
     let mut turn_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
@@ -1828,11 +1886,22 @@ fn run_repl(
                         let new_path =
                             sessions_dir()?.join(format!("{new_id}.{PRIMARY_SESSION_EXTENSION}"));
                         new_session.save_to_path(&new_path)?;
-                        cli.runtime.set_session(new_session);
-                        cli.session = SessionHandle {
+                        let runtime = build_runtime(
+                            new_session,
+                            &new_id,
+                            cli.model.clone(),
+                            cli.system_prompt.clone(),
+                            true,
+                            true,
+                            cli.allowed_tools.clone(),
+                            cli.permission_mode,
+                            None,
+                        )?;
+                        cli.runtime = Some(runtime);
+                        cli.session = Some(SessionHandle {
                             id: new_id,
                             path: new_path,
-                        };
+                        });
                         tui.state_mut().messages.clear();
                         tui.state_mut().tools.clear();
                         tui.state_mut().revert = None;
@@ -1846,11 +1915,22 @@ fn run_repl(
                         let new_path =
                             sessions_dir()?.join(format!("{new_id}.{PRIMARY_SESSION_EXTENSION}"));
                         new_session.save_to_path(&new_path)?;
-                        cli.runtime.set_session(new_session);
-                        cli.session = SessionHandle {
+                        let runtime = build_runtime(
+                            new_session,
+                            &new_id,
+                            cli.model.clone(),
+                            cli.system_prompt.clone(),
+                            true,
+                            true,
+                            cli.allowed_tools.clone(),
+                            cli.permission_mode,
+                            None,
+                        )?;
+                        cli.runtime = Some(runtime);
+                        cli.session = Some(SessionHandle {
                             id: new_id.clone(),
                             path: new_path,
-                        };
+                        });
                         {
                             let st = tui.state_mut();
                             st.messages.clear();
@@ -1869,7 +1949,7 @@ fn run_repl(
                             st.prompt.value.clear();
                             st.prompt.cursor = 0;
                             st.session.id = new_id;
-                            st.session.title = "New Session".into();
+                            st.session.title = runtime::Session::default_parent_title();
                             st.session.message_count = 0;
                             st.session.turns = 0;
                             st.session.input_tokens = 0;
@@ -1904,16 +1984,32 @@ fn run_repl(
                         };
 
                         cli.persist_session()?;
+                        let runtime_ref = cli
+                            .runtime
+                            .as_ref()
+                            .expect("runtime should exist when forking");
+                        let forked = runtime_ref.fork_session(None);
                         let new_session = runtime::Session::default();
                         let new_id = new_session.session_id.clone();
                         let new_path =
                             sessions_dir()?.join(format!("{new_id}.{PRIMARY_SESSION_EXTENSION}"));
                         new_session.save_to_path(&new_path)?;
-                        cli.runtime.set_session(new_session);
-                        cli.session = SessionHandle {
+                        let runtime = build_runtime(
+                            new_session,
+                            &new_id,
+                            cli.model.clone(),
+                            cli.system_prompt.clone(),
+                            true,
+                            true,
+                            cli.allowed_tools.clone(),
+                            cli.permission_mode,
+                            None,
+                        )?;
+                        cli.runtime = Some(runtime);
+                        cli.session = Some(SessionHandle {
                             id: new_id.clone(),
                             path: new_path,
-                        };
+                        });
 
                         {
                             let st = tui.state_mut();
@@ -1932,7 +2028,7 @@ fn run_repl(
                             st.session.input_tokens = 0;
                             st.session.output_tokens = 0;
                             st.session.id = new_id;
-                            st.session.title = "New Session".into();
+                            st.session.title = runtime::Session::default_parent_title();
                             st.session.message_count = boundary;
                         }
                         continue;
@@ -1967,11 +2063,22 @@ fn run_repl(
                                     .count() as u32;
                                 cli.persist_session()?;
                                 let session_id = new_session.session_id.clone();
-                                cli.runtime.set_session(new_session);
-                                cli.session = SessionHandle {
+                                let runtime = build_runtime(
+                                    new_session,
+                                    &session_id,
+                                    cli.model.clone(),
+                                    cli.system_prompt.clone(),
+                                    true,
+                                    true,
+                                    cli.allowed_tools.clone(),
+                                    cli.permission_mode,
+                                    None,
+                                )?;
+                                cli.runtime = Some(runtime);
+                                cli.session = Some(SessionHandle {
                                     id: session_id.clone(),
                                     path: switch_path,
-                                };
+                                });
                                 {
                                     let st = tui.state_mut();
                                     st.messages.clear();
@@ -2034,11 +2141,22 @@ fn run_repl(
                                         .count()
                                         as u32;
                                     cli.persist_session()?;
-                                    cli.runtime.set_session(new_session);
-                                    cli.session = SessionHandle {
+                                    let runtime = build_runtime(
+                                        new_session,
+                                        session_id,
+                                        cli.model.clone(),
+                                        cli.system_prompt.clone(),
+                                        true,
+                                        true,
+                                        cli.allowed_tools.clone(),
+                                        cli.permission_mode,
+                                        None,
+                                    )?;
+                                    cli.runtime = Some(runtime);
+                                    cli.session = Some(SessionHandle {
                                         id: session_id.to_string(),
                                         path: switch_path,
-                                    };
+                                    });
                                     {
                                         let st = tui.state_mut();
                                         st.messages.clear();
@@ -2113,8 +2231,16 @@ fn run_repl(
                         continue;
                     }
                     "session.compact" => {
+                        let runtime_ref = cli
+                            .runtime
+                            .as_ref()
+                            .expect("runtime should exist for compact");
+                        let session_ref = cli
+                            .session
+                            .as_ref()
+                            .expect("session should exist for compact");
                         let result = runtime::compact_session(
-                            cli.runtime.session(),
+                            runtime_ref.session(),
                             runtime::CompactionConfig {
                                 max_estimated_tokens: 0,
                                 ..runtime::CompactionConfig::default()
@@ -2123,8 +2249,19 @@ fn run_repl(
                         let removed = result.removed_message_count;
                         let kept = result.compacted_session.messages.len();
                         let skipped = removed == 0;
-                        result.compacted_session.save_to_path(&cli.session.path)?;
-                        cli.runtime.set_session(result.compacted_session);
+                        result.compacted_session.save_to_path(&session_ref.path)?;
+                        let runtime = build_runtime(
+                            result.compacted_session,
+                            &session_ref.id,
+                            cli.model.clone(),
+                            cli.system_prompt.clone(),
+                            true,
+                            true,
+                            cli.allowed_tools.clone(),
+                            cli.permission_mode,
+                            None,
+                        )?;
+                        cli.runtime = Some(runtime);
                         tui.state_mut().messages.clear();
                         tui.state_mut().tools.clear();
                         let msg = if skipped {
@@ -2210,7 +2347,12 @@ fn run_repl(
                         continue;
                     }
                     "cost.show" => {
-                        let tracker = runtime::UsageTracker::from_session(cli.runtime.session());
+                        let Some(runtime) = &cli.runtime else {
+                            tui.state_mut()
+                                .show_error("No active session yet.".to_string());
+                            continue;
+                        };
+                        let tracker = runtime::UsageTracker::from_session(runtime.session());
                         let usage = tracker.cumulative_usage();
                         let cost = format!(
                             "Input tokens: {}\nOutput tokens: {}\nEst. cost: ${:.4}",
@@ -2258,7 +2400,9 @@ fn run_repl(
 
                 match SlashCommand::parse(&trimmed) {
                     Ok(Some(command)) => {
-                        if cli.handle_repl_command(command)? {
+                        if let Some(msg) = cli.handle_repl_command(command)? {
+                            tui.state_mut().add_toast(&msg, tui::ToastKind::Info);
+                            tui.state_mut().session.model.clone_from(&cli.model);
                             cli.persist_session()?;
                         }
                         continue;
@@ -2271,15 +2415,32 @@ fn run_repl(
                 }
 
                 let input_clone = trimmed.clone();
-                let session_path = cli.session.path.clone();
+                cli.ensure_session()?;
+                let session_path = cli
+                    .session
+                    .as_ref()
+                    .expect("session should exist after ensure")
+                    .path
+                    .clone();
                 if let Ok(updated) = runtime::Session::load_from_path(&session_path) {
-                    cli.runtime.set_session(updated);
+                    cli.runtime
+                        .as_mut()
+                        .expect("runtime should exist")
+                        .set_session(updated);
                 }
+
+                // Check if this is the first turn (no assistant messages yet)
+                let is_first_turn = cli.runtime.as_ref().is_some_and(|r| {
+                    r.session()
+                        .messages
+                        .iter()
+                        .all(|m| !matches!(m.role, runtime::MessageRole::Assistant))
+                });
 
                 let (tx, rx) = mpsc::channel();
                 tui.set_turn_receiver(rx);
 
-                let handle = cli.spawn_turn(input_clone, tx, rt.handle().clone());
+                let handle = cli.spawn_turn(input_clone, tx, rt.handle().clone(), is_first_turn);
                 turn_handles.push(handle);
             }
             Err(e) => {
@@ -2321,8 +2482,8 @@ struct LiveCli {
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     system_prompt: Vec<String>,
-    runtime: BuiltRuntime,
-    session: SessionHandle,
+    runtime: Option<BuiltRuntime>,
+    session: Option<SessionHandle>,
 }
 
 struct RuntimePluginState {
@@ -2753,29 +2914,37 @@ impl LiveCli {
         permission_mode: PermissionMode,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let system_prompt = build_system_prompt()?;
+        let _ = enable_tools; // used when session is created lazily
+        Ok(Self {
+            model,
+            allowed_tools,
+            permission_mode,
+            system_prompt,
+            runtime: None,
+            session: None,
+        })
+    }
+
+    fn ensure_session(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.session.is_some() {
+            return Ok(());
+        }
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let runtime = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
             &session.id,
-            model.clone(),
-            system_prompt.clone(),
-            enable_tools,
+            self.model.clone(),
+            self.system_prompt.clone(),
             true,
-            allowed_tools.clone(),
-            permission_mode,
+            true,
+            self.allowed_tools.clone(),
+            self.permission_mode,
             None,
         )?;
-        let cli = Self {
-            model,
-            allowed_tools,
-            permission_mode,
-            system_prompt,
-            runtime,
-            session,
-        };
-        cli.persist_session()?;
-        Ok(cli)
+        self.runtime = Some(runtime);
+        self.session = Some(session);
+        Ok(())
     }
 
     fn startup_banner(&self) -> String {
@@ -2792,40 +2961,50 @@ impl LiveCli {
             || "unknown".to_string(),
             |context| context.git_summary.headline(),
         );
-        let session_path = self.session.path.strip_prefix(Path::new(&cwd)).map_or_else(
-            |_| self.session.path.display().to_string(),
-            |path| path.display().to_string(),
+        let session_id = self
+            .session
+            .as_ref()
+            .map_or("(no session yet)", |s| s.id.as_str());
+        let session_path = self.session.as_ref().map_or_else(
+            || "(not created)".to_string(),
+            |s| {
+                s.path.strip_prefix(Path::new(&cwd)).map_or_else(
+                    |_| s.path.display().to_string(),
+                    |path| path.display().to_string(),
+                )
+            },
         );
         format!(
             "\x1b[38;5;196m\
- ██████╗██╗      █████╗ ██╗    ██╗\n\
-██╔════╝██║     ██╔══██╗██║    ██║\n\
-██║     ██║     ███████║██║ █╗ ██║\n\
-██║     ██║     ██╔══██║██║███╗██║\n\
-╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
- ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
-  \x1b[2mModel\x1b[0m            {}\n\
-  \x1b[2mPermissions\x1b[0m      {}\n\
-  \x1b[2mBranch\x1b[0m           {}\n\
-  \x1b[2mWorkspace\x1b[0m        {}\n\
-  \x1b[2mDirectory\x1b[0m        {}\n\
-  \x1b[2mSession\x1b[0m          {}\n\
-  \x1b[2mAuto-save\x1b[0m        {}\n\n\
-  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
+  ██████╗██╗      █████╗ ██╗    ██╗\n\
+ ██╔════╝██║     ██╔══██╗██║    ██║\n\
+ ██║     ██║     ███████║██║ █╗ ██║\n\
+ ██║     ██║     ██╔══██║██║███╗██║\n\
+ ╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
+  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
+   \x1b[2mModel\x1b[0m            {}\n\
+   \x1b[2mPermissions\x1b[0m      {}\n\
+   \x1b[2mBranch\x1b[0m           {}\n\
+   \x1b[2mWorkspace\x1b[0m        {}\n\
+   \x1b[2mDirectory\x1b[0m        {}\n\
+   \x1b[2mSession\x1b[0m          {}\n\
+   \x1b[2mAuto-save\x1b[0m        {}\n\n\
+   Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
             self.permission_mode.as_str(),
             git_branch,
             workspace,
             cwd,
-            self.session.id,
+            session_id,
             session_path,
         )
     }
 
     fn repl_completion_candidates(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let current_session_id = self.session.as_ref().map(|s| s.id.as_str());
         Ok(slash_command_completion_candidates_with_sessions(
             &self.model,
-            Some(&self.session.id),
+            current_session_id,
             list_managed_sessions()?
                 .into_iter()
                 .map(|session| session.id)
@@ -2838,9 +3017,17 @@ impl LiveCli {
         emit_output: bool,
     ) -> Result<(BuiltRuntime, HookAbortMonitor), Box<dyn std::error::Error>> {
         let hook_abort_signal = runtime::HookAbortSignal::new();
+        let runtime_ref = self
+            .runtime
+            .as_ref()
+            .expect("runtime should exist when preparing a turn");
+        let session_ref = self
+            .session
+            .as_ref()
+            .expect("session should exist when preparing a turn");
         let runtime = build_runtime(
-            self.runtime.session().clone(),
-            &self.session.id,
+            runtime_ref.session().clone(),
+            &session_ref.id,
             self.model.clone(),
             self.system_prompt.clone(),
             true,
@@ -2856,8 +3043,10 @@ impl LiveCli {
     }
 
     fn replace_runtime(&mut self, runtime: BuiltRuntime) -> Result<(), Box<dyn std::error::Error>> {
-        self.runtime.shutdown_plugins()?;
-        self.runtime = runtime;
+        if let Some(ref mut existing) = self.runtime {
+            existing.shutdown_plugins()?;
+        }
+        self.runtime = Some(runtime);
         Ok(())
     }
 
@@ -2890,9 +3079,18 @@ impl LiveCli {
         input: String,
         tx: Sender<TurnEvent>,
         tokio_handle: tokio::runtime::Handle,
+        is_first_turn: bool,
     ) -> thread::JoinHandle<()> {
-        let session = self.runtime.session().clone();
-        let session_id = self.session.id.clone();
+        let runtime_ref = self
+            .runtime
+            .as_ref()
+            .expect("runtime should exist when spawning a turn");
+        let session_ref = self
+            .session
+            .as_ref()
+            .expect("session should exist when spawning a turn");
+        let session = runtime_ref.session().clone();
+        let session_id = session_ref.id.clone();
         let model = self.model.clone();
         let system_prompt = self.system_prompt.clone();
         let allowed_tools = self.allowed_tools.clone();
@@ -2937,7 +3135,7 @@ impl LiveCli {
                     }
                 };
 
-                let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
+                let mut permission_prompter = TuiPermissionPrompter::new(tx.clone());
                 let result = runtime.run_turn(
                     &input,
                     Some(&mut permission_prompter),
@@ -2951,6 +3149,49 @@ impl LiveCli {
                             tracing::warn!("[ERROR] Failed to persist session: {e}");
                         }
                     }
+
+                    // Auto-generate session title on first turn if still default
+                    if is_first_turn {
+                        let session = runtime.session();
+                        let current_title = session.title.clone();
+                        let persistence_path =
+                            session.persistence_path().map(std::path::Path::to_path_buf);
+
+                        // Extract the first user message from the session
+                        let first_user_message = session.messages.iter().find_map(|msg| {
+                            if matches!(msg.role, runtime::MessageRole::User) {
+                                msg.blocks.iter().find_map(|block| match block {
+                                    runtime::ContentBlock::Text { text } => Some(text.clone()),
+                                    _ => None,
+                                })
+                            } else {
+                                None
+                            }
+                        });
+
+                        if let (Some(user_msg), Some(sess_path)) =
+                            (first_user_message, persistence_path)
+                        {
+                            if runtime::Session::is_default_title(&current_title) {
+                                let user_msg_clone = user_msg.clone();
+                                let sess_path_clone = sess_path.clone();
+                                let current_title_clone = current_title.clone();
+
+                                std::thread::spawn(move || {
+                                    if let Err(e) = generate_session_title(
+                                        &user_msg_clone,
+                                        &sess_path_clone,
+                                        &current_title_clone,
+                                    ) {
+                                        tracing::warn!(
+                                            "[auto-title] Failed to generate title: {e}"
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                    }
+
                     let text = final_assistant_text(summary);
                     let tool_calls: Vec<TurnToolCallInfo> = summary
                         .assistant_messages
@@ -3013,6 +3254,7 @@ impl LiveCli {
         input: &str,
         output_format: CliOutputFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.ensure_session()?;
         match output_format {
             CliOutputFormat::Text => self.run_turn(input),
             CliOutputFormat::Json => self.run_prompt_json(input),
@@ -3061,68 +3303,80 @@ impl LiveCli {
     fn handle_repl_command(
         &mut self,
         command: SlashCommand,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         Ok(match command {
             SlashCommand::Help => {
                 println!("{}", render_repl_help());
-                false
+                None
             }
             SlashCommand::Status => {
                 self.print_status();
-                false
+                None
             }
             SlashCommand::Bughunter { scope } => {
                 self.run_bughunter(scope.as_deref())?;
-                false
+                None
             }
             SlashCommand::Commit => {
                 self.run_commit(None)?;
-                false
+                None
             }
             SlashCommand::Pr { context } => {
                 self.run_pr(context.as_deref())?;
-                false
+                None
             }
             SlashCommand::Issue { context } => {
                 self.run_issue(context.as_deref())?;
-                false
+                None
             }
             SlashCommand::Ultraplan { task } => {
                 self.run_ultraplan(task.as_deref())?;
-                false
+                None
             }
             SlashCommand::Teleport { target } => {
                 Self::run_teleport(target.as_deref())?;
-                false
+                None
             }
             SlashCommand::DebugToolCall => {
                 self.run_debug_tool_call(None)?;
-                false
+                None
             }
             SlashCommand::Debug { action } => {
                 let msg = handle_debug_slash_command(action.as_deref())?;
                 println!("{msg}");
-                false
+                None
             }
             SlashCommand::Sandbox => {
                 Self::print_sandbox_status();
-                false
+                None
             }
             SlashCommand::Compact => {
                 self.compact()?;
-                false
+                None
             }
             SlashCommand::Model { model } => self.set_model(model)?,
             SlashCommand::Permissions { mode } => self.set_permissions(mode)?,
-            SlashCommand::Clear { confirm } => self.clear_session(confirm)?,
+            SlashCommand::Clear { confirm } => {
+                if self.clear_session(confirm)? {
+                    Some("Session cleared".to_string())
+                } else {
+                    None
+                }
+            }
             SlashCommand::Cost => {
                 self.print_cost();
-                false
+                None
             }
-            SlashCommand::Resume { session_path } => self.resume_session(session_path)?,
+            SlashCommand::Resume { session_path } => {
+                if self.resume_session(session_path)? {
+                    Some("Session resumed".to_string())
+                } else {
+                    None
+                }
+            }
             SlashCommand::Config { section } => {
                 Self::print_config(section.as_deref())?;
-                false
+                None
             }
             SlashCommand::Mcp { action, target } => {
                 let args = match (action.as_deref(), target.as_deref()) {
@@ -3132,41 +3386,49 @@ impl LiveCli {
                     (None, Some(target)) => Some(target.to_string()),
                 };
                 Self::print_mcp(args.as_deref())?;
-                false
+                None
             }
             SlashCommand::Memory => {
                 Self::print_memory()?;
-                false
+                None
             }
             SlashCommand::Init => {
                 run_init()?;
-                false
+                None
             }
             SlashCommand::Diff => {
                 Self::print_diff()?;
-                false
+                None
             }
             SlashCommand::Version => {
                 Self::print_version();
-                false
+                None
             }
             SlashCommand::Export { path } => {
                 self.export_session(path.as_deref())?;
-                false
+                None
             }
             SlashCommand::Session { action, target } => {
-                self.handle_session_command(action.as_deref(), target.as_deref())?
+                if self.handle_session_command(action.as_deref(), target.as_deref())? {
+                    Some("Session command completed".to_string())
+                } else {
+                    None
+                }
             }
             SlashCommand::Plugins { action, target } => {
-                self.handle_plugins_command(action.as_deref(), target.as_deref())?
+                if self.handle_plugins_command(action.as_deref(), target.as_deref())? {
+                    Some("Plugins command completed".to_string())
+                } else {
+                    None
+                }
             }
             SlashCommand::Agents { args } => {
                 Self::print_agents(args.as_deref())?;
-                false
+                None
             }
             SlashCommand::Skills { args } => {
                 Self::print_skills(args.as_deref())?;
-                false
+                None
             }
             SlashCommand::Doctor
             | SlashCommand::Login
@@ -3214,36 +3476,50 @@ impl LiveCli {
             | SlashCommand::Revert { .. }
             | SlashCommand::CrashReport => {
                 tracing::warn!("Use the TUI command palette (Ctrl+P) or /crash-report in the TUI.");
-                false
+                None
             }
             SlashCommand::Unknown(name) => {
                 tracing::warn!("{}", format_unknown_slash_command(&name));
-                false
+                None
             }
         })
     }
 
     fn persist_session(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.runtime.session().save_to_path(&self.session.path)?;
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
+        runtime.session().save_to_path(&session.path)?;
         Ok(())
     }
 
     fn print_status(&self) {
-        let cumulative = self.runtime.usage().cumulative_usage();
-        let latest = self.runtime.usage().current_turn_usage();
+        let Some(runtime) = &self.runtime else {
+            println!("No active session yet. Submit a prompt to create one.");
+            return;
+        };
+        let Some(session) = &self.session else {
+            println!("No active session yet.");
+            return;
+        };
+        let cumulative = runtime.usage().cumulative_usage();
+        let latest = runtime.usage().current_turn_usage();
         println!(
             "{}",
             format_status_report(
                 &self.model,
                 StatusUsage {
-                    message_count: self.runtime.session().messages.len(),
-                    turns: self.runtime.usage().turns(),
+                    message_count: runtime.session().messages.len(),
+                    turns: runtime.usage().turns(),
                     latest,
                     cumulative,
-                    estimated_tokens: self.runtime.estimated_tokens(),
+                    estimated_tokens: runtime.estimated_tokens(),
                 },
                 self.permission_mode.as_str(),
-                &status_context(Some(&self.session.path)).expect("status context should load"),
+                &status_context(Some(&session.path)).expect("status context should load"),
             )
         );
     }
@@ -3260,66 +3536,76 @@ impl LiveCli {
         );
     }
 
-    fn set_model(&mut self, model: Option<String>) -> Result<bool, Box<dyn std::error::Error>> {
+    fn set_model(
+        &mut self,
+        model: Option<String>,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let Some(model) = model else {
-            println!(
-                "{}",
-                format_model_report(
-                    &self.model,
-                    self.runtime.session().messages.len(),
-                    self.runtime.usage().turns(),
-                )
-            );
-            return Ok(false);
+            let msg_count = self
+                .runtime
+                .as_ref()
+                .map_or(0, |r| r.session().messages.len());
+            let turns = self.runtime.as_ref().map_or(0, |r| r.usage().turns());
+            return Ok(Some(format!(
+                "Current model: {} ({} messages, {} turns)",
+                &self.model, msg_count, turns
+            )));
         };
 
         let model = resolve_model_alias(&model).to_string();
 
         if model == self.model {
-            println!(
-                "{}",
-                format_model_report(
-                    &self.model,
-                    self.runtime.session().messages.len(),
-                    self.runtime.usage().turns(),
-                )
-            );
-            return Ok(false);
+            let msg_count = self
+                .runtime
+                .as_ref()
+                .map_or(0, |r| r.session().messages.len());
+            let turns = self.runtime.as_ref().map_or(0, |r| r.usage().turns());
+            return Ok(Some(format!(
+                "Already using {} ({} messages, {} turns)",
+                &self.model, msg_count, turns
+            )));
         }
 
         let previous = self.model.clone();
-        let session = self.runtime.session().clone();
-        let message_count = session.messages.len();
-        let runtime = build_runtime(
-            session,
-            &self.session.id,
-            model.clone(),
-            self.system_prompt.clone(),
-            true,
-            true,
-            self.allowed_tools.clone(),
-            self.permission_mode,
-            None,
-        )?;
-        self.replace_runtime(runtime)?;
+        let message_count = if let Some(runtime_ref) = self.runtime.as_ref() {
+            let session_ref = self
+                .session
+                .as_ref()
+                .expect("session should exist when runtime exists");
+            let session = runtime_ref.session().clone();
+            let message_count = session.messages.len();
+            let runtime = build_runtime(
+                session,
+                &session_ref.id,
+                model.clone(),
+                self.system_prompt.clone(),
+                true,
+                true,
+                self.allowed_tools.clone(),
+                self.permission_mode,
+                None,
+            )?;
+            self.replace_runtime(runtime)?;
+            message_count
+        } else {
+            // No runtime yet — no conversation state to preserve. Just update the model.
+            0
+        };
         self.model.clone_from(&model);
-        println!(
-            "{}",
-            format_model_switch_report(&previous, &model, message_count)
-        );
-        Ok(true)
+        Ok(Some(format!(
+            "Model: {previous} → {model} ({message_count} messages)"
+        )))
     }
 
     fn set_permissions(
         &mut self,
         mode: Option<String>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let Some(mode) = mode else {
-            println!(
-                "{}",
-                format_permissions_report(self.permission_mode.as_str())
-            );
-            return Ok(false);
+            return Ok(Some(format!(
+                "Current permission mode: {}",
+                self.permission_mode.as_str()
+            )));
         };
 
         let normalized = normalize_permission_mode(&mode).ok_or_else(|| {
@@ -3329,30 +3615,31 @@ impl LiveCli {
         })?;
 
         if normalized == self.permission_mode.as_str() {
-            println!("{}", format_permissions_report(normalized));
-            return Ok(false);
+            return Ok(Some(format!("Already using permission mode: {normalized}")));
         }
 
         let previous = self.permission_mode.as_str().to_string();
-        let session = self.runtime.session().clone();
         self.permission_mode = permission_mode_from_label(normalized);
-        let runtime = build_runtime(
-            session,
-            &self.session.id,
-            self.model.clone(),
-            self.system_prompt.clone(),
-            true,
-            true,
-            self.allowed_tools.clone(),
-            self.permission_mode,
-            None,
-        )?;
-        self.replace_runtime(runtime)?;
-        println!(
-            "{}",
-            format_permissions_switch_report(&previous, normalized)
-        );
-        Ok(true)
+        if let Some(runtime_ref) = self.runtime.as_ref() {
+            let session_ref = self
+                .session
+                .as_ref()
+                .expect("session should exist when runtime exists");
+            let session = runtime_ref.session().clone();
+            let runtime = build_runtime(
+                session,
+                &session_ref.id,
+                self.model.clone(),
+                self.system_prompt.clone(),
+                true,
+                true,
+                self.allowed_tools.clone(),
+                self.permission_mode,
+                None,
+            )?;
+            self.replace_runtime(runtime)?;
+        }
+        Ok(Some(format!("Permission: {previous} → {normalized}")))
     }
 
     fn clear_session(&mut self, confirm: bool) -> Result<bool, Box<dyn std::error::Error>> {
@@ -3365,10 +3652,10 @@ impl LiveCli {
 
         let previous_session = self.session.clone();
         let session_state = Session::new();
-        self.session = create_managed_session_handle(&session_state.session_id)?;
+        let session = create_managed_session_handle(&session_state.session_id)?;
         let runtime = build_runtime(
-            session_state.with_persistence_path(self.session.path.clone()),
-            &self.session.id,
+            session_state.with_persistence_path(session.path.clone()),
+            &session.id,
             self.model.clone(),
             self.system_prompt.clone(),
             true,
@@ -3378,20 +3665,28 @@ impl LiveCli {
             None,
         )?;
         self.replace_runtime(runtime)?;
+        self.session = Some(session);
+        let prev_id = previous_session
+            .as_ref()
+            .map_or("(none)", |s| s.id.as_str());
         println!(
             "Session cleared\n  Mode             fresh session\n  Previous session {}\n  Resume previous  /resume {}\n  Preserved model  {}\n  Permission mode  {}\n  New session      {}\n  Session file     {}",
-            previous_session.id,
-            previous_session.id,
+            prev_id,
+            prev_id,
             self.model,
             self.permission_mode.as_str(),
-            self.session.id,
-            self.session.path.display(),
+            self.session.as_ref().unwrap().id,
+            self.session.as_ref().unwrap().path.display(),
         );
         Ok(true)
     }
 
     fn print_cost(&self) {
-        let cumulative = self.runtime.usage().cumulative_usage();
+        let Some(runtime) = &self.runtime else {
+            println!("No active session yet. Submit a prompt to track cost.");
+            return;
+        };
+        let cumulative = runtime.usage().cumulative_usage();
         println!("{}", format_cost_report(cumulative));
     }
 
@@ -3420,16 +3715,16 @@ impl LiveCli {
             None,
         )?;
         self.replace_runtime(runtime)?;
-        self.session = SessionHandle {
+        self.session = Some(SessionHandle {
             id: session_id,
             path: handle.path,
-        };
+        });
         println!(
             "{}",
             format_resume_report(
-                &self.session.path.display().to_string(),
+                &self.session.as_ref().unwrap().path.display().to_string(),
                 message_count,
-                self.runtime.usage().turns(),
+                self.runtime.as_ref().unwrap().usage().turns(),
             )
         );
         Ok(true)
@@ -3476,12 +3771,16 @@ impl LiveCli {
         &self,
         requested_path: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let export_path = resolve_export_path(requested_path, self.runtime.session())?;
-        fs::write(&export_path, render_export_text(self.runtime.session()))?;
+        let Some(runtime) = &self.runtime else {
+            println!("No active session to export.");
+            return Ok(());
+        };
+        let export_path = resolve_export_path(requested_path, runtime.session())?;
+        fs::write(&export_path, render_export_text(runtime.session()))?;
         println!(
             "Export\n  Result           wrote transcript\n  File             {}\n  Messages         {}",
             export_path.display(),
-            self.runtime.session().messages.len(),
+            runtime.session().messages.len(),
         );
         Ok(())
     }
@@ -3493,7 +3792,11 @@ impl LiveCli {
     ) -> Result<bool, Box<dyn std::error::Error>> {
         match action {
             None | Some("list") => {
-                println!("{}", render_session_list(&self.session.id)?);
+                let id = self
+                    .session
+                    .as_ref()
+                    .map_or("(no session)", |s| s.id.as_str());
+                println!("{}", render_session_list(id)?);
                 Ok(false)
             }
             Some("switch") => {
@@ -3517,21 +3820,29 @@ impl LiveCli {
                     None,
                 )?;
                 self.replace_runtime(runtime)?;
-                self.session = SessionHandle {
+                self.session = Some(SessionHandle {
                     id: session_id,
                     path: handle.path,
-                };
+                });
                 println!(
                     "Session switched\n  Active session   {}\n  File             {}\n  Messages         {}",
-                    self.session.id,
-                    self.session.path.display(),
+                    self.session.as_ref().unwrap().id,
+                    self.session.as_ref().unwrap().path.display(),
                     message_count,
                 );
                 Ok(true)
             }
             Some("fork") => {
-                let forked = self.runtime.fork_session(target.map(ToOwned::to_owned));
-                let parent_session_id = self.session.id.clone();
+                let Some(runtime_ref) = self.runtime.as_ref() else {
+                    println!("No active session to fork. Send a message first.");
+                    return Ok(false);
+                };
+                let session_ref = self
+                    .session
+                    .as_ref()
+                    .expect("session should exist when runtime exists");
+                let forked = runtime_ref.fork_session(target.map(ToOwned::to_owned));
+                let parent_session_id = session_ref.id.clone();
                 let handle = create_managed_session_handle(&forked.session_id)?;
                 let branch_name = forked
                     .fork
@@ -3552,13 +3863,13 @@ impl LiveCli {
                     None,
                 )?;
                 self.replace_runtime(runtime)?;
-                self.session = handle;
+                self.session = Some(handle);
                 println!(
                     "Session forked\n  Parent session   {}\n  Active session   {}\n  Branch           {}\n  File             {}\n  Messages         {}",
                     parent_session_id,
-                    self.session.id,
+                    self.session.as_ref().unwrap().id,
                     branch_name.as_deref().unwrap_or("(unnamed)"),
-                    self.session.path.display(),
+                    self.session.as_ref().unwrap().path.display(),
                     message_count,
                 );
                 Ok(true)
@@ -3590,9 +3901,17 @@ impl LiveCli {
     }
 
     fn reload_runtime_features(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(runtime_ref) = self.runtime.as_ref() else {
+            // No runtime yet — nothing to reload.
+            return Ok(());
+        };
+        let session_ref = self
+            .session
+            .as_ref()
+            .expect("session should exist when runtime exists");
         let runtime = build_runtime(
-            self.runtime.session().clone(),
-            &self.session.id,
+            runtime_ref.session().clone(),
+            &session_ref.id,
             self.model.clone(),
             self.system_prompt.clone(),
             true,
@@ -3606,13 +3925,21 @@ impl LiveCli {
     }
 
     fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let result = self.runtime.compact(CompactionConfig::default());
+        let Some(runtime_ref) = self.runtime.as_ref() else {
+            println!("No active session to compact.");
+            return Ok(());
+        };
+        let session_ref = self
+            .session
+            .as_ref()
+            .expect("session should exist when runtime exists");
+        let result = runtime_ref.compact(CompactionConfig::default());
         let removed = result.removed_message_count;
         let kept = result.compacted_session.messages.len();
         let skipped = removed == 0;
         let runtime = build_runtime(
             result.compacted_session,
-            &self.session.id,
+            &session_ref.id,
             self.model.clone(),
             self.system_prompt.clone(),
             true,
@@ -3633,10 +3960,18 @@ impl LiveCli {
         enable_tools: bool,
         progress: Option<InternalPromptProgressReporter>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let session = self.runtime.session().clone();
+        let runtime_ref = self
+            .runtime
+            .as_ref()
+            .expect("runtime should exist for internal prompt");
+        let session_ref = self
+            .session
+            .as_ref()
+            .expect("session should exist for internal prompt");
+        let session = runtime_ref.session().clone();
         let mut runtime = build_runtime(
             session,
-            &self.session.id,
+            &session_ref.id,
             self.model.clone(),
             self.system_prompt.clone(),
             enable_tools,
@@ -3682,7 +4017,11 @@ impl LiveCli {
 
     fn run_debug_tool_call(&self, args: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         validate_no_args("/debug-tool-call", args)?;
-        println!("{}", render_last_tool_debug_report(self.runtime.session())?);
+        let Some(runtime) = &self.runtime else {
+            println!("No active session yet.");
+            return Ok(());
+        };
+        println!("{}", render_last_tool_debug_report(runtime.session())?);
         Ok(())
     }
 
@@ -5297,6 +5636,7 @@ fn build_runtime_with_plugin_state(
             allowed_tools.clone(),
             tool_registry.clone(),
             progress_reporter,
+            Some(feature_config.providers()),
         )?,
         CliToolExecutor::new(
             allowed_tools.clone(),
@@ -5396,6 +5736,36 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
     }
 }
 
+/// TUI-aware permission prompter that routes requests to the main thread
+/// via MPSC channels and blocks until the user responds via a modal dialog.
+struct TuiPermissionPrompter {
+    turn_tx: std::sync::mpsc::Sender<TurnEvent>,
+}
+
+impl TuiPermissionPrompter {
+    fn new(turn_tx: std::sync::mpsc::Sender<TurnEvent>) -> Self {
+        Self { turn_tx }
+    }
+}
+
+impl runtime::PermissionPrompter for TuiPermissionPrompter {
+    fn decide(
+        &mut self,
+        request: &runtime::PermissionRequest,
+    ) -> runtime::PermissionPromptDecision {
+        let (response_tx, response_rx) = std::sync::mpsc::sync_channel(1);
+        let _ = self.turn_tx.send(TurnEvent::PermissionRequested {
+            request: request.clone(),
+            response_tx,
+        });
+        response_rx
+            .recv()
+            .unwrap_or(runtime::PermissionPromptDecision::Deny {
+                reason: "TUI prompt disconnected".into(),
+            })
+    }
+}
+
 struct AnthropicRuntimeClient {
     runtime: tokio::runtime::Runtime,
     client: ProviderClient,
@@ -5416,8 +5786,10 @@ impl AnthropicRuntimeClient {
         allowed_tools: Option<AllowedToolSet>,
         tool_registry: GlobalToolRegistry,
         progress_reporter: Option<InternalPromptProgressReporter>,
+        providers: Option<&BTreeMap<String, runtime::ProviderConfig>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = ProviderClient::from_model(&model).map_err(|e| e.to_string())?;
+        let client = ProviderClient::from_model_with_providers(&model, providers, None)
+            .map_err(|e| e.to_string())?;
         let client = client.with_prompt_cache(PromptCache::new(session_id));
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

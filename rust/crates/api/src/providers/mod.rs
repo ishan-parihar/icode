@@ -1,8 +1,9 @@
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
-use runtime::AuthStore;
+use runtime::{AuthStore, ProviderConfig};
 
 use crate::error::ApiError;
 use crate::types::{MessageRequest, MessageResponse};
@@ -34,7 +35,7 @@ pub trait Provider {
     ) -> ProviderFuture<'a, Self::Stream>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     Anthropic,
     Xai,
@@ -46,11 +47,19 @@ pub enum ProviderKind {
     OpenRouter,
     Mistral,
     Groq,
+    /// Generic OpenAI-compatible provider for arbitrary `provider/model` configurations.
+    /// Enables any OpenAI-compatible API endpoint without code changes.
+    CustomOpenAi {
+        /// Provider identifier (e.g., "myprovider" from "myprovider/mymodel")
+        provider: String,
+        /// Model name (e.g., "mymodel" from "myprovider/mymodel")
+        model: String,
+    },
     /// No provider is configured; credentials are missing for all providers.
     Unconfigured,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderMetadata {
     pub provider: ProviderKind,
     pub auth_env: &'static str,
@@ -433,7 +442,7 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
         .iter()
         .find(|e| e.canonical == canonical || e.alias == model)?;
     Some(ProviderMetadata {
-        provider: entry.provider,
+        provider: entry.provider.clone(),
         auth_env: entry.auth_env,
         base_url_env: entry.base_url_env,
         default_base_url: entry.default_base_url,
@@ -441,7 +450,21 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
 }
 
 #[must_use]
-pub fn detect_provider_kind(model: &str) -> ProviderKind {
+pub fn detect_provider_kind(
+    model: &str,
+    providers: Option<&BTreeMap<String, ProviderConfig>>,
+) -> ProviderKind {
+    if let Some((prefix, rest)) = model.split_once('/') {
+        if let Some(providers_map) = providers {
+            if providers_map.contains_key(prefix) {
+                return ProviderKind::CustomOpenAi {
+                    provider: prefix.to_string(),
+                    model: rest.to_string(),
+                };
+            }
+        }
+    }
+
     if let Some(metadata) = metadata_for_model(model) {
         return metadata.provider;
     }
@@ -463,6 +486,19 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     }
     if lower.starts_with("groq/") {
         return ProviderKind::Groq;
+    }
+    if lower.starts_with("qwen/") {
+        return ProviderKind::QwenProxy;
+    }
+    if let Some((prefix, rest)) = model.split_once('/') {
+        let env_key = format!("{}_API_KEY", prefix.to_uppercase().replace('-', "_"));
+        let env_base = format!("{}_BASE_URL", prefix.to_uppercase().replace('-', "_"));
+        if std::env::var(&env_key).is_ok() || std::env::var(&env_base).is_ok() {
+            return ProviderKind::CustomOpenAi {
+                provider: prefix.to_string(),
+                model: rest.to_string(),
+            };
+        }
     }
     if anthropic::has_auth_from_env_or_saved().unwrap_or(false) {
         return ProviderKind::Anthropic;
@@ -511,6 +547,8 @@ pub fn capabilities_for_model(model: &str) -> ModelCapabilities {
                     ModelCapabilities::new(128_000, 8_192, true, true, false, 2.0, 6.0, 0.0, 0.0)
                 } else if canonical.starts_with("groq/") {
                     ModelCapabilities::new(128_000, 32_768, true, true, false, 0.0, 0.0, 0.0, 0.0)
+                } else if canonical.starts_with("qwen") {
+                    ModelCapabilities::new(262_144, 65_536, true, true, true, 0.20, 0.60, 0.0, 0.0)
                 } else {
                     ModelCapabilities::new(128_000, 8_192, false, true, false, 0.20, 0.60, 0.0, 0.0)
                 }
@@ -532,10 +570,9 @@ pub fn list_all_models() -> impl Iterator<Item = &'static RegistryEntry> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderAuthStatus {
     pub kind: ProviderKind,
-    pub display_name: &'static str,
-    pub env_vars: Vec<&'static str>,
+    pub display_name: Cow<'static, str>,
+    pub env_vars: Vec<Cow<'static, str>>,
     pub has_auth: bool,
-    /// Number of models available for this provider.
     pub model_count: usize,
 }
 
@@ -554,27 +591,29 @@ const PROVIDER_DISPLAY_NAMES: &[(ProviderKind, &str)] = &[
 ];
 
 /// Maps a `ProviderKind` to its `AuthStore` string key.
-fn auth_store_key(kind: ProviderKind) -> &'static str {
+fn auth_store_key(kind: &ProviderKind) -> Cow<'_, str> {
     match kind {
-        ProviderKind::Anthropic => "anthropic",
-        ProviderKind::OpenAi => "openai",
-        ProviderKind::Xai => "xai",
-        ProviderKind::QwenProxy => "qwen_proxy",
-        ProviderKind::Azure => "azure",
-        ProviderKind::Gemini => "gemini",
-        ProviderKind::Bedrock => "bedrock",
-        ProviderKind::OpenRouter => "openrouter",
-        ProviderKind::Mistral => "mistral",
-        ProviderKind::Groq => "groq",
-        ProviderKind::Unconfigured => "unconfigured",
+        ProviderKind::Anthropic => Cow::Borrowed("anthropic"),
+        ProviderKind::OpenAi => Cow::Borrowed("openai"),
+        ProviderKind::Xai => Cow::Borrowed("xai"),
+        ProviderKind::QwenProxy => Cow::Borrowed("qwen_proxy"),
+        ProviderKind::Azure => Cow::Borrowed("azure"),
+        ProviderKind::Gemini => Cow::Borrowed("gemini"),
+        ProviderKind::Bedrock => Cow::Borrowed("bedrock"),
+        ProviderKind::OpenRouter => Cow::Borrowed("openrouter"),
+        ProviderKind::Mistral => Cow::Borrowed("mistral"),
+        ProviderKind::Groq => Cow::Borrowed("groq"),
+        ProviderKind::CustomOpenAi { provider, .. } => {
+            Cow::Owned(provider.to_lowercase().replace('-', "_"))
+        }
+        ProviderKind::Unconfigured => Cow::Borrowed("unconfigured"),
     }
 }
 
 /// Check if a provider has auth configured via env vars OR stored `AuthStore` keys.
 /// Returns true if EITHER source has a non-empty key configured.
 #[must_use]
-pub fn check_provider_auth(kind: ProviderKind) -> bool {
-    // Check env vars first (existing logic)
+pub fn check_provider_auth(kind: &ProviderKind) -> bool {
     let has_env_auth = match kind {
         ProviderKind::Bedrock => {
             std::env::var("AWS_ACCESS_KEY_ID").is_ok()
@@ -582,11 +621,14 @@ pub fn check_provider_auth(kind: ProviderKind) -> bool {
                 || std::env::var("AWS_PROFILE").is_ok()
                 || std::env::var("AWS_BEARER_TOKEN_BEDROCK").is_ok()
         }
+        ProviderKind::CustomOpenAi { provider, .. } => {
+            let env_key = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+            std::env::var(&env_key).map(|v| !v.is_empty()).unwrap_or(false)
+        }
         other => {
-            // Collect unique env vars for this provider kind from the registry
             let env_vars: HashSet<&'static str> = MODEL_REGISTRY
                 .iter()
-                .filter(|e| e.provider == other)
+                .filter(|e| e.provider == *other)
                 .map(|e| e.auth_env)
                 .collect();
             env_vars
@@ -599,19 +641,18 @@ pub fn check_provider_auth(kind: ProviderKind) -> bool {
         return true;
     }
 
-    // Check AuthStore as additional source
     let store = AuthStore::load();
-    store.api_key_for(auth_store_key(kind)).is_some()
+    store.api_key_for(auth_store_key(kind).as_ref()).is_some()
 }
 
 /// Scan all registered providers and report which ones have authentication
 /// available via environment variables or stored keys.
 ///
-/// This is the provider-agnostic equivalent of opencode's auth resolution:
-/// instead of hardcoding Anthropic credential checks, it iterates over every
-/// provider in the model registry and checks their declared env vars.
+/// When `providers` config is supplied, also includes config-driven providers.
 #[must_use]
-pub fn scan_provider_auth_status() -> Vec<ProviderAuthStatus> {
+pub fn scan_provider_auth_status(
+    providers: Option<&BTreeMap<String, ProviderConfig>>,
+) -> Vec<ProviderAuthStatus> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
 
@@ -619,9 +660,8 @@ pub fn scan_provider_auth_status() -> Vec<ProviderAuthStatus> {
         if seen.contains(kind) {
             continue;
         }
-        seen.insert(*kind);
+        seen.insert(kind.clone());
 
-        // Collect all unique env vars for this provider kind
         let env_vars: Vec<&'static str> = MODEL_REGISTRY
             .iter()
             .filter(|e| e.provider == *kind)
@@ -635,16 +675,33 @@ pub fn scan_provider_auth_status() -> Vec<ProviderAuthStatus> {
             .filter(|e| e.provider == *kind)
             .count();
 
-        // Use combined env + AuthStore check
-        let has_auth = check_provider_auth(*kind);
+        let has_auth = check_provider_auth(kind);
 
         result.push(ProviderAuthStatus {
-            kind: *kind,
-            display_name,
-            env_vars,
+            kind: kind.clone(),
+            display_name: Cow::Borrowed(display_name),
+            env_vars: env_vars.into_iter().map(Cow::Borrowed).collect(),
             has_auth,
             model_count,
         });
+    }
+
+    if let Some(providers_map) = providers {
+        for (name, config) in providers_map {
+            let env_key = &config.api_key_env;
+            let has_auth = std::env::var(env_key).map(|v| !v.is_empty()).unwrap_or(false);
+
+            result.push(ProviderAuthStatus {
+                kind: ProviderKind::CustomOpenAi {
+                    provider: name.clone(),
+                    model: String::new(),
+                },
+                display_name: Cow::Owned(name.clone()),
+                env_vars: vec![Cow::Owned(config.api_key_env.clone())],
+                has_auth,
+                model_count: 0,
+            });
+        }
     }
 
     result
@@ -652,16 +709,19 @@ pub fn scan_provider_auth_status() -> Vec<ProviderAuthStatus> {
 
 /// Returns the display name for a provider kind.
 #[must_use]
-pub fn provider_display_name(kind: ProviderKind) -> &'static str {
-    PROVIDER_DISPLAY_NAMES
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .map_or("Unknown", |(_, name)| *name)
+pub fn provider_display_name(kind: &ProviderKind) -> Cow<'_, str> {
+    match kind {
+        ProviderKind::CustomOpenAi { provider, .. } => Cow::Borrowed(provider.as_str()),
+        other => PROVIDER_DISPLAY_NAMES
+            .iter()
+            .find(|(k, _)| k == other)
+            .map_or(Cow::Borrowed("Unknown"), |(_, name)| Cow::Borrowed(name)),
+    }
 }
 
 /// Returns true if the given provider kind has authentication configured.
 #[must_use]
-pub fn is_provider_configured(kind: ProviderKind) -> bool {
+pub fn is_provider_configured(kind: &ProviderKind) -> bool {
     check_provider_auth(kind)
 }
 
@@ -681,9 +741,9 @@ mod tests {
 
     #[test]
     fn detects_provider_from_model_name_first() {
-        assert_eq!(detect_provider_kind("grok"), ProviderKind::Xai);
+        assert_eq!(detect_provider_kind("grok", None), ProviderKind::Xai);
         assert_eq!(
-            detect_provider_kind("claude-sonnet-4-6"),
+            detect_provider_kind("claude-sonnet-4-6", None),
             ProviderKind::Anthropic
         );
     }
@@ -691,7 +751,7 @@ mod tests {
     #[test]
     fn resolves_openai_alias() {
         assert_eq!(resolve_model_alias("gpt-4o"), "gpt-4o");
-        assert_eq!(detect_provider_kind("gpt-4o"), ProviderKind::OpenAi);
+        assert_eq!(detect_provider_kind("gpt-4o", None), ProviderKind::OpenAi);
     }
 
     #[test]
@@ -722,5 +782,40 @@ mod tests {
         assert_eq!(max_tokens_for_model("haiku"), 8_192);
         assert_eq!(max_tokens_for_model("grok-3"), 8_192);
         assert_eq!(max_tokens_for_model("gpt-4o"), 16_384);
+    }
+
+    #[test]
+    fn detects_config_driven_custom_provider() {
+        use super::ProviderConfig;
+        use std::collections::BTreeMap;
+
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "myprovider".to_string(),
+            ProviderConfig {
+                base_url: Some("http://localhost:8080/v1".to_string()),
+                api_key_env: "MYPROVIDER_API_KEY".to_string(),
+            },
+        );
+
+        assert_eq!(
+            detect_provider_kind("myprovider/mymodel", Some(&providers)),
+            ProviderKind::CustomOpenAi {
+                provider: "myprovider".to_string(),
+                model: "mymodel".to_string(),
+            }
+        );
+
+        // Model not in providers map falls through to env-based detection.
+        // Result depends on environment (Anthropic if auth exists, otherwise Unconfigured),
+        // so we only verify it does NOT return the custom provider.
+        let result = detect_provider_kind("unknown/model", Some(&providers));
+        assert_ne!(
+            result,
+            ProviderKind::CustomOpenAi {
+                provider: "myprovider".to_string(),
+                model: "model".to_string(),
+            }
+        );
     }
 }

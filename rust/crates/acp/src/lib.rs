@@ -215,7 +215,7 @@ fn is_valid_session_id(session_id: &str) -> bool {
 fn handle_model_list(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     let mut models: Vec<_> = api::list_all_models()
         .map(|entry| {
-            let provider = provider_kind_to_string(entry.provider);
+            let provider = provider_kind_to_string(&entry.provider);
             serde_json::json!({
                 "alias": entry.alias,
                 "canonical": entry.canonical,
@@ -245,7 +245,7 @@ fn handle_model_list(id: Option<&serde_json::Value>) -> JsonRpcResponse {
     JsonRpcResponse::result(id.cloned(), serde_json::Value::Array(models))
 }
 
-fn provider_kind_to_string(kind: api::ProviderKind) -> &'static str {
+fn provider_kind_to_string(kind: &api::ProviderKind) -> String {
     match kind {
         api::ProviderKind::Anthropic => "Anthropic",
         api::ProviderKind::Xai => "xAI",
@@ -258,7 +258,9 @@ fn provider_kind_to_string(kind: api::ProviderKind) -> &'static str {
         api::ProviderKind::Mistral => "Mistral",
         api::ProviderKind::Groq => "Groq",
         api::ProviderKind::Unconfigured => "Unconfigured",
+        api::ProviderKind::CustomOpenAi { provider, .. } => provider.as_str(),
     }
+    .to_string()
 }
 
 #[allow(clippy::too_many_lines)]

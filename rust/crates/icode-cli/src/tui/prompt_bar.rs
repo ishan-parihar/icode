@@ -1,7 +1,7 @@
 use crate::tui::app::AppState;
 use crate::tui::input::InputWidget;
 use crate::tui::Theme;
-use api::capabilities_for_model;
+use api::{capabilities_for_model, detect_provider_kind, provider_display_name};
 use ratatui::layout::Rect;
 use ratatui::prelude::StatefulWidget;
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -275,7 +275,10 @@ fn render_info_bar(frame: &mut Frame, state: &AppState, area: Rect, mode: &Promp
             ),
             Span::styled(&state.session.model, Style::default().fg(state.theme.text)),
             Span::styled(
-                " \u{00b7} anthropic",
+                format!(
+                    " \u{00b7} {}",
+                    provider_display_name(&detect_provider_kind(&state.session.model, None))
+                ),
                 Style::default().fg(state.theme.text_muted),
             ),
         ]
@@ -374,6 +377,7 @@ fn build_keycap_row(state: &AppState) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     spans.extend(kbd("Ctrl+P", "commands", bg, state.theme.text_muted));
     spans.extend(kbd("Ctrl+M", "models", bg, state.theme.text_muted));
+    spans.extend(kbd("Ctrl+R", "refresh", bg, state.theme.text_muted));
     spans.extend(kbd("Alt+S", "sidebar", bg, state.theme.text_muted));
     spans.extend(kbd("Enter", "send", bg, state.theme.text_muted));
     spans
@@ -502,8 +506,9 @@ mod tests {
         let mut spans = Vec::new();
         spans.extend(kbd("Ctrl+P", "commands", bg, theme.text_muted));
         spans.extend(kbd("Ctrl+M", "models", bg, theme.text_muted));
+        spans.extend(kbd("Ctrl+R", "refresh", bg, theme.text_muted));
         spans.extend(kbd("Alt+S", "sidebar", bg, theme.text_muted));
         spans.extend(kbd("Enter", "send", bg, theme.text_muted));
-        assert_eq!(spans.len(), 8);
+        assert_eq!(spans.len(), 10);
     }
 }

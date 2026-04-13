@@ -172,6 +172,14 @@ pub fn validate_read_only(command: &str, mode: PermissionMode) -> ValidationResu
         }
     }
 
+    // Check for unquoted pipes — pipes can chain commands in ways that bypass
+    // first-command validation (e.g. `ls | xargs rm`).
+    if command_has_unquoted_pipe(command) {
+        return ValidationResult::Block {
+            reason: "Command contains a pipe which can chain destructive operations and is not allowed in read-only mode".to_string(),
+        };
+    }
+
     ValidationResult::Allow
 }
 
@@ -791,6 +799,39 @@ fn extract_sudo_words(command: &str) -> Vec<&str> {
     inner
 }
 
+fn command_has_unquoted_pipe(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\\' if !in_single => {
+                escaped = true;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+            }
+            b'|' if !in_single && !in_double => {
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Find the end of a value in `KEY=value rest` (handles basic quoting).
 ///
 /// Correctly handles:
@@ -1184,6 +1225,124 @@ mod tests {
         // After stripping the env var FOO='it\' there may be trailing content.
         // The important assertion: no panic, returns non-empty.
         let result = extract_first_command("FOO='bar' ls");
+        assert_eq!(result, "ls");
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression tests for Bug Report Plan - Batch 2
+    // -----------------------------------------------------------------------
+
+    // Bug #1: Bash multi-command validation bypass
+    // Payload `ls && rm -rf /` must NOT parse as just `ls` — the `rm` must be
+    // detected and blocked in read-only mode.
+    #[test]
+    fn blocks_multi_command_and_chain_in_read_only() {
+        assert!(
+            matches!(
+                validate_read_only("ls && rm -rf /", PermissionMode::ReadOnly),
+                ValidationResult::Block { .. }
+            ),
+            "ls && rm -rf / must be blocked in read-only mode"
+        );
+    }
+
+    #[test]
+    fn blocks_multi_command_or_chain_in_read_only() {
+        assert!(
+            matches!(
+                validate_read_only("cat file || rm -rf /", PermissionMode::ReadOnly),
+                ValidationResult::Block { .. }
+            ),
+            "cat file || rm -rf / must be blocked in read-only mode"
+        );
+    }
+
+    #[test]
+    fn blocks_multi_command_semicolon_in_read_only() {
+        assert!(
+            matches!(
+                validate_read_only("ls; rm -rf /", PermissionMode::ReadOnly),
+                ValidationResult::Block { .. }
+            ),
+            "ls; rm -rf / must be blocked in read-only mode"
+        );
+    }
+
+    #[test]
+    fn blocks_multi_command_pipe_in_read_only() {
+        // `ls | xargs rm` — xargs is not in the read-only allowlist
+        assert!(
+            matches!(
+                validate_read_only("ls | xargs rm", PermissionMode::ReadOnly),
+                ValidationResult::Block { .. }
+            ),
+            "ls | xargs rm must be blocked in read-only mode"
+        );
+    }
+
+    #[test]
+    fn blocks_multiline_command_chain_in_read_only() {
+        assert!(
+            matches!(
+                validate_read_only("ls\nrm -rf /", PermissionMode::ReadOnly),
+                ValidationResult::Block { .. }
+            ),
+            "ls\\nrm -rf / must be blocked in read-only mode"
+        );
+    }
+
+    // Bug #2: Sudo parameter value injection
+    // `sudo -u root rm -rf /` must detect `rm` even with the `-u root` flag.
+    #[test]
+    fn blocks_sudo_with_user_flag_in_read_only() {
+        assert!(
+            matches!(
+                validate_read_only("sudo -u root rm -rf /", PermissionMode::ReadOnly),
+                ValidationResult::Block { .. }
+            ),
+            "sudo -u root rm -rf / must be blocked in read-only mode"
+        );
+    }
+
+    #[test]
+    fn blocks_sudo_multiple_flags_in_read_only() {
+        assert!(
+            matches!(
+                validate_read_only("sudo -u root -E rm file", PermissionMode::ReadOnly),
+                ValidationResult::Block { .. }
+            ),
+            "sudo -u root -E rm file must be blocked in read-only mode"
+        );
+    }
+
+    #[test]
+    fn blocks_sudo_shell_escalation_with_user_flag() {
+        assert!(
+            matches!(
+                validate_read_only("sudo -u root sh -c 'id'", PermissionMode::ReadOnly),
+                ValidationResult::Block { reason } if reason.contains("sh")
+            ),
+            "sudo -u root sh -c 'id' must be blocked — sh is a dangerous shell"
+        );
+    }
+
+    // Bug #3: Single-quote evasion — backslash inside single quotes must NOT
+    // be treated as an escape character.
+    #[test]
+    fn env_prefix_single_quote_backslash_not_escape() {
+        // `FOO='bar' ls` — single quotes, no escaping, should extract "ls"
+        let result = extract_first_command("FOO='bar' ls");
+        assert_eq!(result, "ls");
+    }
+
+    #[test]
+    fn env_prefix_single_quote_with_backslash_content() {
+        // `FOO='it\'s' ls` — in bash, single quotes don't escape, so the '
+        // at position after \ terminates the quote.
+        // Our parser should handle this without panic and still extract "ls".
+        let result = extract_first_command(r"FOO='it\'s' ls");
+        // After the first ' ends the quoted section, 's' ls' is consumed as
+        // non-whitespace trailing chars, then " ls" remains → "ls"
         assert_eq!(result, "ls");
     }
 }

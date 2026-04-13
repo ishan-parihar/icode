@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn detects_azure_from_model_prefix() {
         let _lock = env_lock();
-        assert_eq!(detect_provider_kind("azure/gpt-4"), ProviderKind::Azure);
+        assert_eq!(detect_provider_kind("azure/gpt-4", None), ProviderKind::Azure);
     }
 
     #[test]

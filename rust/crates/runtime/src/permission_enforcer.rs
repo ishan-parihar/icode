@@ -683,4 +683,42 @@ mod tests {
             other @ EnforcementResult::Allowed => panic!("expected denied result, got {other:?}"),
         }
     }
+
+    #[test]
+    fn symlink_escape_detected_via_parent_canonicalize() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir();
+        let workspace = tmp.join("bug4_ws");
+        let escape_target = tmp.join("bug4_escape");
+        let symlink_path = workspace.join("escape_link");
+        let escaped_file = symlink_path.join("outside_file.txt");
+
+        let _ = fs::remove_dir_all(&workspace);
+        let _ = fs::remove_dir_all(&escape_target);
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&escape_target).unwrap();
+        symlink(&escape_target, &symlink_path).unwrap();
+
+        assert!(
+            !is_within_workspace(escaped_file.to_str().unwrap(), workspace.to_str().unwrap()),
+            "symlink escape through workspace boundary must be denied"
+        );
+
+        let _ = fs::remove_dir_all(&workspace);
+        let _ = fs::remove_dir_all(&escape_target);
+    }
+
+    #[test]
+    fn parent_fallback_textual_does_not_allow_prefix_trick() {
+        assert!(!is_within_workspace(
+            "/workspacex/hack/file.txt",
+            "/workspace"
+        ));
+        assert!(!is_within_workspace(
+            "/workspace-evil/file.txt",
+            "/workspace"
+        ));
+    }
 }

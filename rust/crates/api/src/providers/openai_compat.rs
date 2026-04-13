@@ -129,10 +129,93 @@ impl OpenAiCompatClient {
         Ok(Self::new(api_key, config))
     }
 
+    /// Create a client for an arbitrary OpenAI-compatible provider.
+    /// Looks for `<PROVIDER>_API_KEY` and `<PROVIDER>_BASE_URL` env vars.
+    pub fn custom(provider: &str, _model: &str) -> Result<Self, ApiError> {
+        let env_key = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+        let env_base = format!("{}_BASE_URL", provider.to_uppercase().replace('-', "_"));
+
+        let api_key = read_env_non_empty(&env_key)?.or_else(|| {
+            let store = runtime::AuthStore::load();
+            store.api_key_for(&provider.to_lowercase().replace('-', "_"))
+        });
+
+        let Some(api_key) = api_key else {
+            return Err(ApiError::Auth(format!(
+                "Model requires '{provider}' credentials. Set {env_key} env var or save a key to ~/.icode/auth.json."
+            )));
+        };
+
+        let base_url = std::env::var(&env_base)
+            .ok()
+            .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+
+        let config = OpenAiCompatConfig {
+            provider_name: Box::leak(provider.to_string().into_boxed_str()),
+            api_key_env: Box::leak(env_key.into_boxed_str()),
+            base_url_env: Box::leak(env_base.into_boxed_str()),
+            default_base_url: DEFAULT_OPENAI_BASE_URL,
+        };
+
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("failed to build HTTP client"),
+            api_key,
+            config,
+            base_url,
+            max_retries: DEFAULT_MAX_RETRIES,
+            initial_backoff: DEFAULT_INITIAL_BACKOFF,
+            max_backoff: DEFAULT_MAX_BACKOFF,
+        })
+    }
+
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
+    }
+
+    /// Create a client for a config-driven custom provider.
+    /// Uses `ProviderConfig.api_key_env` for the env var and optional `base_url` override.
+    pub fn custom_from_config(
+        provider: &str,
+        config: &runtime::ProviderConfig,
+    ) -> Result<Self, ApiError> {
+        let api_key = read_env_non_empty(&config.api_key_env)?;
+
+        let Some(api_key) = api_key else {
+            return Err(ApiError::Auth(format!(
+                "Model requires '{provider}' credentials. Set {} env var.",
+                config.api_key_env
+            )));
+        };
+
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+
+        let config_static = OpenAiCompatConfig {
+            provider_name: Box::leak(provider.to_string().into_boxed_str()),
+            api_key_env: Box::leak(config.api_key_env.clone().into_boxed_str()),
+            base_url_env: "",
+            default_base_url: DEFAULT_OPENAI_BASE_URL,
+        };
+
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("failed to build HTTP client"),
+            api_key,
+            config: config_static,
+            base_url,
+            max_retries: DEFAULT_MAX_RETRIES,
+            initial_backoff: DEFAULT_INITIAL_BACKOFF,
+            max_backoff: DEFAULT_MAX_BACKOFF,
+        })
     }
 
     #[must_use]
