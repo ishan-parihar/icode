@@ -314,6 +314,7 @@ impl InputState {
                         }
                     };
 
+                    // Check if cursor position would overflow current row BEFORE returning
                     if avail > 0 && col + display_col > avail && col > 0 {
                         row += 1;
                         col = 0;
@@ -595,18 +596,50 @@ impl InputState {
             &self.value
         };
         let prefix_w = self.prompt.width();
-        let avail = max_width.saturating_sub(prefix_w);
-        let mut count = 0;
-        for line in text.lines() {
-            let line_w = line.width();
-            if avail == 0 {
-                count += 1;
-                continue;
+        let first_line_avail = max_width.saturating_sub(prefix_w);
+        let subsequent_line_avail = max_width;
+
+        let mut count = 0usize;
+        let mut col = 0usize;
+
+        let logical_lines: Vec<&str> = text.lines().collect();
+        for (line_idx, line_text) in logical_lines.iter().enumerate() {
+            let mut avail = if count == 0 {
+                first_line_avail
+            } else {
+                subsequent_line_avail
+            };
+
+            let segments = parse_input_segments(line_text);
+            for seg in &segments {
+                let seg_display_width = match seg {
+                    InputSegment::Text(t) => t.width(),
+                    InputSegment::FileChip(t) | InputSegment::AgentChip(t) => {
+                        format!(" {t} ").width()
+                    }
+                };
+
+                if col + seg_display_width > avail && col > 0 {
+                    count += 1;
+                    col = 0;
+                    avail = subsequent_line_avail;
+                }
+                if seg_display_width > avail && avail > 0 {
+                    let rows_needed = seg_display_width.div_ceil(avail);
+                    count += rows_needed;
+                    col = 0;
+                    avail = subsequent_line_avail;
+                } else {
+                    col += seg_display_width.min(avail);
+                }
             }
-            let wraps = line_w.div_ceil(avail);
-            count += wraps.max(1);
+
+            if line_idx + 1 < logical_lines.len() {
+                count += 1;
+                col = 0;
+            }
         }
-        count.max(1)
+        (count + 1).max(1)
     }
 
     /// Adjusts scroll_offset so the cursor is within the visible area.

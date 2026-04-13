@@ -670,7 +670,23 @@ fn render_permission_stage(
         lines.push(Line::from(prefixed));
     }
 
-    let content_height = lines.len() as u16 + 3u16; // buttons (1) + gap (1) + hint (1)
+    // Estimate wrapped line count based on expected popup width
+    let estimated_popup_width = ((area.width as f32 * 0.5).round() as u16)
+        .clamp(30, 60)
+        .min(area.width.saturating_sub(4));
+    let mut wrapped_line_count = 0u16;
+    for line in &lines {
+        let line_width = line.width() as u16;
+        let wraps = if estimated_popup_width > 0 {
+            line_width
+                .div_ceil(estimated_popup_width.saturating_sub(4))
+                .max(1)
+        } else {
+            1
+        };
+        wrapped_line_count += wraps;
+    }
+    let content_height = wrapped_line_count + 3u16; // buttons (1) + gap (1) + hint (1)
 
     let mut popup_area = popup_utils::popup_dimensions(area, 0.5, 30, 60, 0.5, content_height);
 
@@ -683,7 +699,7 @@ fn render_permission_stage(
     };
 
     // Early return if popup is too small to render meaningfully
-    if popup_area.width < 30 || popup_area.height < 8 {
+    if popup_area.width < 20 || popup_area.height < 6 {
         return;
     }
 
@@ -704,8 +720,8 @@ fn render_permission_stage(
 
     let inner = block.inner(popup_area);
 
-    // Render text content
-    let text_height = lines.len() as u16;
+    // Render text content — compute actual height needed for wrapped lines
+    let text_height = wrapped_line_count;
     let text_area = Rect {
         x: inner.x,
         y: inner.y,
@@ -714,7 +730,8 @@ fn render_permission_stage(
     };
     let text_widget = Paragraph::new(lines)
         .style(Style::default().bg(theme.background_panel))
-        .alignment(Alignment::Left);
+        .alignment(Alignment::Left)
+        .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(text_widget, text_area);
 
     // Button bar
@@ -854,7 +871,7 @@ fn render_always_stage(
     };
 
     // Early return if popup is too small to render meaningfully
-    if popup_area.width < 30 || popup_area.height < 8 {
+    if popup_area.width < 20 || popup_area.height < 6 {
         return;
     }
 
@@ -884,7 +901,8 @@ fn render_always_stage(
     };
     let text_widget = Paragraph::new(lines)
         .style(Style::default().bg(theme.background_panel))
-        .alignment(Alignment::Left);
+        .alignment(Alignment::Left)
+        .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(text_widget, text_area);
 
     // Confirm button
@@ -991,7 +1009,7 @@ fn render_reject_stage(
     };
 
     // Early return if popup is too small to render meaningfully
-    if popup_area.width < 30 || popup_area.height < 8 {
+    if popup_area.width < 20 || popup_area.height < 6 {
         return;
     }
 
@@ -1021,7 +1039,8 @@ fn render_reject_stage(
     };
     let text_widget = Paragraph::new(lines)
         .style(Style::default().bg(theme.background_panel))
-        .alignment(Alignment::Left);
+        .alignment(Alignment::Left)
+        .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(text_widget, text_area);
 
     // Submit button

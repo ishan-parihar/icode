@@ -644,10 +644,10 @@ pub fn render_question_prompt(
     let popup = Rect {
         x: popup.x.max(area.x),
         y: popup.y.max(area.y),
-        width: popup.width.min(area.width),
-        height: popup.height.min(area.height),
+        width: popup.width.min(area.width.saturating_sub(2)),
+        height: popup.height.min(area.height.saturating_sub(2)),
     };
-    if popup.width < 20 || popup.height < 6 {
+    if popup.width < 20 || popup.height < 8 {
         return;
     }
     frame.render_widget(Clear, popup);
@@ -663,6 +663,9 @@ pub fn render_question_prompt(
     frame.render_widget(block.clone(), popup);
     let inner = block.inner(popup);
     if inner.height < 5 {
+        return;
+    }
+    if inner.height.saturating_sub(2) < 2 {
         return;
     }
     let chunks = Layout::default()

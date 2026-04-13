@@ -1,17 +1,52 @@
 [
   {
-    "content": "Run cargo fmt check",
-    "activeForm": "Running cargo fmt check",
+    "content": "Test file tools (ls, read_file, write_file, edit_file, glob_search)",
+    "activeForm": "Testing file tools",
     "status": "in_progress"
   },
   {
-    "content": "Run cargo clippy",
-    "activeForm": "Running cargo clippy",
+    "content": "Test search tools (grep_search, codesearch, GlobTool, GrepTool)",
+    "activeForm": "Testing search tools",
     "status": "pending"
   },
   {
-    "content": "Run cargo test",
-    "activeForm": "Running cargo test",
+    "content": "Test shell tools (bash, PtyBash, PowerShell)",
+    "activeForm": "Testing shell tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test web tools (WebFetch, WebSearch)",
+    "activeForm": "Testing web tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test task tools (TaskCreate, TaskList, TaskGet, TaskOutput, TaskStop)",
+    "activeForm": "Testing task tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test utility tools (Config, Sleep, ToolSearch, Skill)",
+    "activeForm": "Testing utility tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test code tools (LSP, Formatter, REPL, BatchEdit, ApplyPatch)",
+    "activeForm": "Testing code tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test MCP tools (ListMcpResources, MCP)",
+    "activeForm": "Testing MCP tools",
+    "status": "pending"
+  },
+  {
+    "content": "Test worktree & planning tools",
+    "activeForm": "Testing worktree & planning",
+    "status": "pending"
+  },
+  {
+    "content": "Summarize all results",
+    "activeForm": "Summarizing results",
     "status": "pending"
   }
 ]

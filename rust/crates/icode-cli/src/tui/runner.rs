@@ -386,7 +386,11 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
                 if self.terminal.size().is_ok() {
-                    self.terminal.clear().ok();
+                    let _ = self.terminal.clear();
+                    // Force immediate redraw so the user doesn't see a blank screen
+                    let _ = self.terminal.draw(|frame| {
+                        render_ui(frame, &mut self.state, self.theme);
+                    });
                 }
                 self.state
                     .add_toast("Screen refreshed", crate::tui::app::ToastKind::Info);

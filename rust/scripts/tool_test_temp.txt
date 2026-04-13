@@ -1,3 +1,2 @@
-Hello! This is a temporary test file.
-Line 2 of the test file.
-Line 3 - edited successfully!
+This is a test file created by write_file tool.
+Hello World! Edited successfully.

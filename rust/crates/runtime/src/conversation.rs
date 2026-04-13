@@ -47,6 +47,7 @@ pub enum AssistantEvent {
     Usage(TokenUsage),
     PromptCache(PromptCacheEvent),
     MessageStop,
+    ThinkingStarted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -853,6 +854,7 @@ fn build_assistant_message(
             AssistantEvent::MessageStop => {
                 finished = true;
             }
+            AssistantEvent::ThinkingStarted => {}
         }
     }
 

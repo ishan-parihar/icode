@@ -3129,6 +3129,7 @@ impl LiveCli {
                         AssistantEvent::Usage(_) => None,
                         AssistantEvent::PromptCache(_) => None,
                         AssistantEvent::MessageStop => None,
+                        AssistantEvent::ThinkingStarted => Some(TurnEvent::ThinkingStarted),
                     };
                     if let Some(ev) = turn_event {
                         let _ = progress_tx.send(ev);
@@ -5858,6 +5859,7 @@ impl ApiClient for AnthropicRuntimeClient {
             let mut events = Vec::new();
             let mut pending_tool: Option<(String, String, String)> = None;
             let mut saw_stop = false;
+            let mut thinking_started = false;
 
             while let Some(event) = stream
                 .next_event()
@@ -5901,8 +5903,25 @@ impl ApiClient for AnthropicRuntimeClient {
                                 input.push_str(&partial_json);
                             }
                         }
-                        ContentBlockDelta::ThinkingDelta { .. }
-                        | ContentBlockDelta::SignatureDelta { .. } => {}
+                        ContentBlockDelta::ThinkingDelta { thinking } => {
+                            if !thinking.is_empty() {
+                                if !thinking_started {
+                                    events.push(runtime::AssistantEvent::ThinkingStarted);
+                                    if let Some(cb) = &progress {
+                                        cb(runtime::AssistantEvent::ThinkingStarted);
+                                    }
+                                    thinking_started = true;
+                                }
+                                if let Some(progress_reporter) = &self.progress_reporter {
+                                    progress_reporter.mark_text_phase(&thinking);
+                                }
+                                if let Some(cb) = &progress {
+                                    cb(runtime::AssistantEvent::TextDelta(thinking.clone()));
+                                }
+                                events.push(runtime::AssistantEvent::TextDelta(thinking));
+                            }
+                        }
+                        ContentBlockDelta::SignatureDelta { .. } => {}
                     },
                     ApiStreamEvent::ContentBlockStop(_) => {
                         if let Some(rendered) = markdown_stream.flush(&renderer) {
@@ -6590,7 +6609,17 @@ fn push_output_block(
             };
             *pending_tool = Some((id, name, initial_input));
         }
-        OutputContentBlock::Thinking { .. } | OutputContentBlock::RedactedThinking { .. } => {}
+        OutputContentBlock::Thinking { thinking, .. } => {
+            if !thinking.is_empty() {
+                let rendered = TerminalRenderer::new().markdown_to_ansi(&thinking);
+                write!(out, "{rendered}")
+                    .and_then(|()| out.flush())
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                events.push(AssistantEvent::ThinkingStarted);
+                events.push(AssistantEvent::TextDelta(thinking));
+            }
+        }
+        OutputContentBlock::RedactedThinking { .. } => {}
     }
     Ok(())
 }
@@ -8808,7 +8837,7 @@ UU conflicted.rs",
     }
 
     #[test]
-    fn response_to_events_ignores_thinking_blocks() {
+    fn response_to_events_emits_thinking_blocks() {
         let mut out = Vec::new();
         let events = response_to_events(
             MessageResponse {
@@ -8839,11 +8868,16 @@ UU conflicted.rs",
         )
         .expect("response conversion should succeed");
 
+        assert!(matches!(&events[0], AssistantEvent::ThinkingStarted));
         assert!(matches!(
-            &events[0],
+            &events[1],
+            AssistantEvent::TextDelta(text) if text == "step 1"
+        ));
+        assert!(matches!(
+            &events[2],
             AssistantEvent::TextDelta(text) if text == "Final answer"
         ));
-        assert!(!String::from_utf8(out).expect("utf8").contains("step 1"));
+        assert!(String::from_utf8(out).expect("utf8").contains("step 1"));
     }
 
     #[test]
