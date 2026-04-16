@@ -6,6 +6,14 @@ archive/
 .claude/settings.local.json
 .claude/sessions/
 /rust/.icoded-agents
+/rust/.claude/
+/rust/.icode/
+/rust/.clawd-todos.json
+/rust/.icoded-todos.json
+/rust/test_tools_marker.tmp
+/rust/test_tool_validation.txt
+/rust/scripts/test_file_ops.txt
+/rust/scripts/tool_test_temp.txt
 /.sisyphus
 /rust/.icode
 /rust/scripts/.icode

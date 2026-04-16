@@ -1,2 +1,0 @@
-This is a test file for tool verification.
-Line 2 - successfully edited!

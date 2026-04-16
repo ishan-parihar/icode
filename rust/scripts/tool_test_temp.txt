@@ -1,2 +1,0 @@
-This is a test file created by write_file tool.
-Hello World! Edited successfully.

@@ -1,3 +1,10 @@
 target/
 .omx/
 .clawd-agents/
+.claude/
+.icode/
+.icoded-agents/
+test_tools_marker.tmp
+test_tool_validation.txt
+scripts/test_file_ops.txt
+scripts/tool_test_temp.txt
