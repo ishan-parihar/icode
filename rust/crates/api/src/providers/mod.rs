@@ -623,7 +623,9 @@ pub fn check_provider_auth(kind: &ProviderKind) -> bool {
         }
         ProviderKind::CustomOpenAi { provider, .. } => {
             let env_key = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
-            std::env::var(&env_key).map(|v| !v.is_empty()).unwrap_or(false)
+            std::env::var(&env_key)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
         }
         other => {
             let env_vars: HashSet<&'static str> = MODEL_REGISTRY
@@ -689,7 +691,9 @@ pub fn scan_provider_auth_status(
     if let Some(providers_map) = providers {
         for (name, config) in providers_map {
             let env_key = &config.api_key_env;
-            let has_auth = std::env::var(env_key).map(|v| !v.is_empty()).unwrap_or(false);
+            let has_auth = std::env::var(env_key)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
 
             result.push(ProviderAuthStatus {
                 kind: ProviderKind::CustomOpenAi {

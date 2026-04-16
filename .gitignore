@@ -10,3 +10,4 @@ archive/
 /rust/.icode
 /rust/scripts/.icode
 /.icode
+/.cursor

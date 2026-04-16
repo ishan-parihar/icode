@@ -92,16 +92,13 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             }
         }
     } else if is_welcome {
-        render_home_content(frame, content_area, &state.home_screen, theme);
         let tips_height = 1u16;
-        let tips_y = content_area.y + 1;
-        let tips_rect = Rect {
-            x: content_area.x,
-            y: tips_y,
-            width: content_area.width,
-            height: tips_height,
-        };
-        PromptBar::render_welcome_tips(frame, state, tips_rect);
+        let welcome_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(tips_height)])
+            .split(content_area);
+        render_home_content(frame, welcome_chunks[0], &state.home_screen, theme);
+        PromptBar::render_welcome_tips(frame, state, welcome_chunks[1]);
     } else {
         render_messages_panel(frame, state, content_area, theme);
     }
