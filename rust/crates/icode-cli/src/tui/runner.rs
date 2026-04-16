@@ -270,11 +270,21 @@ impl Tui {
                 ActiveModal::Pager(s) => self.handle_pager_action_from_modal(key, s),
                 ActiveModal::Autocomplete(s) => self.handle_autocomplete_action_from_modal(key, s),
             };
+            // Restore the modal only if it wasn't intentionally closed by the handler.
+            // Permission and Question dialogs set their `.open = false` when the user
+            // confirms a decision; we must not resurrect them.
             if self.state.active_modal.is_none()
                 && !matches!(key.code, KeyCode::Esc)
                 && result.is_none()
             {
-                self.state.active_modal = Some(modal);
+                let should_restore = match &modal {
+                    ActiveModal::Permission(s) => s.open,
+                    ActiveModal::Question(s) => s.open,
+                    _ => true,
+                };
+                if should_restore {
+                    self.state.active_modal = Some(modal);
+                }
             }
             return result;
         }
@@ -581,6 +591,10 @@ impl Tui {
             }
             (KeyModifiers::ALT, KeyCode::Char('s')) => {
                 self.state.sidebar_visible = !self.state.sidebar_visible;
+                None
+            }
+            (KeyModifiers::ALT, KeyCode::Char('h')) => {
+                self.state.toggle_thinking();
                 None
             }
             (KeyModifiers::ALT, KeyCode::Char('t')) => {
@@ -1321,13 +1335,16 @@ impl Tui {
             }
             self.handle_permission_action(action);
             self.state.close_modal();
-        } else if matches!(key.code, KeyCode::Esc) {
+            return None;
+        }
+        if matches!(key.code, KeyCode::Esc) {
             if let Some(tx) = self.state.permission_response_tx.take() {
                 let _ = tx.send(runtime::PermissionPromptDecision::Deny {
                     reason: "dismissed by user".into(),
                 });
             }
             self.state.close_modal();
+            return None;
         }
         None
     }
@@ -1342,6 +1359,11 @@ impl Tui {
                 let _ = tx.send(response.answer.clone());
             }
             self.state.close_modal();
+            return None;
+        }
+        if matches!(key.code, KeyCode::Esc) {
+            self.state.close_modal();
+            return None;
         }
         None
     }

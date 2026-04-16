@@ -954,7 +954,9 @@ fn parse_hook_output(stdout: &str) -> ParsedHookOutput {
             match serde_json::to_string(updated_input) {
                 Ok(s) => parsed.updated_input = Some(s),
                 Err(e) => {
-                    tracing::warn!("hooks: failed to serialize hook updatedInput, input unchanged: {e}");
+                    tracing::warn!(
+                        "hooks: failed to serialize hook updatedInput, input unchanged: {e}"
+                    );
                 }
             }
         }

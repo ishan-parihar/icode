@@ -28,7 +28,9 @@ pub enum ProviderClient {
     Groq(GroqClient),
     /// Custom OpenAI-compatible provider configured via settings.json.
     CustomOpenAi(OpenAiCompatClient),
-    Unconfigured { model: String },
+    Unconfigured {
+        model: String,
+    },
 }
 
 #[derive(Debug)]
@@ -66,15 +68,18 @@ impl ProviderClient {
                 Some(auth) => Ok(Self::Anthropic(AnthropicClient::from_auth(auth))),
                 None => AnthropicClient::from_env().map(Self::Anthropic),
             },
-            ProviderKind::Xai => OpenAiCompatClient::from_env(OpenAiCompatConfig::xai())
-                .map(Self::Xai),
-            ProviderKind::OpenAi => OpenAiCompatClient::from_env(OpenAiCompatConfig::openai())
-                .map(Self::OpenAi),
+            ProviderKind::Xai => {
+                OpenAiCompatClient::from_env(OpenAiCompatConfig::xai()).map(Self::Xai)
+            }
+            ProviderKind::OpenAi => {
+                OpenAiCompatClient::from_env(OpenAiCompatConfig::openai()).map(Self::OpenAi)
+            }
             ProviderKind::QwenProxy => {
                 let config = OpenAiCompatConfig::qwen_proxy();
                 // QwenProxy uses an OpenAI-compatible local proxy that doesn't validate API keys.
                 // Use env var if set, otherwise fall back to "none" (matches opencode config).
-                let api_key = std::env::var("QWEN_PROXY_API_KEY").unwrap_or_else(|_| "none".to_string());
+                let api_key =
+                    std::env::var("QWEN_PROXY_API_KEY").unwrap_or_else(|_| "none".to_string());
                 Ok(Self::QwenProxy(
                     OpenAiCompatClient::new(api_key, config)
                         .with_base_url(read_qwen_proxy_base_url()),
@@ -86,10 +91,13 @@ impl ProviderClient {
             ProviderKind::OpenRouter => OpenRouterClient::from_env().map(Self::OpenRouter),
             ProviderKind::Mistral => MistralClient::from_env().map(Self::Mistral),
             ProviderKind::Groq => GroqClient::from_env().map(Self::Groq),
-            ProviderKind::CustomOpenAi { provider, model: model_name } => {
-                Self::from_custom_openai(&provider, &model_name, providers)
-            }
-            ProviderKind::Unconfigured => Ok(Self::Unconfigured { model: resolved_model.clone() }),
+            ProviderKind::CustomOpenAi {
+                provider,
+                model: model_name,
+            } => Self::from_custom_openai(&provider, &model_name, providers),
+            ProviderKind::Unconfigured => Ok(Self::Unconfigured {
+                model: resolved_model.clone(),
+            }),
         };
         // If credentials are missing, return Unconfigured instead of erroring.
         // This allows the TUI to start and lets users configure providers interactively.
@@ -111,8 +119,7 @@ impl ProviderClient {
     ) -> Result<Self, ApiError> {
         match providers.and_then(|p| p.get(provider)) {
             Some(pc) => {
-                OpenAiCompatClient::custom_from_config(provider, pc)
-                    .map(Self::CustomOpenAi)
+                OpenAiCompatClient::custom_from_config(provider, pc).map(Self::CustomOpenAi)
             }
             None => OpenAiCompatClient::custom(provider, model_name).map(Self::CustomOpenAi),
         }
@@ -165,9 +172,10 @@ impl ProviderClient {
     ) -> Result<MessageResponse, ApiError> {
         match self {
             Self::Anthropic(client) => client.send_message(request).await,
-            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) | Self::CustomOpenAi(client) => {
-                client.send_message(request).await
-            }
+            Self::Xai(client)
+            | Self::OpenAi(client)
+            | Self::QwenProxy(client)
+            | Self::CustomOpenAi(client) => client.send_message(request).await,
             Self::Azure(client) => client.send_message(request).await,
             Self::Gemini(client) => client.send_message(request).await,
             Self::Bedrock(client) => client.send_message(request).await,
@@ -242,7 +250,10 @@ impl ProviderClient {
                 .stream_message(request)
                 .await
                 .map(MessageStream::Anthropic),
-            Self::Xai(client) | Self::OpenAi(client) | Self::QwenProxy(client) | Self::CustomOpenAi(client) => client
+            Self::Xai(client)
+            | Self::OpenAi(client)
+            | Self::QwenProxy(client)
+            | Self::CustomOpenAi(client) => client
                 .stream_message(request)
                 .await
                 .map(MessageStream::OpenAiCompat),

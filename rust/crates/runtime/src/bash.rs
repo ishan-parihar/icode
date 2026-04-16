@@ -97,7 +97,9 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
         Some("allow") => PermissionMode::Allow,
         None => PermissionMode::DangerFullAccess,
         Some(unknown) => {
-            tracing::warn!("[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only");
+            tracing::warn!(
+                "[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only"
+            );
             PermissionMode::ReadOnly
         }
     };
@@ -192,7 +194,9 @@ async fn execute_bash_async(
         Some("allow") => PermissionMode::Allow,
         None => PermissionMode::DangerFullAccess,
         Some(unknown) => {
-            tracing::warn!("[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only");
+            tracing::warn!(
+                "[WARNING] Unknown permission_mode '{unknown}', defaulting to read-only"
+            );
             PermissionMode::ReadOnly
         }
     };
