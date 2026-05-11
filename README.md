@@ -88,3 +88,5 @@ icode "Refactor the auth logic in src/auth.rs"
 
 ---
 Developed by [Ishan Parihar](https://github.com/ishan-parihar) as an exploration into the intersection of systems programming and agentic AI.
+
+If you find this project useful, [consider supporting its development](https://rzp.io/rzp/ishan-parihar) ☕
