@@ -21,3 +21,9 @@ archive/
 /.cursor
 .contexty
 .memsearch
+
+# Metadata directories (AI agent session data, tool calls, plans)
+.hive/
+.memsearch/
+.contexty/
+.sisyphus/
