@@ -26,6 +26,8 @@ pub enum ProviderClient {
     OpenRouter(OpenRouterClient),
     Mistral(MistralClient),
     Groq(GroqClient),
+    /// OpenCode Zen provider.
+    Opencode(OpenAiCompatClient),
     /// Custom OpenAI-compatible provider configured via settings.json.
     CustomOpenAi(OpenAiCompatClient),
     Unconfigured {
@@ -91,6 +93,9 @@ impl ProviderClient {
             ProviderKind::OpenRouter => OpenRouterClient::from_env().map(Self::OpenRouter),
             ProviderKind::Mistral => MistralClient::from_env().map(Self::Mistral),
             ProviderKind::Groq => GroqClient::from_env().map(Self::Groq),
+            ProviderKind::Opencode => {
+                OpenAiCompatClient::from_env(OpenAiCompatConfig::opencode()).map(Self::Opencode)
+            }
             ProviderKind::CustomOpenAi {
                 provider,
                 model: model_name,
@@ -138,6 +143,7 @@ impl ProviderClient {
             Self::OpenRouter(_) => ProviderKind::OpenRouter,
             Self::Mistral(_) => ProviderKind::Mistral,
             Self::Groq(_) => ProviderKind::Groq,
+            Self::Opencode(_) => ProviderKind::Opencode,
             Self::CustomOpenAi(_) | Self::Unconfigured { .. } => ProviderKind::Unconfigured,
         }
     }
@@ -175,6 +181,7 @@ impl ProviderClient {
             Self::Xai(client)
             | Self::OpenAi(client)
             | Self::QwenProxy(client)
+            | Self::Opencode(client)
             | Self::CustomOpenAi(client) => client.send_message(request).await,
             Self::Azure(client) => client.send_message(request).await,
             Self::Gemini(client) => client.send_message(request).await,
@@ -253,6 +260,7 @@ impl ProviderClient {
             Self::Xai(client)
             | Self::OpenAi(client)
             | Self::QwenProxy(client)
+            | Self::Opencode(client)
             | Self::CustomOpenAi(client) => client
                 .stream_message(request)
                 .await

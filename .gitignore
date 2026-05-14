@@ -27,3 +27,6 @@ archive/
 .memsearch/
 .contexty/
 .sisyphus/
+
+# Cloned reference projects for gap analysis
+/rust/references/

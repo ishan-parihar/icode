@@ -257,6 +257,7 @@ fn provider_kind_to_string(kind: &api::ProviderKind) -> String {
         api::ProviderKind::OpenRouter => "OpenRouter",
         api::ProviderKind::Mistral => "Mistral",
         api::ProviderKind::Groq => "Groq",
+        api::ProviderKind::Opencode => "OpenCode",
         api::ProviderKind::Unconfigured => "Unconfigured",
         api::ProviderKind::CustomOpenAi { provider, .. } => provider.as_str(),
     }

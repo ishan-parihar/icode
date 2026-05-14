@@ -17,6 +17,22 @@ use super::{Provider, ProviderFuture};
 pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_QWEN_PROXY_BASE_URL: &str = "http://127.0.0.1:3000/v1";
+
+// Well-known OpenAI-compatible provider endpoints (ported from opencode)
+pub const DEFAULT_OPENCODE_BASE_URL: &str = "https://opencode.ai/zen/v1";
+pub const DEFAULT_DEEPINFRA_BASE_URL: &str = "https://api.deepinfra.com/v1/openai";
+pub const DEFAULT_TOGETHERAI_BASE_URL: &str = "https://api.together.xyz/v1";
+pub const DEFAULT_PERPLEXITY_BASE_URL: &str = "https://api.perplexity.ai";
+pub const DEFAULT_COHERE_BASE_URL: &str = "https://api.cohere.com/v1";
+pub const DEFAULT_NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+pub const DEFAULT_CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
+pub const DEFAULT_ALIBABA_BASE_URL: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
+pub const DEFAULT_CLOUDFLARE_WORKERS_BASE_URL: &str = "https://api.cloudflare.com/client/v4";
+pub const DEFAULT_GITLAB_BASE_URL: &str = "https://gitlab.com/api/v4";
+pub const DEFAULT_VENICE_BASE_URL: &str = "https://api.venice.ai/api/v1";
+pub const DEFAULT_VERCEL_BASE_URL: &str = "https://api.vercel.ai/v1";
+pub const DEFAULT_KILO_BASE_URL: &str = "https://api.kilo.chat/v1";
+pub const DEFAULT_LLMGATEWAY_BASE_URL: &str = "https://gateway.ai.cloudflare.com/v1";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
@@ -76,6 +92,16 @@ impl OpenAiCompatConfig {
     }
 
     #[must_use]
+    pub const fn opencode() -> Self {
+        Self {
+            provider_name: "Opencode",
+            api_key_env: "OPENCODE_API_KEY",
+            base_url_env: "OPENCODE_BASE_URL",
+            default_base_url: DEFAULT_OPENCODE_BASE_URL,
+        }
+    }
+
+    #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
         match self.provider_name {
             "xAI" => XAI_ENV_VARS,
@@ -129,10 +155,38 @@ impl OpenAiCompatClient {
         Ok(Self::new(api_key, config))
     }
 
+    /// Resolve a well-known provider name to its default config.
+    /// Returns `(base_url, api_key_env)` for providers we know about.
+    fn well_known_provider_defaults(provider: &str) -> Option<(&'static str, &'static str)> {
+        let lower = provider.to_lowercase();
+        Some(match lower.as_str() {
+            "opencode" => (DEFAULT_OPENCODE_BASE_URL, "OPENCODE_API_KEY"),
+            "deepinfra" => (DEFAULT_DEEPINFRA_BASE_URL, "DEEPINFRA_API_KEY"),
+            "together" | "togetherai" => (DEFAULT_TOGETHERAI_BASE_URL, "TOGETHER_API_KEY"),
+            "perplexity" => (DEFAULT_PERPLEXITY_BASE_URL, "PERPLEXITY_API_KEY"),
+            "cohere" => (DEFAULT_COHERE_BASE_URL, "COHERE_API_KEY"),
+            "nvidia" => (DEFAULT_NVIDIA_BASE_URL, "NVIDIA_API_KEY"),
+            "cerebras" => (DEFAULT_CEREBRAS_BASE_URL, "CEREBRAS_API_KEY"),
+            "alibaba" => (DEFAULT_ALIBABA_BASE_URL, "ALIBABA_API_KEY"),
+            "venice" => (DEFAULT_VENICE_BASE_URL, "VENICE_API_KEY"),
+            "vercel" => (DEFAULT_VERCEL_BASE_URL, "VERCEL_API_KEY"),
+            "kilo" => (DEFAULT_KILO_BASE_URL, "KILO_API_KEY"),
+            "gitlab" => (DEFAULT_GITLAB_BASE_URL, "GITLAB_API_KEY"),
+            _ => return None,
+        })
+    }
+
     /// Create a client for an arbitrary OpenAI-compatible provider.
     /// Looks for `<PROVIDER>_API_KEY` and `<PROVIDER>_BASE_URL` env vars.
+    /// Uses well-known defaults for common providers.
     pub fn custom(provider: &str, _model: &str) -> Result<Self, ApiError> {
-        let env_key = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+        let (default_base, canonical_env) = Self::well_known_provider_defaults(provider)
+            .unwrap_or((DEFAULT_OPENAI_BASE_URL, ""));
+        let env_key = if canonical_env.is_empty() {
+            format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
+        } else {
+            canonical_env.to_string()
+        };
         let env_base = format!("{}_BASE_URL", provider.to_uppercase().replace('-', "_"));
 
         let api_key = read_env_non_empty(&env_key)?.or_else(|| {
@@ -141,20 +195,25 @@ impl OpenAiCompatClient {
         });
 
         let Some(api_key) = api_key else {
+            let hint = if !canonical_env.is_empty() {
+                format!(" (use {canonical_env})")
+            } else {
+                String::new()
+            };
             return Err(ApiError::Auth(format!(
-                "Model requires '{provider}' credentials. Set {env_key} env var or save a key to ~/.icode/auth.json."
+                "Model requires '{provider}' credentials{hint}. Set {env_key} env var or save a key to ~/.icode/auth.json."
             )));
         };
 
         let base_url = std::env::var(&env_base)
             .ok()
-            .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+            .unwrap_or_else(|| default_base.to_string());
 
         let config = OpenAiCompatConfig {
             provider_name: Box::leak(provider.to_string().into_boxed_str()),
             api_key_env: Box::leak(env_key.into_boxed_str()),
             base_url_env: Box::leak(env_base.into_boxed_str()),
-            default_base_url: DEFAULT_OPENAI_BASE_URL,
+            default_base_url: default_base,
         };
 
         Ok(Self {

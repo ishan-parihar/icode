@@ -477,9 +477,14 @@ fn parse_args(args: &[String]) -> Result<(CliAction, Option<String>), String> {
                 ));
             }
             "--print" => {
-                // icode compat: --print makes output non-interactive
-                output_format = CliOutputFormat::Text;
-                index += 1;
+                // icode compat: --print outputs the system prompt and exits
+                let cwd = std::env::current_dir()
+                    .map_err(|error| format!("failed to get current directory: {error}"))?;
+                let date = DEFAULT_DATE.to_string();
+                return Ok((
+                    CliAction::PrintSystemPrompt { cwd, date },
+                    log_level,
+                ));
             }
             "--resume" if rest.is_empty() => {
                 rest.push("--resume".to_string());

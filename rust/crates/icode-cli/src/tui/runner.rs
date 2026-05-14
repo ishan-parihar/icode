@@ -1256,6 +1256,7 @@ impl Tui {
                     api::ProviderKind::OpenRouter => "openrouter",
                     api::ProviderKind::Mistral => "mistral",
                     api::ProviderKind::Groq => "groq",
+                    api::ProviderKind::Opencode => "opencode",
                     api::ProviderKind::Unconfigured => return None,
                     api::ProviderKind::CustomOpenAi { provider, .. } => {
                         let key = provider.to_lowercase().replace('-', "_");
@@ -1951,6 +1952,7 @@ impl Tui {
                     api::ProviderKind::OpenRouter => "openrouter",
                     api::ProviderKind::Mistral => "mistral",
                     api::ProviderKind::Groq => "groq",
+                    api::ProviderKind::Opencode => "opencode",
                     api::ProviderKind::Unconfigured => return None,
                     api::ProviderKind::CustomOpenAi { provider, .. } => {
                         let key = provider.to_lowercase().replace('-', "_");

@@ -583,7 +583,8 @@ mod tests {
                 | ProviderKind::Mistral
                 | ProviderKind::Groq
                 | ProviderKind::Unconfigured
-                | ProviderKind::CustomOpenAi { .. } => {}
+                | ProviderKind::CustomOpenAi { .. }
+                | ProviderKind::Opencode => {}
             }
         }
     }

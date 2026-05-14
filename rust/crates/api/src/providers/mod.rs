@@ -47,6 +47,8 @@ pub enum ProviderKind {
     OpenRouter,
     Mistral,
     Groq,
+    /// OpenCode Zen — free/paid models at opencode.ai/zen
+    Opencode,
     /// Generic OpenAI-compatible provider for arbitrary `provider/model` configurations.
     /// Enables any OpenAI-compatible API endpoint without code changes.
     CustomOpenAi {
@@ -412,6 +414,73 @@ const MODEL_REGISTRY: &[RegistryEntry] = &[
             128_000, 8_192, false, true, false, 0.0, 0.0, 0.0, 0.0,
         ),
     },
+    // OpenCode Zen (opencode.ai/zen)
+    RegistryEntry {
+        alias: "deepseek-v4-flash-free",
+        canonical: "deepseek-v4-flash-free",
+        provider: ProviderKind::Opencode,
+        auth_env: "OPENCODE_API_KEY",
+        base_url_env: "OPENCODE_BASE_URL",
+        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            1_048_576, 384_000, true, true, false, 0.0, 0.0, 0.0, 0.0,
+        ),
+    },
+    RegistryEntry {
+        alias: "deepseek-v4-flash",
+        canonical: "deepseek-v4-flash",
+        provider: ProviderKind::Opencode,
+        auth_env: "OPENCODE_API_KEY",
+        base_url_env: "OPENCODE_BASE_URL",
+        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            1_000_000, 384_000, true, true, false, 0.14, 0.28, 0.0, 0.028,
+        ),
+    },
+    RegistryEntry {
+        alias: "deepseek-v4-pro",
+        canonical: "deepseek-v4-pro",
+        provider: ProviderKind::Opencode,
+        auth_env: "OPENCODE_API_KEY",
+        base_url_env: "OPENCODE_BASE_URL",
+        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            1_000_000, 128_000, true, true, false, 0.60, 2.40, 0.0, 0.0,
+        ),
+    },
+    RegistryEntry {
+        alias: "gpt-5.1-codex-max",
+        canonical: "gpt-5.1-codex-max",
+        provider: ProviderKind::Opencode,
+        auth_env: "OPENCODE_API_KEY",
+        base_url_env: "OPENCODE_BASE_URL",
+        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            400_000, 128_000, true, true, true, 1.25, 10.0, 0.0, 0.125,
+        ),
+    },
+    RegistryEntry {
+        alias: "kimi-k2.5",
+        canonical: "kimi-k2.5",
+        provider: ProviderKind::Opencode,
+        auth_env: "OPENCODE_API_KEY",
+        base_url_env: "OPENCODE_BASE_URL",
+        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            262_144, 65_536, true, true, true, 0.60, 3.0, 0.0, 0.08,
+        ),
+    },
+    RegistryEntry {
+        alias: "claude-sonnet-4-6",
+        canonical: "claude-sonnet-4-6",
+        provider: ProviderKind::Opencode,
+        auth_env: "OPENCODE_API_KEY",
+        base_url_env: "OPENCODE_BASE_URL",
+        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        capabilities: ModelCapabilities::new(
+            1_000_000, 64_000, true, true, true, 3.0, 15.0, 0.0, 0.30,
+        ),
+    },
     RegistryEntry {
         alias: "groq/mixtral-8x7b",
         canonical: "groq/mixtral-8x7b-32768",
@@ -490,6 +559,9 @@ pub fn detect_provider_kind(
     if lower.starts_with("qwen/") {
         return ProviderKind::QwenProxy;
     }
+    if lower.starts_with("opencode/") {
+        return ProviderKind::Opencode;
+    }
     if let Some((prefix, rest)) = model.split_once('/') {
         let env_key = format!("{}_API_KEY", prefix.to_uppercase().replace('-', "_"));
         let env_base = format!("{}_BASE_URL", prefix.to_uppercase().replace('-', "_"));
@@ -549,6 +621,10 @@ pub fn capabilities_for_model(model: &str) -> ModelCapabilities {
                     ModelCapabilities::new(128_000, 32_768, true, true, false, 0.0, 0.0, 0.0, 0.0)
                 } else if canonical.starts_with("qwen") {
                     ModelCapabilities::new(262_144, 65_536, true, true, true, 0.20, 0.60, 0.0, 0.0)
+                } else if canonical.starts_with("deepseek") {
+                    ModelCapabilities::new(
+                        1_000_000, 384_000, true, true, false, 0.14, 0.28, 0.0, 0.028,
+                    )
                 } else {
                     ModelCapabilities::new(128_000, 8_192, false, true, false, 0.20, 0.60, 0.0, 0.0)
                 }
@@ -588,6 +664,7 @@ const PROVIDER_DISPLAY_NAMES: &[(ProviderKind, &str)] = &[
     (ProviderKind::OpenRouter, "OpenRouter"),
     (ProviderKind::Mistral, "Mistral"),
     (ProviderKind::Groq, "Groq"),
+    (ProviderKind::Opencode, "OpenCode Zen"),
 ];
 
 /// Maps a `ProviderKind` to its `AuthStore` string key.
@@ -603,6 +680,7 @@ fn auth_store_key(kind: &ProviderKind) -> Cow<'_, str> {
         ProviderKind::OpenRouter => Cow::Borrowed("openrouter"),
         ProviderKind::Mistral => Cow::Borrowed("mistral"),
         ProviderKind::Groq => Cow::Borrowed("groq"),
+        ProviderKind::Opencode => Cow::Borrowed("opencode"),
         ProviderKind::CustomOpenAi { provider, .. } => {
             Cow::Owned(provider.to_lowercase().replace('-', "_"))
         }
