@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing;
+use tracing::trace;
 
 use crate::tui::autocomplete::AutocompleteState;
 use crate::tui::command_palette::CommandPaletteState;
@@ -108,6 +110,7 @@ pub struct ToolEvent {
     pub name: String,
     pub status: ToolStatus,
     pub input_summary: String,
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +171,7 @@ pub struct AppState {
     pub session: SessionInfo,
     pub tools: Vec<ToolEvent>,
     pub sidebar_visible: bool,
-    pub scroll_offset: usize,
+    pub scroll_offset: Option<usize>,
     pub auto_scroll: bool,
     pub scroll_paused: bool,
     pub is_streaming: bool,
@@ -212,6 +215,7 @@ pub struct AppState {
     pub interrupt_timestamp: Option<Instant>,
     pub turn_started_at: Option<Instant>,
     pub last_turn_duration: Option<std::time::Duration>,
+    pub tool_started_at: std::collections::HashMap<String, Instant>,
     pub diff_view: Option<DiffView>,
     pub pager: PagerState,
     pub files_panel: FilesPanelState,
@@ -317,7 +321,7 @@ impl AppState {
             },
             tools: Vec::new(),
             sidebar_visible: true,
-            scroll_offset: usize::MAX,
+            scroll_offset: None,
             auto_scroll: true,
             scroll_paused: false,
             is_streaming: false,
@@ -361,6 +365,7 @@ impl AppState {
             interrupt_timestamp: None,
             turn_started_at: None,
             last_turn_duration: None,
+            tool_started_at: std::collections::HashMap::new(),
             diff_view: None,
             pager: PagerState::default(),
             files_panel: FilesPanelState::new(),
@@ -469,6 +474,7 @@ impl AppState {
     }
 
     pub fn finish_stream(&mut self) {
+        trace!("stream finished");
         if let Some(msg) = self.messages.last_mut() {
             msg.is_streaming = false;
         }
@@ -477,6 +483,7 @@ impl AppState {
     }
 
     pub fn start_thinking(&mut self) {
+        trace!("thinking started");
         if let Some(msg) = self.messages.last_mut() {
             if msg.is_streaming {
                 self.is_thinking = true;
@@ -502,10 +509,13 @@ impl AppState {
     }
 
     pub fn add_tool_event(&mut self, name: &str, input_summary: &str) {
+        let now = Instant::now();
+        self.tool_started_at.insert(name.to_string(), now);
         self.tools.push(ToolEvent {
             name: name.into(),
             status: ToolStatus::Running,
             input_summary: input_summary.into(),
+            duration_ms: None,
         });
         if let Some(msg) = self.messages.last_mut() {
             if matches!(msg.role, MessageRole::Assistant) {
@@ -523,12 +533,18 @@ impl AppState {
     }
 
     pub fn complete_tool_event(&mut self, name: &str, output: &str, success: bool) {
+        // Calculate elapsed time before consuming the start marker
+        let elapsed_ms = self.tool_started_at.remove(name).map(|started| {
+            let d = started.elapsed();
+            d.as_millis() as u64
+        });
         if let Some(tool) = self.tools.iter_mut().rev().find(|t| t.name == name) {
             tool.status = if success {
                 ToolStatus::Completed
             } else {
                 ToolStatus::Failed
             };
+            tool.duration_ms = elapsed_ms;
         }
         let new_status = if success {
             ToolStatus::Completed
@@ -555,21 +571,22 @@ impl AppState {
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = usize::MAX;
+        self.scroll_offset = None;
         self.auto_scroll = true;
         self.scroll_paused = false;
     }
 
     pub fn recalculate_scroll(&mut self) {
-        if self.scroll_offset == usize::MAX {
+        if self.scroll_offset.is_none() {
             return;
         }
-        self.scroll_offset = 0;
+        self.scroll_offset = Some(0);
     }
 
     /// Display an error message inline and set mode to Error.
     /// The error is also appended to messages as a visible error block.
     pub fn show_error(&mut self, msg: String) {
+        trace!(%msg, "mode: error");
         self.mode = AppMode::Error(msg.clone());
         self.messages.push(Message {
             role: MessageRole::Tool {
@@ -590,6 +607,7 @@ impl AppState {
     }
 
     pub fn show_auth_error(&mut self, msg: String) {
+        trace!(%msg, "mode: auth error");
         self.mode = AppMode::AuthError(msg.clone());
         self.messages.push(Message {
             role: MessageRole::Tool {
@@ -1001,6 +1019,7 @@ impl AppState {
     }
 
     pub fn open_debug_panel(&mut self) {
+        trace!("debug panel toggled");
         self.debug_panel.toggle();
         self.active_modal = Some(ActiveModal::DebugPanel(DebugPanelState::new()));
     }

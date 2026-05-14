@@ -217,7 +217,7 @@ pub fn attach_session(session_path: &Path) -> Result<AppState, String> {
     state.tools.clear();
     state.revert = None;
     state.messages = convert_runtime_messages_to_tui(&saved_msgs, session_ts);
-    state.scroll_offset = usize::MAX;
+    state.scroll_offset = None;
     state.is_streaming = false;
     state.is_thinking = false;
     state.session.id = session_id.clone();

@@ -34,7 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 anyhow = { workspace = true }
 dirs = "6"
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "time"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "time", "registry"] }
 tracing-appender = "0.2"
 
 [lints]

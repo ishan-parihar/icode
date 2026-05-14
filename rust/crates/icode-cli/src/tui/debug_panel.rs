@@ -514,6 +514,68 @@ fn render_performance_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &App
         ),
     ]));
 
+    let tools_with_duration: Vec<_> = app
+        .tools
+        .iter()
+        .filter(|t| t.duration_ms.is_some())
+        .collect();
+
+    if !tools_with_duration.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "",
+            Style::default(),
+        )));
+
+        let max_dur = tools_with_duration
+            .iter()
+            .filter_map(|t| t.duration_ms)
+            .max()
+            .unwrap_or(1);
+
+        let name_width = 20usize;
+        let dur_width = 10usize;
+        let prefix_width = name_width + dur_width + 3;
+        let bar_area = (area.width as usize).saturating_sub(prefix_width).max(5);
+
+        let max_visible = (area.height as usize).saturating_sub(lines.len());
+
+        for tool in tools_with_duration.iter().rev().take(max_visible) {
+            let name = if tool.name.len() > name_width {
+                format!("{}…", &tool.name[..name_width.saturating_sub(1)])
+            } else {
+                format!("{:width$}", tool.name, width = name_width)
+            };
+
+            let dur_str = match tool.duration_ms {
+                Some(ms) if ms < 1000 => format!("{ms:>6}ms"),
+                Some(ms) => format!("{:>6.1}s", ms as f64 / 1000.0),
+                None => format!("{:>8}", "—"),
+            };
+
+            let bar_len = tool
+                .duration_ms
+                .map(|ms| {
+                    if max_dur > 0 {
+                        ((ms as f64 / max_dur as f64) * bar_area as f64).round() as usize
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(0)
+                .min(bar_area);
+
+            let bar = "▓".repeat(bar_len);
+
+            lines.push(Line::from(vec![
+                Span::styled(name, Style::default().fg(theme.text)),
+                Span::styled("  ", Style::default()),
+                Span::styled(dur_str, Style::default().fg(theme.text_muted)),
+                Span::styled(" ", Style::default()),
+                Span::styled(bar, Style::default().fg(theme.primary)),
+            ]));
+        }
+    }
+
     frame.render_widget(Paragraph::new(lines), area);
 }
 

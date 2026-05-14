@@ -1910,7 +1910,7 @@ fn run_repl(
                         tui.state_mut().messages.clear();
                         tui.state_mut().tools.clear();
                         tui.state_mut().revert = None;
-                        tui.state_mut().scroll_offset = usize::MAX;
+                        tui.state_mut().scroll_offset = None;
                         continue;
                     }
                     "__new_session__" => {
@@ -1941,7 +1941,7 @@ fn run_repl(
                             st.messages.clear();
                             st.tools.clear();
                             st.revert = None;
-                            st.scroll_offset = usize::MAX;
+                            st.scroll_offset = None;
                             st.selection = None;
                             st.is_thinking = false;
                             st.is_streaming = false;
@@ -2021,7 +2021,7 @@ fn run_repl(
                             st.messages.truncate(boundary);
                             st.tools.clear();
                             st.revert = None;
-                            st.scroll_offset = usize::MAX;
+                            st.scroll_offset = None;
                             st.prompt.value = fork_prompt;
                             st.prompt.cursor = st.prompt.value.chars().count();
                             st.message_action_dialog.close();
@@ -2091,7 +2091,7 @@ fn run_repl(
                                     st.revert = None;
                                     st.messages =
                                         convert_runtime_messages_to_tui(&saved_msgs, session_ts);
-                                    st.scroll_offset = usize::MAX;
+                                    st.scroll_offset = None;
                                     st.prompt.value.clear();
                                     st.prompt.cursor = 0;
                                     st.sessions_dialog.close();
@@ -2171,7 +2171,7 @@ fn run_repl(
                                             &saved_msgs,
                                             session_ts,
                                         );
-                                        st.scroll_offset = usize::MAX;
+                                        st.scroll_offset = None;
                                         st.prompt.value.clear();
                                         st.prompt.cursor = 0;
                                         st.is_streaming = false;
@@ -2208,7 +2208,7 @@ fn run_repl(
                             st.messages.clear();
                             st.tools.clear();
                             st.revert = None;
-                            st.scroll_offset = usize::MAX;
+                            st.scroll_offset = None;
                             st.selection = None;
                             st.is_thinking = false;
                             st.message_action_dialog.close();

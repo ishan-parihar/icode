@@ -875,18 +875,19 @@ impl MessageList {
             return total_lines;
         }
 
-        let scroll = if state.scroll_offset == usize::MAX {
+        let scroll = if state.scroll_offset.is_none() {
             total_lines.saturating_sub(visible_lines)
         } else {
             state
                 .scroll_offset
+                .unwrap()
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
         if scroll + visible_lines >= total_lines.saturating_sub(1) {
             state.auto_scroll = true;
             state.scroll_paused = false;
-            state.scroll_offset = usize::MAX;
+            state.scroll_offset = None;
         }
 
         let start = scroll;

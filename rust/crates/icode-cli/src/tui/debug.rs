@@ -1,11 +1,18 @@
 use std::path::PathBuf;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use std::sync::Mutex;
+use tracing_subscriber::{
+    layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Layer,
+};
 
-/// Initialize structured file + optional stderr logging.
+static RELOOD_HANDLE: Mutex<Option<reload::Handle<EnvFilter, tracing_subscriber::Registry>>> =
+    Mutex::new(None);
+
+/// Initialize structured file + optional stderr logging with runtime reload support.
 ///
 /// Log files are written to ~/.icode/logs/ with daily rotation.
 /// Control level via RUST_LOG env var (default: info for file, no stderr if unset).
 /// Use RUST_LOG=debug for full TUI diagnostics.
+/// At runtime, call [reload_log_level] to change the file filter without restarting.
 ///
 /// # Arguments
 /// * `log_level` - Log level for the file layer. One of: "error", "warn", "info", "debug", "trace".
@@ -48,15 +55,23 @@ pub fn init_logging(log_level: Option<&str>) {
     let active_level = log_level.unwrap_or("info");
     let level_filter = EnvFilter::try_new(active_level).unwrap_or_else(|_| EnvFilter::default());
 
+    // Create a reload layer so we can change the file log level at runtime
+    let (file_filter_layer, reload_handle) = reload::Layer::new(level_filter);
+
     if let Some(sl) = stderr_layer {
         tracing_subscriber::registry()
-            .with(file_layer.with_filter(level_filter))
+            .with(file_layer.with_filter(file_filter_layer))
             .with(sl)
             .init();
     } else {
         tracing_subscriber::registry()
-            .with(file_layer.with_filter(level_filter))
+            .with(file_layer.with_filter(file_filter_layer))
             .init();
+    }
+
+    // Store the reload handle for later use by /debug command
+    if let Ok(mut guard) = RELOOD_HANDLE.lock() {
+        *guard = Some(reload_handle);
     }
 
     tracing::info!(
@@ -66,6 +81,32 @@ pub fn init_logging(log_level: Option<&str>) {
         log_level = active_level,
         "icode logging initialized"
     );
+}
+
+/// Reload the file log level at runtime.
+/// Returns an error message if the level string is invalid or logging is not initialized.
+pub fn reload_log_level(level: &str) -> Result<(), String> {
+    let new_filter =
+        EnvFilter::try_new(level).map_err(|e| format!("Invalid log level '{level}': {e}"))?;
+
+    let guard = RELOOD_HANDLE
+        .lock()
+        .map_err(|e| format!("Failed to acquire reload lock: {e}"))?;
+
+    match guard.as_ref() {
+        Some(handle) => handle
+            .reload(new_filter)
+            .map_err(|e| format!("Failed to reload filter: {e}")),
+        None => Err("Logging not initialized yet".to_string()),
+    }
+}
+
+/// Check whether the subscriber was initialised with a reload handle.
+pub fn is_reload_available() -> bool {
+    RELOOD_HANDLE
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
 }
 
 /// Return the log directory path (~/.icode/logs/).

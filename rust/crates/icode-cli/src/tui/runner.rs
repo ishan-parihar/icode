@@ -1,4 +1,5 @@
 use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
+use tracing::trace;
 use crate::tui::autocomplete::AutocompleteMode;
 use crate::tui::command_palette::{find_slash_command_action, CommandAction};
 use crate::tui::event::{Event, EventLoop, ParsedKey};
@@ -27,6 +28,7 @@ use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing;
 
 enum PaletteAction {
     NewSession,
@@ -127,6 +129,7 @@ impl Tui {
 
             match self.event_loop.next() {
                 Ok(Event::Key(key)) => {
+                    trace!(?key, "tui event: key");
                     if let Some(input) = self.handle_key(key) {
                         self.terminal.draw(|frame| {
                             render_ui(frame, &mut self.state, self.theme);
@@ -144,10 +147,12 @@ impl Tui {
                         });
                     }
                 }
-                Ok(Event::Resize(_, _)) => {
+                Ok(Event::Resize(w, h)) => {
+                    trace!(width = w, height = h, "tui event: resize");
                     self.state.recalculate_scroll();
                 }
                 Ok(Event::Tick) => {
+                    trace!("tui event: tick");
                     self.state.prune_expired_toasts();
                     self.poll_turn_events();
                 }
@@ -214,19 +219,23 @@ impl Tui {
                             }
                         }
                         crossterm::event::MouseEventKind::ScrollUp => {
-                            if self.state.scroll_offset == usize::MAX {
-                                self.state.scroll_offset = 0;
+                            if self.state.scroll_offset.is_none() {
+                                self.state.scroll_offset = Some(0);
                             } else {
-                                self.state.scroll_offset =
-                                    self.state.scroll_offset.saturating_sub(3);
+                                self.state.scroll_offset = self
+                                    .state
+                                    .scroll_offset
+                                    .map(|o| o.saturating_sub(3));
                             }
                             self.state.scroll_paused = true;
                             self.state.auto_scroll = false;
                         }
                         crossterm::event::MouseEventKind::ScrollDown => {
-                            if self.state.scroll_offset != usize::MAX {
-                                self.state.scroll_offset =
-                                    self.state.scroll_offset.saturating_add(3);
+                            if self.state.scroll_offset.is_some() {
+                                self.state.scroll_offset = self
+                                    .state
+                                    .scroll_offset
+                                    .map(|o| o.saturating_add(3));
                             }
                         }
                         _ => {}
@@ -515,10 +524,10 @@ impl Tui {
                         self.state.prompt.history_up();
                     } else if !is_at_top {
                         self.state.prompt.move_up(input_width);
-                    } else if self.state.scroll_offset == usize::MAX {
-                        self.state.scroll_offset = 0;
+                    } else if self.state.scroll_offset.is_none() {
+                        self.state.scroll_offset = Some(0);
                     } else {
-                        self.state.scroll_offset = self.state.scroll_offset.saturating_sub(1);
+                        self.state.scroll_offset = self.state.scroll_offset.map(|o| o.saturating_sub(1));
                     }
                 }
                 None
@@ -536,8 +545,8 @@ impl Tui {
                         self.state.prompt.history_down();
                     } else if !is_at_bottom {
                         self.state.prompt.move_down(input_width);
-                    } else if self.state.scroll_offset != usize::MAX {
-                        self.state.scroll_offset = self.state.scroll_offset.saturating_add(1);
+                    } else if self.state.scroll_offset.is_some() {
+                        self.state.scroll_offset = self.state.scroll_offset.map(|o| o.saturating_add(1));
                     }
                 }
                 None
@@ -623,18 +632,18 @@ impl Tui {
                 None
             }
             (_, KeyCode::PageUp) => {
-                if self.state.scroll_offset == usize::MAX {
-                    self.state.scroll_offset = 0;
+                if self.state.scroll_offset.is_none() {
+                    self.state.scroll_offset = Some(0);
                 } else {
-                    self.state.scroll_offset = self.state.scroll_offset.saturating_sub(10);
+                    self.state.scroll_offset = self.state.scroll_offset.map(|o| o.saturating_sub(10));
                 }
                 self.state.scroll_paused = true;
                 self.state.auto_scroll = false;
                 None
             }
             (_, KeyCode::PageDown) => {
-                if self.state.scroll_offset != usize::MAX {
-                    self.state.scroll_offset = self.state.scroll_offset.saturating_add(10);
+                if self.state.scroll_offset.is_some() {
+                    self.state.scroll_offset = self.state.scroll_offset.map(|o| o.saturating_add(10));
                 }
                 None
             }
@@ -1169,6 +1178,7 @@ impl Tui {
 
     fn handle_debug_panel_key(&mut self, key: KeyEvent) -> Option<String> {
         use crate::tui::debug_panel::DebugAction;
+        trace!(?key, "debug panel key");
         match self.state.debug_panel.handle_key(key) {
             DebugAction::None => None,
             DebugAction::Close => None,
@@ -2596,6 +2606,19 @@ impl Tui {
     }
 
     fn process_turn_event(&mut self, event: TurnEvent) {
+        match &event {
+            TurnEvent::ThinkingStarted => trace!("turn: thinking started"),
+            TurnEvent::TokenDelta(text) => trace!(len = text.len(), "turn: token delta"),
+            TurnEvent::ToolCallStarted { name, .. } => trace!(%name, "turn: tool call started"),
+            TurnEvent::ToolCallCompleted { name, success, .. } => {
+                trace!(%name, success, "turn: tool call completed")
+            }
+            TurnEvent::TurnCompleted { tool_calls, .. } => {
+                trace!(count = tool_calls.len(), "turn: completed")
+            }
+            TurnEvent::TurnError(msg) => trace!(%msg, "turn: error"),
+            TurnEvent::PermissionRequested { .. } => trace!("turn: permission requested"),
+        }
         match event {
             TurnEvent::ThinkingStarted => {
                 self.state.start_thinking();
@@ -2634,7 +2657,15 @@ impl Tui {
                 let dur_ms = turn_dur.map_or(0, |d| d.as_millis() as u64);
                 let timeline: Vec<(String, bool, u64)> = tool_calls
                     .iter()
-                    .map(|tc| (tc.name.clone(), tc.success, 0u64))
+                    .map(|tc| {
+                        let dur = self.state.tools
+                            .iter()
+                            .rev()
+                            .find(|t| t.name == tc.name)
+                            .and_then(|t| t.duration_ms)
+                            .unwrap_or(0);
+                        (tc.name.clone(), tc.success, dur)
+                    })
                     .collect();
                 if let Some(msg) = self.state.messages.last_mut() {
                     if msg.is_streaming && msg.full_text().is_empty() && !text.is_empty() {
@@ -2735,11 +2766,12 @@ impl Tui {
             return None;
         }
 
-        let scroll = if self.state.scroll_offset == usize::MAX {
+        let scroll = if self.state.scroll_offset.is_none() {
             total_lines.saturating_sub(visible_lines)
         } else {
             self.state
                 .scroll_offset
+                .unwrap()
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
@@ -3110,11 +3142,12 @@ impl Tui {
             return None;
         }
 
-        let scroll = if self.state.scroll_offset == usize::MAX {
+        let scroll = if self.state.scroll_offset.is_none() {
             total_lines.saturating_sub(visible_lines)
         } else {
             self.state
                 .scroll_offset
+                .unwrap()
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
@@ -3326,11 +3359,12 @@ impl Tui {
             return String::new();
         }
 
-        let scroll = if self.state.scroll_offset == usize::MAX {
+        let scroll = if self.state.scroll_offset.is_none() {
             total_lines.saturating_sub(visible_lines)
         } else {
             self.state
                 .scroll_offset
+                .unwrap()
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
@@ -3407,6 +3441,7 @@ impl Drop for Tui {
 
 /// Handle `/debug` slash command — inlined from main.rs for TUI accessibility.
 fn handle_debug_slash_command(action: Option<&str>) -> Result<String, String> {
+    trace!(?action, "debug slash command");
     match action {
         None => {
             let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info (default)".to_string());
@@ -3447,11 +3482,17 @@ fn handle_debug_slash_command(action: Option<&str>) -> Result<String, String> {
         }
         Some("on") => {
             std::env::set_var("RUST_LOG", "debug,hyper=info,h2=info");
-            Ok("Debug logging enabled (RUST_LOG=debug,hyper=info,h2=info).\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart.".to_string())
+            match crate::tui::debug::reload_log_level("debug,hyper=info,h2=info") {
+                Ok(()) => Ok("Debug logging enabled (RUST_LOG=debug,hyper=info,h2=info).\nLog level reloaded at runtime.".to_string()),
+                Err(e) => Ok(format!("Debug logging enabled (RUST_LOG=debug,hyper=info,h2=info).\nNote: {e} — changes apply after restart.")),
+            }
         }
         Some("off") => {
             std::env::set_var("RUST_LOG", "info");
-            Ok("Debug logging disabled (RUST_LOG=info).\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart.".to_string())
+            match crate::tui::debug::reload_log_level("info") {
+                Ok(()) => Ok("Debug logging disabled (RUST_LOG=info).\nLog level reloaded at runtime.".to_string()),
+                Err(e) => Ok(format!("Debug logging disabled (RUST_LOG=info).\nNote: {e} — changes apply after restart.")),
+            }
         }
         Some("level") => {
             Err("Usage: /debug level <level>\nValid levels: error, warn, info, debug, trace".to_string())
@@ -3464,9 +3505,10 @@ fn handle_debug_slash_command(action: Option<&str>) -> Result<String, String> {
                 let valid_levels = ["error", "warn", "info", "debug", "trace"];
                 if valid_levels.contains(&level) {
                     std::env::set_var("RUST_LOG", level);
-                    Ok(format!(
-                        "Log level set to '{level}'.\nNote: Active tracing subscriber cannot be re-initialized at runtime.\nNew log entries will use the updated level after restart."
-                    ))
+                    match crate::tui::debug::reload_log_level(level) {
+                        Ok(()) => Ok(format!("Log level set to '{level}'.\nLog level reloaded at runtime.")),
+                        Err(e) => Ok(format!("Log level set to '{level}'.\nNote: {e} — changes apply after restart.")),
+                    }
                 } else {
                     Err(format!(
                         "Invalid log level '{level}'. Valid levels: error, warn, info, debug, trace"
