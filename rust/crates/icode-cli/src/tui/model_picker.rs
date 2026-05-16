@@ -1,4 +1,7 @@
-use api::providers::{list_all_models, ModelCapabilities, ProviderKind, RegistryEntry};
+use api::models_dev;
+use api::providers::{
+    check_provider_auth, list_all_models, provider_kind_for_id, ModelCapabilities, ProviderKind,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -34,13 +37,22 @@ pub struct ModelEntry {
 }
 
 impl ModelEntry {
-    fn display_name(&self) -> String {
-        format!["{} ({})", self.alias, self.canonical]
-    }
-
     fn search_text(&self) -> String {
         format!("{} {} {:?}", self.alias, self.canonical, self.provider).to_lowercase()
     }
+}
+
+/// Action returned from model picker key handling.
+#[derive(Debug)]
+pub enum ModelPickerAction {
+    /// No action.
+    None,
+    /// A model was selected; the canonical name is provided.
+    Selected(String),
+    /// User pressed L on an unconfigured provider — open the provider dialog.
+    OpenProviderDialog(ProviderKind),
+    /// Picker was closed without a selection.
+    Closed,
 }
 
 pub struct ModelPickerState {
@@ -52,20 +64,15 @@ pub struct ModelPickerState {
     pub model_state: ModelState,
     pub selected: Option<String>,
     pub section_offsets: Vec<(String, usize)>,
+    /// Track which providers are currently unconfigured so we can show hints.
+    pub unconfigured_providers: std::collections::HashSet<String>,
 }
 
 impl ModelPickerState {
     pub fn new() -> Self {
         let model_state = ModelState::load();
-        let entries: Vec<ModelEntry> = list_all_models()
-            .map(|e| ModelEntry {
-                alias: e.alias.to_string(),
-                canonical: e.canonical.to_string(),
-                provider: e.provider.clone(),
-                capabilities: e.capabilities,
-            })
-            .collect();
-
+        let entries = Self::load_entries();
+        let unconfigured = Self::compute_unconfigured();
         Self {
             open: false,
             entries,
@@ -75,27 +82,57 @@ impl ModelPickerState {
             model_state,
             selected: None,
             section_offsets: Vec::new(),
+            unconfigured_providers: unconfigured,
         }
+    }
+
+    fn load_entries() -> Vec<ModelEntry> {
+        // Use the live catalog — list_all_models() reads models_dev::list_models() internally
+        list_all_models()
+            .map(|e| ModelEntry {
+                alias: e.alias.clone(),
+                canonical: e.canonical.clone(),
+                provider: e.provider.clone(),
+                capabilities: e.capabilities,
+            })
+            .collect()
+    }
+
+    fn compute_unconfigured() -> std::collections::HashSet<String> {
+        // Ask the catalog which providers lack auth
+        models_dev::catalog()
+            .values()
+            .filter(|p| !models_dev::provider_has_auth(p))
+            .map(|p| p.name.clone())
+            .collect()
     }
 
     pub fn open(&mut self) {
         self.open = true;
         self.search.clear();
         self.cursor = 0;
-        self.entries = list_all_models()
-            .map(|e| ModelEntry {
-                alias: e.alias.to_string(),
-                canonical: e.canonical.to_string(),
-                provider: e.provider.clone(),
-                capabilities: e.capabilities,
-            })
-            .collect();
+        self.entries = Self::load_entries();
         self.model_state = ModelState::load();
+        self.unconfigured_providers = Self::compute_unconfigured();
         self.rebuild_filtered();
     }
 
     pub fn close(&mut self) {
         self.open = false;
+    }
+
+    /// Provider sections derived from the catalog — sorted by name.
+    fn provider_sections_from_entries(entries: &[ModelEntry]) -> Vec<(ProviderKind, String)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut sections: Vec<(ProviderKind, String)> = Vec::new();
+        for e in entries {
+            let name = api::providers::provider_display_name(&e.provider).into_owned();
+            if seen.insert(name.clone()) {
+                sections.push((e.provider.clone(), name));
+            }
+        }
+        sections.sort_by(|a, b| a.1.cmp(&b.1));
+        sections
     }
 
     pub fn rebuild_filtered(&mut self) {
@@ -151,15 +188,8 @@ impl ModelPickerState {
                 self.filtered.extend(recents);
             }
 
-            // Provider-grouped sections
-            let providers: Vec<(ProviderKind, &str)> = vec![
-                (ProviderKind::Anthropic, "Anthropic"),
-                (ProviderKind::OpenAi, "OpenAI"),
-                (ProviderKind::Xai, "xAI"),
-                (ProviderKind::QwenProxy, "Qwen"),
-            ];
-
-            for (kind, label) in providers {
+            // All provider-grouped sections (catalog-driven, sorted by name)
+            for (kind, label) in Self::provider_sections_from_entries(&self.entries) {
                 let section_start = self.filtered.len();
                 let models: Vec<usize> = self
                     .entries
@@ -170,8 +200,7 @@ impl ModelPickerState {
                     .map(|(i, _)| i)
                     .collect();
                 if !models.is_empty() {
-                    self.section_offsets
-                        .push((label.to_string(), section_start));
+                    self.section_offsets.push((label, section_start));
                     self.filtered.extend(models);
                 }
             }
@@ -239,6 +268,23 @@ impl ModelPickerState {
         }
     }
 
+    /// Returns the provider kind for the currently highlighted entry, if any.
+    pub fn current_entry_provider(&self) -> Option<ProviderKind> {
+        self.filtered
+            .get(self.cursor)
+            .and_then(|&idx| self.entries.get(idx))
+            .map(|e| e.provider.clone())
+    }
+
+    /// Returns true if the currently highlighted entry's provider is unconfigured.
+    pub fn current_entry_unconfigured(&self) -> bool {
+        if let Some(kind) = self.current_entry_provider() {
+            !check_provider_auth(&kind)
+        } else {
+            false
+        }
+    }
+
     pub fn current_section(&self) -> &str {
         self.section_offsets
             .iter()
@@ -291,11 +337,6 @@ pub fn render_model_picker(
     } else {
         Span::raw(&state.search)
     };
-    let cursor_pos = if state.search.is_empty() {
-        0
-    } else {
-        state.search.len() as u16
-    };
     let search_para = Paragraph::new(Line::from(vec![
         Span::styled("> ", Style::default().fg(theme.accent)),
         search_text,
@@ -327,17 +368,38 @@ pub fn render_model_picker(
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            lines.push(Line::from(Span::styled(
-                format!("  {section}"),
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
+
+            // Check if this provider section is unconfigured
+            let section_locked = state.unconfigured_providers.contains(section);
+
+            let section_span = if section_locked {
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {section}"),
+                        Style::default()
+                            .fg(theme.text_muted)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " 🔒 not configured",
+                        Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC),
+                    ),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    format!("  {section}"),
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            };
+            lines.push(section_span);
         }
 
         let is_selected = pos == state.cursor;
         let is_fav = state.model_state.is_favorite(&entry.canonical);
         let is_current = state.model_state.current.as_deref() == Some(&entry.canonical);
+        let provider_configured = check_provider_auth(&entry.provider);
 
         let marker = if is_selected { "\u{25b6} " } else { "  " };
         let style = if is_selected {
@@ -349,12 +411,25 @@ pub fn render_model_picker(
             Style::default()
                 .fg(theme.success)
                 .add_modifier(Modifier::BOLD)
+        } else if !provider_configured {
+            Style::default().fg(theme.text_muted)
         } else {
             Style::default()
         };
 
-        let provider_color = provider_color(entry.provider.clone(), theme);
+        let provider_color = if !provider_configured && !is_selected {
+            theme.text_muted
+        } else {
+            provider_color(entry.provider.clone(), theme)
+        };
+
         let cap_badge = capability_badge(entry.capabilities, theme);
+
+        let lock_span = if !provider_configured && !is_selected {
+            Span::styled(" 🔒", Style::default().fg(theme.warning))
+        } else {
+            Span::raw("")
+        };
 
         lines.push(Line::from(vec![
             Span::styled(marker, style),
@@ -365,6 +440,7 @@ pub fn render_model_picker(
             ),
             Span::raw("  "),
             cap_badge,
+            lock_span,
             if is_fav {
                 Span::styled(" \u{2605}", Style::default().fg(theme.accent))
             } else {
@@ -381,8 +457,12 @@ pub fn render_model_picker(
     let list_para = Paragraph::new(lines);
     frame.render_widget(list_para, chunks[1]);
 
-    let help_text =
-        " \u{2191}\u{2193} navigate  Enter: select  Esc: cancel  Ctrl+F: favorite  /: search ";
+    // Show login hint when highlighted entry is from an unconfigured provider
+    let help_text = if state.current_entry_unconfigured() {
+        " \u{2191}\u{2193} navigate  Enter: select  L: login to provider  Esc: cancel  Ctrl+F: fav  /: search "
+    } else {
+        " \u{2191}\u{2193} navigate  Enter: select  Esc: cancel  Ctrl+F: favorite  /: search "
+    };
     let help = Span::styled(help_text, Style::default().fg(theme.text_muted));
     let help_para = Paragraph::new(help);
     frame.render_widget(help_para, chunks[2]);
@@ -401,6 +481,12 @@ fn provider_color(kind: ProviderKind, theme: Theme) -> Color {
         ProviderKind::Xai => theme.text,
         ProviderKind::OpenAi => Color::Rgb(16, 163, 127),
         ProviderKind::QwenProxy => Color::Rgb(100, 149, 237),
+        ProviderKind::Gemini => Color::Rgb(66, 133, 244),
+        ProviderKind::Groq => Color::Rgb(248, 82, 32),
+        ProviderKind::Mistral => Color::Rgb(255, 135, 0),
+        ProviderKind::OpenRouter => Color::Rgb(100, 88, 216),
+        ProviderKind::Bedrock => Color::Rgb(255, 153, 0),
+        ProviderKind::Opencode => Color::Rgb(0, 200, 150),
         _ => theme.text_muted,
     }
 }

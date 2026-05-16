@@ -1,6 +1,7 @@
 mod client;
 mod error;
 mod prompt_cache;
+pub mod models_dev;
 pub mod providers;
 mod sse;
 mod types;
@@ -27,7 +28,9 @@ pub use providers::{
     capabilities_for_model, check_provider_auth, detect_provider_kind, is_provider_configured,
     list_all_models, max_tokens_for_model, provider_display_name, resolve_model_alias,
     scan_provider_auth_status, ModelCapabilities, ProviderKind, RegistryEntry,
+    PROVIDER_DISPLAY_NAMES,
 };
+pub use models_dev::{catalog, list_models, ModelEntry, provider_has_auth};
 pub use sse::{parse_frame, SseParser};
 pub use types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,

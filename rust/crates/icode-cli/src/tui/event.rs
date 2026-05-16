@@ -75,3 +75,92 @@ impl EventLoop {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{
+        KeyCode, KeyEvent as CTKeyEvent, KeyEventKind, KeyModifiers,
+    };
+
+    #[test]
+    fn test_parsed_key_ctrl_modifier() {
+        let key = CTKeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let parsed: ParsedKey = key.into();
+        assert!(parsed.ctrl());
+        assert!(!parsed.meta());
+        assert!(!parsed.shift());
+    }
+
+    #[test]
+    fn test_parsed_key_meta_modifier() {
+        let key = CTKeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT);
+        let parsed: ParsedKey = key.into();
+        assert!(!parsed.ctrl());
+        assert!(parsed.meta());
+        assert!(!parsed.shift());
+    }
+
+    #[test]
+    fn test_parsed_key_shift_modifier() {
+        let key = CTKeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT);
+        let parsed: ParsedKey = key.into();
+        assert!(!parsed.ctrl());
+        assert!(!parsed.meta());
+        assert!(parsed.shift());
+    }
+
+    #[test]
+    fn test_parsed_key_no_modifiers() {
+        let key = CTKeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let parsed: ParsedKey = key.into();
+        assert!(!parsed.ctrl());
+        assert!(!parsed.meta());
+        assert!(!parsed.shift());
+        assert_eq!(parsed.code, KeyCode::Enter);
+    }
+
+    #[test]
+    fn test_parsed_key_roundtrip() {
+        let original = CTKeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let parsed: ParsedKey = original.into();
+        let roundtrip: KeyEvent = KeyEvent::from(&parsed);
+        assert_eq!(roundtrip.code, KeyCode::Char('a'));
+        assert_eq!(roundtrip.modifiers, KeyModifiers::CONTROL);
+        assert_eq!(roundtrip.kind, KeyEventKind::Press);
+    }
+
+    #[test]
+    fn test_event_key_variant() {
+        let key = CTKeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let event = Event::Key(key);
+        match event {
+            Event::Key(k) => assert_eq!(k.code, KeyCode::Esc),
+            _ => panic!("Expected Event::Key"),
+        }
+    }
+
+    #[test]
+    fn test_event_resize_variant() {
+        let event = Event::Resize(120, 40);
+        match event {
+            Event::Resize(w, h) => {
+                assert_eq!(w, 120);
+                assert_eq!(h, 40);
+            }
+            _ => panic!("Expected Event::Resize"),
+        }
+    }
+
+    #[test]
+    fn test_event_tick_variant() {
+        let event = Event::Tick;
+        assert!(matches!(event, Event::Tick));
+    }
+
+    #[test]
+    fn test_event_loop_new() {
+        let loop_ = EventLoop::new(250);
+        let _ = loop_;
+    }
+}

@@ -47,6 +47,7 @@ pub mod syntax_highlight;
 pub mod syntax_theme;
 pub mod theme;
 pub mod theme_loader;
+pub mod user_commands;
 pub mod transcript;
 pub mod widgets;
 

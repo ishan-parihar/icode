@@ -4,7 +4,7 @@ use tracing_subscriber::{
     layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Layer,
 };
 
-static RELOOD_HANDLE: Mutex<Option<reload::Handle<EnvFilter, tracing_subscriber::Registry>>> =
+static RELOAD_HANDLE: Mutex<Option<reload::Handle<EnvFilter, tracing_subscriber::Registry>>> =
     Mutex::new(None);
 
 /// Initialize structured file + optional stderr logging with runtime reload support.
@@ -70,7 +70,7 @@ pub fn init_logging(log_level: Option<&str>) {
     }
 
     // Store the reload handle for later use by /debug command
-    if let Ok(mut guard) = RELOOD_HANDLE.lock() {
+    if let Ok(mut guard) = RELOAD_HANDLE.lock() {
         *guard = Some(reload_handle);
     }
 
@@ -89,7 +89,7 @@ pub fn reload_log_level(level: &str) -> Result<(), String> {
     let new_filter =
         EnvFilter::try_new(level).map_err(|e| format!("Invalid log level '{level}': {e}"))?;
 
-    let guard = RELOOD_HANDLE
+    let guard = RELOAD_HANDLE
         .lock()
         .map_err(|e| format!("Failed to acquire reload lock: {e}"))?;
 
@@ -103,7 +103,7 @@ pub fn reload_log_level(level: &str) -> Result<(), String> {
 
 /// Check whether the subscriber was initialised with a reload handle.
 pub fn is_reload_available() -> bool {
-    RELOOD_HANDLE
+    RELOAD_HANDLE
         .lock()
         .map(|g| g.is_some())
         .unwrap_or(false)

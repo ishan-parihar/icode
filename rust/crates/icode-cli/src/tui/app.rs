@@ -24,6 +24,7 @@ use crate::tui::dialog_skills::SkillsDialogState;
 use crate::tui::dialog_theme_list::ThemeListDialogState;
 use crate::tui::dialog_workspaces::WorkspaceDialogState;
 use crate::tui::home_screen::HomeScreenState;
+use crate::tui::user_commands::UserCommandRegistry;
 use crate::tui::input::InputState;
 use crate::tui::modal_manager::ActiveModal;
 use crate::tui::model_picker::ModelPickerState;
@@ -232,6 +233,7 @@ pub struct AppState {
     pub active_modal: Option<ActiveModal>,
     pub permission_response_tx:
         Option<std::sync::mpsc::SyncSender<runtime::PermissionPromptDecision>>,
+    pub user_commands: UserCommandRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -381,6 +383,7 @@ impl AppState {
             has_shown_welcome: false,
             active_modal: None,
             permission_response_tx: None,
+            user_commands: UserCommandRegistry::new(),
         }
     }
 
@@ -510,7 +513,9 @@ impl AppState {
 
     pub fn add_tool_event(&mut self, name: &str, input_summary: &str) {
         let now = Instant::now();
-        self.tool_started_at.insert(name.to_string(), now);
+        let idx = self.tools.len();
+        self.tool_started_at
+            .insert(format!("{}:{}", name, idx), now);
         self.tools.push(ToolEvent {
             name: name.into(),
             status: ToolStatus::Running,
@@ -533,11 +538,14 @@ impl AppState {
     }
 
     pub fn complete_tool_event(&mut self, name: &str, output: &str, success: bool) {
-        // Calculate elapsed time before consuming the start marker
-        let elapsed_ms = self.tool_started_at.remove(name).map(|started| {
-            let d = started.elapsed();
-            d.as_millis() as u64
-        });
+        // Use the tool's vector index to avoid name collisions in the timing map
+        let tool_idx = self.tools.iter().rposition(|t| t.name == name);
+        let elapsed_ms = tool_idx
+            .and_then(|i| self.tool_started_at.remove(&format!("{}:{}", name, i)))
+            .map(|started| {
+                let d = started.elapsed();
+                d.as_millis() as u64
+            });
         if let Some(tool) = self.tools.iter_mut().rev().find(|t| t.name == name) {
             tool.status = if success {
                 ToolStatus::Completed
@@ -577,10 +585,10 @@ impl AppState {
     }
 
     pub fn recalculate_scroll(&mut self) {
-        if self.scroll_offset.is_none() {
-            return;
+        if let Some(current) = self.scroll_offset {
+            let max_scroll = self.messages.len().saturating_sub(1);
+            self.scroll_offset = Some(current.min(max_scroll));
         }
-        self.scroll_offset = Some(0);
     }
 
     /// Display an error message inline and set mode to Error.
@@ -920,7 +928,50 @@ impl AppState {
     }
 
     pub fn close_modal(&mut self) {
-        self.active_modal = None;
+        if let Some(modal) = self.active_modal.take() {
+            match modal {
+                ActiveModal::ModelPicker(mut state) => {
+                    state.close();
+                    self.model_picker = state;
+                }
+                ActiveModal::CommandPalette(mut state) => {
+                    state.close();
+                    self.command_palette = state;
+                }
+                ActiveModal::Sessions(mut state) => {
+                    state.close();
+                    self.sessions_dialog = state;
+                }
+                ActiveModal::SessionBranching(mut state) => {
+                    state.close();
+                    self.branching_dialog = state;
+                }
+                ActiveModal::PromptStash(mut state) => {
+                    state.close();
+                    self.prompt_stash = state;
+                }
+                ActiveModal::Permission(state) => {
+                    self.permission_dialog = state;
+                }
+                ActiveModal::Question(state) => {
+                    self.question_prompt = state;
+                }
+                ActiveModal::Mcp(_) => self.mcp_dialog.close(),
+                ActiveModal::Skills(_) => self.skills_dialog.close(),
+                ActiveModal::ThemeList(_) => self.theme_list_dialog.close(),
+                ActiveModal::Plugins(_) => self.plugins_dialog.close(),
+                ActiveModal::MessageAction(_) => self.message_action_dialog.close(),
+                ActiveModal::Help(_) => self.help_dialog.close(),
+                ActiveModal::ContextViz(_) => self.context_viz_dialog.close(),
+                ActiveModal::ExportOptions(_) => self.export_options.close(),
+                ActiveModal::DebugPanel(_) => self.debug_panel.close(),
+                ActiveModal::Provider(_) => self.provider_dialog.close(),
+                ActiveModal::Workspace(_) => self.workspace_dialog.close(),
+                ActiveModal::DiffView(_) => {}
+                ActiveModal::Pager(_) => self.pager.close(),
+                ActiveModal::Autocomplete(_) => self.autocomplete.close(),
+            }
+        }
     }
 
     pub fn is_any_modal_open(&self) -> bool {
@@ -942,6 +993,9 @@ impl AppState {
     }
 
     pub fn open_model_picker(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::ModelPicker(_))) {
+            return;
+        }
         self.model_picker.open();
         self.active_modal = Some(ActiveModal::ModelPicker(std::mem::take(
             &mut self.model_picker,
@@ -949,6 +1003,9 @@ impl AppState {
     }
 
     pub fn open_command_palette(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::CommandPalette(_))) {
+            return;
+        }
         self.command_palette.open();
         self.active_modal = Some(ActiveModal::CommandPalette(std::mem::take(
             &mut self.command_palette,
@@ -956,26 +1013,41 @@ impl AppState {
     }
 
     pub fn open_mcp(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Mcp(_))) {
+            return;
+        }
         self.mcp_dialog.open = true;
         self.active_modal = Some(ActiveModal::Mcp(McpDialogState::new()));
     }
 
     pub fn open_skills(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Skills(_))) {
+            return;
+        }
         self.skills_dialog.open = true;
         self.active_modal = Some(ActiveModal::Skills(SkillsDialogState::new(None)));
     }
 
     pub fn open_theme_list(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::ThemeList(_))) {
+            return;
+        }
         self.theme_list_dialog.open = true;
         self.active_modal = Some(ActiveModal::ThemeList(ThemeListDialogState::new("")));
     }
 
     pub fn open_plugins(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Plugins(_))) {
+            return;
+        }
         self.plugins_dialog.open = true;
         self.active_modal = Some(ActiveModal::Plugins(PluginsDialogState::new()));
     }
 
     pub fn open_sessions(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Sessions(_))) {
+            return;
+        }
         self.sessions_dialog.load_sessions();
         self.sessions_dialog.open = true;
         self.active_modal = Some(ActiveModal::Sessions(std::mem::take(
@@ -984,21 +1056,33 @@ impl AppState {
     }
 
     pub fn open_message_action(&mut self, msg_idx: usize, content: String) {
+        if matches!(self.active_modal, Some(ActiveModal::MessageAction(_))) {
+            return;
+        }
         self.message_action_dialog.open(msg_idx, content);
         self.active_modal = Some(ActiveModal::MessageAction(MessageActionDialogState::new()));
     }
 
     pub fn open_help(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Help(_))) {
+            return;
+        }
         self.help_dialog.open();
         self.active_modal = Some(ActiveModal::Help(HelpDialogState::new()));
     }
 
     pub fn open_context_viz(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::ContextViz(_))) {
+            return;
+        }
         self.context_viz_dialog.open = true;
         self.active_modal = Some(ActiveModal::ContextViz(ContextVizDialogState::new()));
     }
 
     pub fn open_session_branching(&mut self, session_id: &str) {
+        if matches!(self.active_modal, Some(ActiveModal::SessionBranching(_))) {
+            return;
+        }
         self.branching_dialog.open(session_id);
         self.active_modal = Some(ActiveModal::SessionBranching(std::mem::take(
             &mut self.branching_dialog,
@@ -1006,6 +1090,9 @@ impl AppState {
     }
 
     pub fn open_prompt_stash(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::PromptStash(_))) {
+            return;
+        }
         self.prompt_stash.load();
         self.prompt_stash.open();
         self.active_modal = Some(ActiveModal::PromptStash(std::mem::take(
@@ -1014,23 +1101,35 @@ impl AppState {
     }
 
     pub fn open_export_options(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::ExportOptions(_))) {
+            return;
+        }
         self.export_options.open();
         self.active_modal = Some(ActiveModal::ExportOptions(ExportOptionsState::new()));
     }
 
     pub fn open_debug_panel(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::DebugPanel(_))) {
+            return;
+        }
         trace!("debug panel toggled");
-        self.debug_panel.toggle();
-        self.active_modal = Some(ActiveModal::DebugPanel(DebugPanelState::new()));
+        self.debug_panel.open();
+        self.active_modal = Some(ActiveModal::DebugPanel(self.debug_panel.clone()));
     }
 
     pub fn open_provider(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Provider(_))) {
+            return;
+        }
         self.provider_dialog.refresh_providers();
         self.provider_dialog.open = true;
         self.active_modal = Some(ActiveModal::Provider(ProviderDialogState::new()));
     }
 
     pub fn open_workspace(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Workspace(_))) {
+            return;
+        }
         self.workspace_dialog.open = true;
         self.active_modal = Some(ActiveModal::Workspace(WorkspaceDialogState::new()));
     }
@@ -1040,11 +1139,17 @@ impl AppState {
     }
 
     pub fn open_pager(&mut self, title: String, content: String) {
+        if matches!(self.active_modal, Some(ActiveModal::Pager(_))) {
+            return;
+        }
         self.pager.open(title, content);
         self.active_modal = Some(ActiveModal::Pager(PagerState::default()));
     }
 
     pub fn open_autocomplete(&mut self) {
+        if matches!(self.active_modal, Some(ActiveModal::Autocomplete(_))) {
+            return;
+        }
         self.active_modal = Some(ActiveModal::Autocomplete(AutocompleteState::new()));
     }
 }

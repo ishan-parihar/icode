@@ -181,7 +181,17 @@ impl OpenAiCompatClient {
     /// Uses well-known defaults for common providers.
     pub fn custom(provider: &str, _model: &str) -> Result<Self, ApiError> {
         let (default_base, canonical_env) = Self::well_known_provider_defaults(provider)
-            .unwrap_or((DEFAULT_OPENAI_BASE_URL, ""));
+            .unwrap_or_else(|| {
+                // Fall back to catalog for the base URL
+                let catalog_base = crate::models_dev::catalog()
+                    .get(provider)
+                    .and_then(|p| p.api.clone())
+                    .unwrap_or_default();
+                // Leak the catalog URL so we can return a &'static str.
+                // This is fine — base URLs are tiny and long-lived.
+                let leaked: &'static str = Box::leak(catalog_base.into_boxed_str());
+                (leaked, "")
+            });
         let env_key = if canonical_env.is_empty() {
             format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"))
         } else {
@@ -754,6 +764,7 @@ struct OpenAiUsage {
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionChunk {
+    #[serde(default)]
     id: String,
     #[serde(default)]
     model: Option<String>,

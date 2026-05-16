@@ -343,6 +343,7 @@ mod tests {
             has_shown_welcome: false,
             active_modal: None,
             permission_response_tx: None,
+            user_commands: crate::tui::user_commands::UserCommandRegistry::new(),
         }
     }
 

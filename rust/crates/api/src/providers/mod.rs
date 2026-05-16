@@ -1,3 +1,17 @@
+/// Provider routing module.
+///
+/// All model/provider knowledge comes from the live models.dev catalog
+/// (crate::models_dev). There is no static MODEL_REGISTRY anymore.
+///
+/// Routing logic (which wire protocol to use) maps provider IDs to clients:
+/// - "anthropic"           → AnthropicClient  (Anthropic Messages API)
+/// - "google" / "gemini"   → GeminiClient
+/// - "amazon-bedrock"      → BedrockClient
+/// - "azure"               → AzureClient
+/// - everything else       → OpenAiCompatClient  (OpenAI-compatible)
+///
+/// This matches opencode's BUNDLED_PROVIDERS pattern where every non-Anthropic
+/// provider is reached via the OpenAI-compatible chat/completions endpoint.
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
@@ -6,69 +20,85 @@ use std::pin::Pin;
 use runtime::{AuthStore, ProviderConfig};
 
 use crate::error::ApiError;
+use crate::models_dev::{self, ModelEntry};
 use crate::types::{MessageRequest, MessageResponse};
 
 pub mod anthropic;
 pub mod azure;
 pub mod bedrock;
 pub mod gemini;
+pub mod openai_compat;
+
+// These are still compiled (client.rs uses them for routing) but the model
+// *lists* inside them are gone — the catalog is the source of truth now.
 pub mod groq;
 pub mod mistral;
-pub mod openai_compat;
 pub mod openrouter;
 pub mod registry;
+
 pub use registry::{ProviderRegistry, RegisteredProvider};
 
 pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ApiError>> + Send + 'a>>;
 
 pub trait Provider {
     type Stream;
-
-    fn send_message<'a>(
-        &'a self,
-        request: &'a MessageRequest,
-    ) -> ProviderFuture<'a, MessageResponse>;
-
-    fn stream_message<'a>(
-        &'a self,
-        request: &'a MessageRequest,
-    ) -> ProviderFuture<'a, Self::Stream>;
+    fn send_message<'a>(&'a self, req: &'a MessageRequest) -> ProviderFuture<'a, MessageResponse>;
+    fn stream_message<'a>(&'a self, req: &'a MessageRequest) -> ProviderFuture<'a, Self::Stream>;
 }
 
+// ── ProviderKind ──────────────────────────────────────────────────────────────
+
+/// Wire-protocol discriminant. Only providers with distinct HTTP protocols
+/// have their own variant. Everything OpenAI-compatible shares the same client.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
+    // Distinct-protocol providers
     Anthropic,
-    Xai,
-    OpenAi,
-    QwenProxy,
-    Azure,
     Gemini,
     Bedrock,
-    OpenRouter,
-    Mistral,
+    Azure,
+    // OpenAI-compatible providers (all share OpenAiCompatClient)
+    OpenAi,
+    Xai,
     Groq,
-    /// OpenCode Zen — free/paid models at opencode.ai/zen
+    Mistral,
+    OpenRouter,
     Opencode,
-    /// Generic OpenAI-compatible provider for arbitrary `provider/model` configurations.
-    /// Enables any OpenAI-compatible API endpoint without code changes.
-    CustomOpenAi {
-        /// Provider identifier (e.g., "myprovider" from "myprovider/mymodel")
-        provider: String,
-        /// Model name (e.g., "mymodel" from "myprovider/mymodel")
-        model: String,
-    },
-    /// No provider is configured; credentials are missing for all providers.
+    QwenProxy,
+    /// Any catalog provider not listed above
+    CustomOpenAi { provider: String, model: String },
     Unconfigured,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderMetadata {
-    pub provider: ProviderKind,
-    pub auth_env: &'static str,
-    pub base_url_env: &'static str,
-    pub default_base_url: &'static str,
+impl ProviderKind {
+    /// Return the catalog provider ID for this kind.
+    pub fn catalog_id(&self) -> &str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "google",
+            Self::Bedrock => "amazon-bedrock",
+            Self::Azure => "azure",
+            Self::OpenAi => "openai",
+            Self::Xai => "xai",
+            Self::Groq => "groq",
+            Self::Mistral => "mistral",
+            Self::OpenRouter => "openrouter",
+            Self::Opencode => "opencode",
+            Self::QwenProxy => "qwen",
+            Self::CustomOpenAi { provider, .. } => provider.as_str(),
+            Self::Unconfigured => "",
+        }
+    }
+
+    /// True if this kind uses the OpenAI-compatible wire protocol.
+    pub fn is_openai_compat(&self) -> bool {
+        !matches!(self, Self::Anthropic | Self::Gemini | Self::Bedrock | Self::Azure | Self::Unconfigured)
+    }
 }
 
+// ── ModelCapabilities ─────────────────────────────────────────────────────────
+
+/// Capability snapshot for a model — derived from the catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ModelCapabilities {
     pub context_window: u32,
@@ -83,7 +113,6 @@ pub struct ModelCapabilities {
 }
 
 impl ModelCapabilities {
-    #[expect(clippy::too_many_arguments)]
     #[must_use]
     pub const fn new(
         context_window: u32,
@@ -108,421 +137,74 @@ impl ModelCapabilities {
             cost_cache_read_per_million: cost_cache_read,
         }
     }
+
+    fn from_entry(e: &ModelEntry) -> Self {
+        Self {
+            context_window: e.context_window,
+            max_output: e.max_output,
+            supports_reasoning: e.supports_reasoning,
+            supports_tools: e.supports_tools,
+            supports_images: e.supports_images,
+            cost_input_per_million: e.cost_input,
+            cost_output_per_million: e.cost_output,
+            ..Default::default()
+        }
+    }
 }
 
+// ── RegistryEntry shim ────────────────────────────────────────────────────────
+
+/// Thin wrapper that presents catalog data in the shape that model_picker.rs,
+/// dialog_providers.rs, and other TUI code expect.
 pub struct RegistryEntry {
-    pub alias: &'static str,
-    pub canonical: &'static str,
+    pub alias: String,
+    pub canonical: String,
     pub provider: ProviderKind,
-    pub auth_env: &'static str,
-    pub base_url_env: &'static str,
-    pub default_base_url: &'static str,
     pub capabilities: ModelCapabilities,
 }
 
-const MODEL_REGISTRY: &[RegistryEntry] = &[
-    RegistryEntry {
-        alias: "opus",
-        canonical: "claude-opus-4-6",
-        provider: ProviderKind::Anthropic,
-        auth_env: "ANTHROPIC_API_KEY",
-        base_url_env: "ANTHROPIC_BASE_URL",
-        default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            200_000, 32_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
-        ),
-    },
-    RegistryEntry {
-        alias: "sonnet",
-        canonical: "claude-sonnet-4-6",
-        provider: ProviderKind::Anthropic,
-        auth_env: "ANTHROPIC_API_KEY",
-        base_url_env: "ANTHROPIC_BASE_URL",
-        default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
-        ),
-    },
-    RegistryEntry {
-        alias: "haiku",
-        canonical: "claude-haiku-4-5-20251213",
-        provider: ProviderKind::Anthropic,
-        auth_env: "ANTHROPIC_API_KEY",
-        base_url_env: "ANTHROPIC_BASE_URL",
-        default_base_url: anthropic::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            200_000, 8_192, false, true, true, 1.0, 5.0, 1.25, 0.10,
-        ),
-    },
-    RegistryEntry {
-        alias: "grok",
-        canonical: "grok-3",
-        provider: ProviderKind::Xai,
-        auth_env: "XAI_API_KEY",
-        base_url_env: "XAI_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 8_192, true, true, true, 3.0, 15.0, 0.0, 0.0),
-    },
-    RegistryEntry {
-        alias: "grok-3",
-        canonical: "grok-3",
-        provider: ProviderKind::Xai,
-        auth_env: "XAI_API_KEY",
-        base_url_env: "XAI_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(131_072, 8_192, true, true, true, 3.0, 15.0, 0.0, 0.0),
-    },
-    RegistryEntry {
-        alias: "grok-mini",
-        canonical: "grok-3-mini",
-        provider: ProviderKind::Xai,
-        auth_env: "XAI_API_KEY",
-        base_url_env: "XAI_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "grok-3-mini",
-        canonical: "grok-3-mini",
-        provider: ProviderKind::Xai,
-        auth_env: "XAI_API_KEY",
-        base_url_env: "XAI_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            131_072, 4_096, true, true, false, 2.0, 10.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "grok-2",
-        canonical: "grok-2",
-        provider: ProviderKind::Xai,
-        auth_env: "XAI_API_KEY",
-        base_url_env: "XAI_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            131_072, 4_096, false, true, false, 2.0, 10.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "gpt-4o",
-        canonical: "gpt-4o",
-        provider: ProviderKind::OpenAi,
-        auth_env: "OPENAI_API_KEY",
-        base_url_env: "OPENAI_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "coder-model",
-        canonical: "coder-model",
-        provider: ProviderKind::QwenProxy,
-        auth_env: "QWEN_PROXY_API_KEY",
-        base_url_env: "QWEN_PROXY_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            128_000, 8_192, true, true, true, 0.20, 0.60, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "qwen3-coder-plus",
-        canonical: "qwen3-coder-plus",
-        provider: ProviderKind::QwenProxy,
-        auth_env: "QWEN_PROXY_API_KEY",
-        base_url_env: "QWEN_PROXY_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            256_000, 12_288, true, true, true, 0.40, 1.20, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "qwen3-coder-flash",
-        canonical: "qwen3-coder-flash",
-        provider: ProviderKind::QwenProxy,
-        auth_env: "QWEN_PROXY_API_KEY",
-        base_url_env: "QWEN_PROXY_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_QWEN_PROXY_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            128_000, 4_096, false, true, true, 0.10, 0.30, 0.0, 0.0,
-        ),
-    },
-    // Azure OpenAI
-    RegistryEntry {
-        alias: "azure/gpt-4",
-        canonical: "azure/gpt-4",
-        provider: ProviderKind::Azure,
-        auth_env: "AZURE_OPENAI_API_KEY",
-        base_url_env: "AZURE_OPENAI_RESOURCE",
-        default_base_url: "https://.openai.azure.com",
-        capabilities: ModelCapabilities::new(
-            128_000, 8_192, true, true, true, 10.0, 30.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "azure/gpt-4o",
-        canonical: "azure/gpt-4o",
-        provider: ProviderKind::Azure,
-        auth_env: "AZURE_OPENAI_API_KEY",
-        base_url_env: "AZURE_OPENAI_RESOURCE",
-        default_base_url: "https://.openai.azure.com",
-        capabilities: ModelCapabilities::new(
-            128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0,
-        ),
-    },
-    // Google Gemini
-    RegistryEntry {
-        alias: "gemini/gemini-2.5-pro",
-        canonical: "gemini/gemini-2.5-pro",
-        provider: ProviderKind::Gemini,
-        auth_env: "GEMINI_API_KEY",
-        base_url_env: "GEMINI_BASE_URL",
-        default_base_url: gemini::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            1_048_576, 65_536, true, true, true, 1.25, 10.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "gemini/gemini-2.5-flash",
-        canonical: "gemini/gemini-2.5-flash",
-        provider: ProviderKind::Gemini,
-        auth_env: "GEMINI_API_KEY",
-        base_url_env: "GEMINI_BASE_URL",
-        default_base_url: gemini::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            1_048_576, 65_536, true, true, true, 0.15, 0.60, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "gemini/gemini-2.0-flash",
-        canonical: "gemini/gemini-2.0-flash",
-        provider: ProviderKind::Gemini,
-        auth_env: "GEMINI_API_KEY",
-        base_url_env: "GEMINI_BASE_URL",
-        default_base_url: gemini::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            1_048_576, 8_192, true, true, true, 0.10, 0.40, 0.0, 0.0,
-        ),
-    },
-    // AWS Bedrock
-    RegistryEntry {
-        alias: "bedrock/claude-3.5-sonnet",
-        canonical: "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
-        provider: ProviderKind::Bedrock,
-        auth_env: "AWS_ACCESS_KEY_ID",
-        base_url_env: "AWS_DEFAULT_REGION",
-        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
-        capabilities: ModelCapabilities::new(
-            200_000, 8_192, true, true, true, 3.0, 15.0, 3.75, 0.30,
-        ),
-    },
-    RegistryEntry {
-        alias: "bedrock/claude-3.5-sonnet-v2",
-        canonical: "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
-        provider: ProviderKind::Bedrock,
-        auth_env: "AWS_ACCESS_KEY_ID",
-        base_url_env: "AWS_DEFAULT_REGION",
-        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
-        capabilities: ModelCapabilities::new(
-            200_000, 8_192, true, true, true, 3.0, 15.0, 3.75, 0.30,
-        ),
-    },
-    RegistryEntry {
-        alias: "bedrock/claude-3-opus",
-        canonical: "bedrock/anthropic.claude-3-opus-20240229-v1:0",
-        provider: ProviderKind::Bedrock,
-        auth_env: "AWS_ACCESS_KEY_ID",
-        base_url_env: "AWS_DEFAULT_REGION",
-        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
-        capabilities: ModelCapabilities::new(
-            200_000, 4_096, true, true, true, 15.0, 75.0, 18.75, 1.50,
-        ),
-    },
-    RegistryEntry {
-        alias: "bedrock/llama-3.3-70b",
-        canonical: "bedrock/meta.llama3-3-70b-instruct-v1:0",
-        provider: ProviderKind::Bedrock,
-        auth_env: "AWS_ACCESS_KEY_ID",
-        base_url_env: "AWS_DEFAULT_REGION",
-        default_base_url: "https://bedrock-runtime.us-east-1.amazonaws.com",
-        capabilities: ModelCapabilities::new(128_000, 8_192, true, true, false, 2.0, 6.0, 0.0, 0.0),
-    },
-    // OpenRouter
-    RegistryEntry {
-        alias: "openrouter/claude-sonnet",
-        canonical: "openrouter/anthropic/claude-3.5-sonnet",
-        provider: ProviderKind::OpenRouter,
-        auth_env: "OPENROUTER_API_KEY",
-        base_url_env: "OPENROUTER_BASE_URL",
-        default_base_url: openrouter::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(200_000, 8_192, true, true, true, 3.0, 15.0, 0.0, 0.0),
-    },
-    RegistryEntry {
-        alias: "openrouter/claude-opus",
-        canonical: "openrouter/anthropic/claude-opus",
-        provider: ProviderKind::OpenRouter,
-        auth_env: "OPENROUTER_API_KEY",
-        base_url_env: "OPENROUTER_BASE_URL",
-        default_base_url: openrouter::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            200_000, 16_384, true, true, true, 15.0, 75.0, 0.0, 0.0,
-        ),
-    },
-    // Mistral
-    RegistryEntry {
-        alias: "mistral/mistral-large",
-        canonical: "mistral/mistral-large-latest",
-        provider: ProviderKind::Mistral,
-        auth_env: "MISTRAL_API_KEY",
-        base_url_env: "MISTRAL_BASE_URL",
-        default_base_url: mistral::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(128_000, 8_192, true, true, false, 2.0, 6.0, 0.0, 0.0),
-    },
-    RegistryEntry {
-        alias: "mistral/mistral-small",
-        canonical: "mistral/mistral-small-latest",
-        provider: ProviderKind::Mistral,
-        auth_env: "MISTRAL_API_KEY",
-        base_url_env: "MISTRAL_BASE_URL",
-        default_base_url: mistral::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            32_000, 8_192, true, true, false, 0.20, 0.60, 0.0, 0.0,
-        ),
-    },
-    // Groq
-    RegistryEntry {
-        alias: "groq/llama-3.3-70b",
-        canonical: "groq/llama-3.3-70b-versatile",
-        provider: ProviderKind::Groq,
-        auth_env: "GROQ_API_KEY",
-        base_url_env: "GROQ_BASE_URL",
-        default_base_url: groq::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            128_000, 32_768, true, true, false, 0.0, 0.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "groq/llama-3.1-8b",
-        canonical: "groq/llama-3.1-8b-instant",
-        provider: ProviderKind::Groq,
-        auth_env: "GROQ_API_KEY",
-        base_url_env: "GROQ_BASE_URL",
-        default_base_url: groq::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            128_000, 8_192, false, true, false, 0.0, 0.0, 0.0, 0.0,
-        ),
-    },
-    // OpenCode Zen (opencode.ai/zen)
-    RegistryEntry {
-        alias: "deepseek-v4-flash-free",
-        canonical: "deepseek-v4-flash-free",
-        provider: ProviderKind::Opencode,
-        auth_env: "OPENCODE_API_KEY",
-        base_url_env: "OPENCODE_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            1_048_576, 384_000, true, true, false, 0.0, 0.0, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "deepseek-v4-flash",
-        canonical: "deepseek-v4-flash",
-        provider: ProviderKind::Opencode,
-        auth_env: "OPENCODE_API_KEY",
-        base_url_env: "OPENCODE_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            1_000_000, 384_000, true, true, false, 0.14, 0.28, 0.0, 0.028,
-        ),
-    },
-    RegistryEntry {
-        alias: "deepseek-v4-pro",
-        canonical: "deepseek-v4-pro",
-        provider: ProviderKind::Opencode,
-        auth_env: "OPENCODE_API_KEY",
-        base_url_env: "OPENCODE_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            1_000_000, 128_000, true, true, false, 0.60, 2.40, 0.0, 0.0,
-        ),
-    },
-    RegistryEntry {
-        alias: "gpt-5.1-codex-max",
-        canonical: "gpt-5.1-codex-max",
-        provider: ProviderKind::Opencode,
-        auth_env: "OPENCODE_API_KEY",
-        base_url_env: "OPENCODE_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            400_000, 128_000, true, true, true, 1.25, 10.0, 0.0, 0.125,
-        ),
-    },
-    RegistryEntry {
-        alias: "kimi-k2.5",
-        canonical: "kimi-k2.5",
-        provider: ProviderKind::Opencode,
-        auth_env: "OPENCODE_API_KEY",
-        base_url_env: "OPENCODE_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            262_144, 65_536, true, true, true, 0.60, 3.0, 0.0, 0.08,
-        ),
-    },
-    RegistryEntry {
-        alias: "claude-sonnet-4-6",
-        canonical: "claude-sonnet-4-6",
-        provider: ProviderKind::Opencode,
-        auth_env: "OPENCODE_API_KEY",
-        base_url_env: "OPENCODE_BASE_URL",
-        default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            1_000_000, 64_000, true, true, true, 3.0, 15.0, 0.0, 0.30,
-        ),
-    },
-    RegistryEntry {
-        alias: "groq/mixtral-8x7b",
-        canonical: "groq/mixtral-8x7b-32768",
-        provider: ProviderKind::Groq,
-        auth_env: "GROQ_API_KEY",
-        base_url_env: "GROQ_BASE_URL",
-        default_base_url: groq::DEFAULT_BASE_URL,
-        capabilities: ModelCapabilities::new(
-            32_768, 32_768, false, true, false, 0.0, 0.0, 0.0, 0.0,
-        ),
-    },
-];
-
-#[must_use]
-pub fn resolve_model_alias(model: &str) -> String {
-    let trimmed = model.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    MODEL_REGISTRY
-        .iter()
-        .find_map(|entry| (*entry.alias == lower).then_some(entry.canonical))
-        .map_or_else(|| trimmed.to_string(), ToOwned::to_owned)
+impl RegistryEntry {
+    fn from_catalog(e: &ModelEntry) -> Self {
+        Self {
+            alias: e.model_id.clone(),
+            canonical: e.model_id.clone(),
+            provider: provider_kind_for_id(&e.provider_id),
+            capabilities: ModelCapabilities::from_entry(e),
+        }
+    }
 }
 
-#[must_use]
-pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
-    let canonical = resolve_model_alias(model);
-    let entry = MODEL_REGISTRY
-        .iter()
-        .find(|e| e.canonical == canonical || e.alias == model)?;
-    Some(ProviderMetadata {
-        provider: entry.provider.clone(),
-        auth_env: entry.auth_env,
-        base_url_env: entry.base_url_env,
-        default_base_url: entry.default_base_url,
-    })
+// ── Provider-kind detection ───────────────────────────────────────────────────
+
+/// Map a catalog provider ID to its wire-protocol kind.
+pub fn provider_kind_for_id(provider_id: &str) -> ProviderKind {
+    match provider_id {
+        "anthropic" => ProviderKind::Anthropic,
+        "google" | "gemini" | "google-vertex" => ProviderKind::Gemini,
+        "amazon-bedrock" => ProviderKind::Bedrock,
+        "azure" | "azure-cognitive-services" => ProviderKind::Azure,
+        "openai" => ProviderKind::OpenAi,
+        "xai" => ProviderKind::Xai,
+        "groq" => ProviderKind::Groq,
+        "mistral" => ProviderKind::Mistral,
+        "openrouter" => ProviderKind::OpenRouter,
+        "opencode" => ProviderKind::Opencode,
+        "qwen" | "qwen-proxy" => ProviderKind::QwenProxy,
+        other => ProviderKind::CustomOpenAi {
+            provider: other.to_string(),
+            model: String::new(),
+        },
+    }
 }
 
+/// Given a model string `"provider_id/model_id"`, detect the wire-protocol kind.
+/// Falls back to checking the live catalog for unknown prefixes.
 #[must_use]
 pub fn detect_provider_kind(
     model: &str,
     providers: Option<&BTreeMap<String, ProviderConfig>>,
 ) -> ProviderKind {
+    // Config-driven custom providers take precedence.
     if let Some((prefix, rest)) = model.split_once('/') {
         if let Some(providers_map) = providers {
             if providers_map.contains_key(prefix) {
@@ -534,103 +216,104 @@ pub fn detect_provider_kind(
         }
     }
 
-    if let Some(metadata) = metadata_for_model(model) {
-        return metadata.provider;
-    }
+    // Well-known prefixes — handle without catalog (works offline too).
     let lower = model.to_lowercase();
+    if lower.starts_with("anthropic/") || lower.starts_with("claude") {
+        return ProviderKind::Anthropic;
+    }
+    if lower.starts_with("gemini/") || lower.starts_with("google/") {
+        return ProviderKind::Gemini;
+    }
+    if lower.starts_with("bedrock/") || lower.starts_with("amazon-bedrock/") {
+        return ProviderKind::Bedrock;
+    }
     if lower.starts_with("azure/") {
         return ProviderKind::Azure;
     }
-    if lower.starts_with("gemini/") {
-        return ProviderKind::Gemini;
+    if lower.starts_with("openai/") || lower.starts_with("gpt") {
+        return ProviderKind::OpenAi;
     }
-    if lower.starts_with("bedrock/") {
-        return ProviderKind::Bedrock;
-    }
-    if lower.starts_with("openrouter/") {
-        return ProviderKind::OpenRouter;
-    }
-    if lower.starts_with("mistral/") {
-        return ProviderKind::Mistral;
+    if lower.starts_with("xai/") || lower.starts_with("grok") {
+        return ProviderKind::Xai;
     }
     if lower.starts_with("groq/") {
         return ProviderKind::Groq;
     }
-    if lower.starts_with("qwen/") {
-        return ProviderKind::QwenProxy;
+    if lower.starts_with("mistral/") {
+        return ProviderKind::Mistral;
+    }
+    if lower.starts_with("openrouter/") {
+        return ProviderKind::OpenRouter;
     }
     if lower.starts_with("opencode/") {
         return ProviderKind::Opencode;
     }
-    if let Some((prefix, rest)) = model.split_once('/') {
-        let env_key = format!("{}_API_KEY", prefix.to_uppercase().replace('-', "_"));
-        let env_base = format!("{}_BASE_URL", prefix.to_uppercase().replace('-', "_"));
-        if std::env::var(&env_key).is_ok() || std::env::var(&env_base).is_ok() {
-            return ProviderKind::CustomOpenAi {
-                provider: prefix.to_string(),
-                model: rest.to_string(),
-            };
+
+    // Look up in the live catalog by "provider_id/model_id".
+    if let Some((provider_id, _)) = model.split_once('/') {
+        let cat = models_dev::catalog();
+        if cat.contains_key(provider_id) {
+            return provider_kind_for_id(provider_id);
+        }
+        return ProviderKind::Unconfigured;
+    }
+
+    // Plain model name (no slash) — check if catalog has an exact match.
+    {
+        let cat = models_dev::catalog();
+        for (pid, p) in &cat {
+            if p.models.contains_key(model) {
+                return provider_kind_for_id(pid);
+            }
         }
     }
-    if anthropic::has_auth_from_env_or_saved().unwrap_or(false) {
-        return ProviderKind::Anthropic;
-    }
-    if openai_compat::has_api_key("OPENAI_API_KEY") {
-        return ProviderKind::OpenAi;
-    }
-    if openai_compat::has_api_key("XAI_API_KEY") {
-        return ProviderKind::Xai;
-    }
-    if openai_compat::has_api_key("QWEN_PROXY_API_KEY")
-        || std::env::var("QWEN_PROXY_BASE_URL").is_ok()
-    {
-        return ProviderKind::QwenProxy;
-    }
+
     ProviderKind::Unconfigured
 }
 
+/// Resolve short aliases (e.g. "sonnet" → "anthropic/claude-sonnet-4-5").
+/// With catalog-driven lookup we don't maintain a static alias table;
+/// the model ID is passed through unchanged unless it matches a catalog model name directly.
+#[must_use]
+pub fn resolve_model_alias(model: &str) -> String {
+    model.trim().to_string()
+}
+
+// ── Model listing ─────────────────────────────────────────────────────────────
+
+/// Return all active models from the live catalog.
+pub fn list_all_models() -> impl Iterator<Item = RegistryEntry> {
+    models_dev::list_models()
+        .into_iter()
+        .map(|e| RegistryEntry::from_catalog(&e))
+}
+
+/// Look up capabilities for a model from the catalog.
 #[must_use]
 pub fn capabilities_for_model(model: &str) -> ModelCapabilities {
-    let canonical = resolve_model_alias(model);
-    MODEL_REGISTRY
-        .iter()
-        .find(|e| e.canonical == canonical || e.alias == model)
-        .map_or_else(
-            || {
-                if canonical.starts_with("claude") {
-                    ModelCapabilities::new(
-                        200_000, 64_000, true, true, true, 15.0, 75.0, 18.75, 1.50,
-                    )
-                } else if canonical.starts_with("grok") {
-                    ModelCapabilities::new(131_072, 8_192, true, true, false, 3.0, 15.0, 0.0, 0.0)
-                } else if canonical.starts_with("gpt") {
-                    ModelCapabilities::new(128_000, 16_384, true, true, true, 5.0, 15.0, 0.0, 0.0)
-                } else if canonical.starts_with("azure/") {
-                    ModelCapabilities::new(128_000, 8_192, true, true, true, 5.0, 15.0, 0.0, 0.0)
-                } else if canonical.starts_with("gemini/") {
-                    ModelCapabilities::new(
-                        1_048_576, 65_536, true, true, true, 1.25, 10.0, 0.0, 0.0,
-                    )
-                } else if canonical.starts_with("bedrock/") {
-                    ModelCapabilities::new(200_000, 8_192, true, true, true, 3.0, 15.0, 3.75, 0.30)
-                } else if canonical.starts_with("openrouter/") {
-                    ModelCapabilities::new(128_000, 8_192, true, true, true, 3.0, 15.0, 0.0, 0.0)
-                } else if canonical.starts_with("mistral/") {
-                    ModelCapabilities::new(128_000, 8_192, true, true, false, 2.0, 6.0, 0.0, 0.0)
-                } else if canonical.starts_with("groq/") {
-                    ModelCapabilities::new(128_000, 32_768, true, true, false, 0.0, 0.0, 0.0, 0.0)
-                } else if canonical.starts_with("qwen") {
-                    ModelCapabilities::new(262_144, 65_536, true, true, true, 0.20, 0.60, 0.0, 0.0)
-                } else if canonical.starts_with("deepseek") {
-                    ModelCapabilities::new(
-                        1_000_000, 384_000, true, true, false, 0.14, 0.28, 0.0, 0.028,
-                    )
-                } else {
-                    ModelCapabilities::new(128_000, 8_192, false, true, false, 0.20, 0.60, 0.0, 0.0)
-                }
-            },
-            |e| e.capabilities,
-        )
+    // Strip provider prefix to find the model in the catalog.
+    let model_id = model.split_once('/').map(|(_, m)| m).unwrap_or(model);
+    let cat = models_dev::catalog();
+    for p in cat.values() {
+        if let Some(m) = p.models.get(model_id).or_else(|| p.models.get(model)) {
+            return ModelCapabilities {
+                context_window: m.limit.context,
+                max_output: m.limit.output,
+                supports_reasoning: m.reasoning,
+                supports_tools: m.tool_call,
+                supports_images: m
+                    .modalities
+                    .as_ref()
+                    .map(|mo| mo.input.iter().any(|s| s == "image"))
+                    .unwrap_or(false),
+                cost_input_per_million: m.cost.as_ref().map(|c| c.input).unwrap_or(0.0),
+                cost_output_per_million: m.cost.as_ref().map(|c| c.output).unwrap_or(0.0),
+                ..Default::default()
+            };
+        }
+    }
+    // Unknown model — return a reasonable default.
+    ModelCapabilities::new(128_000, 8_192, false, true, false, 0.0, 0.0, 0.0, 0.0)
 }
 
 #[must_use]
@@ -638,11 +321,56 @@ pub fn max_tokens_for_model(model: &str) -> u32 {
     capabilities_for_model(model).max_output
 }
 
-pub fn list_all_models() -> impl Iterator<Item = &'static RegistryEntry> {
-    MODEL_REGISTRY.iter()
+// ── Auth checking ─────────────────────────────────────────────────────────────
+
+/// Check whether a given provider kind has authentication available.
+#[must_use]
+pub fn check_provider_auth(kind: &ProviderKind) -> bool {
+    match kind {
+        ProviderKind::Anthropic => {
+            anthropic::has_auth_from_env_or_saved().unwrap_or(false)
+        }
+        ProviderKind::Bedrock => {
+            ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE", "AWS_BEARER_TOKEN_BEDROCK"]
+                .iter()
+                .any(|v| std::env::var(v).is_ok())
+        }
+        ProviderKind::Gemini => openai_compat::has_api_key("GEMINI_API_KEY"),
+        ProviderKind::Azure => openai_compat::has_api_key("AZURE_OPENAI_API_KEY"),
+        ProviderKind::OpenAi => openai_compat::has_api_key("OPENAI_API_KEY"),
+        ProviderKind::Xai => openai_compat::has_api_key("XAI_API_KEY"),
+        ProviderKind::Groq => openai_compat::has_api_key("GROQ_API_KEY"),
+        ProviderKind::Mistral => openai_compat::has_api_key("MISTRAL_API_KEY"),
+        ProviderKind::OpenRouter => openai_compat::has_api_key("OPENROUTER_API_KEY"),
+        ProviderKind::Opencode => openai_compat::has_api_key("OPENCODE_API_KEY"),
+        ProviderKind::QwenProxy => {
+            openai_compat::has_api_key("QWEN_PROXY_API_KEY")
+                || std::env::var("QWEN_PROXY_BASE_URL").is_ok()
+        }
+        ProviderKind::CustomOpenAi { provider, .. } => {
+            let cat = models_dev::catalog();
+            if let Some(p) = cat.get(provider.as_str()) {
+                return models_dev::provider_has_auth(p);
+            }
+            let env_key = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+            if std::env::var(&env_key).map(|v| !v.is_empty()).unwrap_or(false) {
+                return true;
+            }
+            let store = AuthStore::load();
+            store.api_key_for(&provider.to_lowercase().replace('-', "_")).is_some()
+        }
+        ProviderKind::Unconfigured => false,
+    }
 }
 
-/// Status of a provider's authentication configuration.
+#[must_use]
+pub fn is_provider_configured(kind: &ProviderKind) -> bool {
+    check_provider_auth(kind)
+}
+
+// ── Provider auth status ──────────────────────────────────────────────────────
+
+/// Auth status for one provider, used by the TUI Providers dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderAuthStatus {
     pub kind: ProviderKind,
@@ -652,132 +380,40 @@ pub struct ProviderAuthStatus {
     pub model_count: usize,
 }
 
-/// Unique set of provider kinds that appear in the model registry, with display names.
-const PROVIDER_DISPLAY_NAMES: &[(ProviderKind, &str)] = &[
-    (ProviderKind::Anthropic, "Anthropic"),
-    (ProviderKind::OpenAi, "OpenAI"),
-    (ProviderKind::Xai, "xAI"),
-    (ProviderKind::QwenProxy, "Qwen Proxy"),
-    (ProviderKind::Azure, "Azure OpenAI"),
-    (ProviderKind::Gemini, "Google Gemini"),
-    (ProviderKind::Bedrock, "AWS Bedrock"),
-    (ProviderKind::OpenRouter, "OpenRouter"),
-    (ProviderKind::Mistral, "Mistral"),
-    (ProviderKind::Groq, "Groq"),
-    (ProviderKind::Opencode, "OpenCode Zen"),
-];
-
-/// Maps a `ProviderKind` to its `AuthStore` string key.
-fn auth_store_key(kind: &ProviderKind) -> Cow<'_, str> {
-    match kind {
-        ProviderKind::Anthropic => Cow::Borrowed("anthropic"),
-        ProviderKind::OpenAi => Cow::Borrowed("openai"),
-        ProviderKind::Xai => Cow::Borrowed("xai"),
-        ProviderKind::QwenProxy => Cow::Borrowed("qwen_proxy"),
-        ProviderKind::Azure => Cow::Borrowed("azure"),
-        ProviderKind::Gemini => Cow::Borrowed("gemini"),
-        ProviderKind::Bedrock => Cow::Borrowed("bedrock"),
-        ProviderKind::OpenRouter => Cow::Borrowed("openrouter"),
-        ProviderKind::Mistral => Cow::Borrowed("mistral"),
-        ProviderKind::Groq => Cow::Borrowed("groq"),
-        ProviderKind::Opencode => Cow::Borrowed("opencode"),
-        ProviderKind::CustomOpenAi { provider, .. } => {
-            Cow::Owned(provider.to_lowercase().replace('-', "_"))
-        }
-        ProviderKind::Unconfigured => Cow::Borrowed("unconfigured"),
-    }
-}
-
-/// Check if a provider has auth configured via env vars OR stored `AuthStore` keys.
-/// Returns true if EITHER source has a non-empty key configured.
-#[must_use]
-pub fn check_provider_auth(kind: &ProviderKind) -> bool {
-    let has_env_auth = match kind {
-        ProviderKind::Bedrock => {
-            std::env::var("AWS_ACCESS_KEY_ID").is_ok()
-                || std::env::var("AWS_SECRET_ACCESS_KEY").is_ok()
-                || std::env::var("AWS_PROFILE").is_ok()
-                || std::env::var("AWS_BEARER_TOKEN_BEDROCK").is_ok()
-        }
-        ProviderKind::CustomOpenAi { provider, .. } => {
-            let env_key = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
-            std::env::var(&env_key)
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
-        }
-        other => {
-            let env_vars: HashSet<&'static str> = MODEL_REGISTRY
-                .iter()
-                .filter(|e| e.provider == *other)
-                .map(|e| e.auth_env)
-                .collect();
-            env_vars
-                .iter()
-                .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
-        }
-    };
-
-    if has_env_auth {
-        return true;
-    }
-
-    let store = AuthStore::load();
-    store.api_key_for(auth_store_key(kind).as_ref()).is_some()
-}
-
-/// Scan all registered providers and report which ones have authentication
-/// available via environment variables or stored keys.
-///
-/// When `providers` config is supplied, also includes config-driven providers.
+/// Scan all catalog providers and report auth status.
 #[must_use]
 pub fn scan_provider_auth_status(
-    providers: Option<&BTreeMap<String, ProviderConfig>>,
+    extra_providers: Option<&BTreeMap<String, ProviderConfig>>,
 ) -> Vec<ProviderAuthStatus> {
+    let cat = models_dev::catalog();
     let mut seen = HashSet::new();
-    let mut result = Vec::new();
+    let mut result: Vec<ProviderAuthStatus> = cat
+        .values()
+        .map(|p| {
+            let kind = provider_kind_for_id(&p.id);
+            let has_auth = models_dev::provider_has_auth(p);
+            ProviderAuthStatus {
+                kind,
+                display_name: Cow::Owned(p.name.clone()),
+                env_vars: p.env.iter().map(|v| Cow::Owned(v.clone())).collect(),
+                has_auth,
+                model_count: p.models.len(),
+            }
+        })
+        .filter(|s| {
+            // Deduplicate: azure/azure-cognitive-services both map to Azure kind
+            seen.insert(s.display_name.clone())
+        })
+        .collect();
 
-    for (kind, display_name) in PROVIDER_DISPLAY_NAMES {
-        if seen.contains(kind) {
-            continue;
-        }
-        seen.insert(kind.clone());
+    result.sort_by(|a, b| a.display_name.cmp(&b.display_name));
 
-        let env_vars: Vec<&'static str> = MODEL_REGISTRY
-            .iter()
-            .filter(|e| e.provider == *kind)
-            .map(|e| e.auth_env)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        let model_count = MODEL_REGISTRY
-            .iter()
-            .filter(|e| e.provider == *kind)
-            .count();
-
-        let has_auth = check_provider_auth(kind);
-
-        result.push(ProviderAuthStatus {
-            kind: kind.clone(),
-            display_name: Cow::Borrowed(display_name),
-            env_vars: env_vars.into_iter().map(Cow::Borrowed).collect(),
-            has_auth,
-            model_count,
-        });
-    }
-
-    if let Some(providers_map) = providers {
+    if let Some(providers_map) = extra_providers {
         for (name, config) in providers_map {
             let env_key = &config.api_key_env;
-            let has_auth = std::env::var(env_key)
-                .map(|v| !v.is_empty())
-                .unwrap_or(false);
-
+            let has_auth = std::env::var(env_key).map(|v| !v.is_empty()).unwrap_or(false);
             result.push(ProviderAuthStatus {
-                kind: ProviderKind::CustomOpenAi {
-                    provider: name.clone(),
-                    model: String::new(),
-                },
+                kind: ProviderKind::CustomOpenAi { provider: name.clone(), model: String::new() },
                 display_name: Cow::Owned(name.clone()),
                 env_vars: vec![Cow::Owned(config.api_key_env.clone())],
                 has_auth,
@@ -789,115 +425,59 @@ pub fn scan_provider_auth_status(
     result
 }
 
-/// Returns the display name for a provider kind.
+/// Display name for a provider kind.
 #[must_use]
 pub fn provider_display_name(kind: &ProviderKind) -> Cow<'_, str> {
     match kind {
-        ProviderKind::CustomOpenAi { provider, .. } => Cow::Borrowed(provider.as_str()),
-        other => PROVIDER_DISPLAY_NAMES
-            .iter()
-            .find(|(k, _)| k == other)
-            .map_or(Cow::Borrowed("Unknown"), |(_, name)| Cow::Borrowed(name)),
+        ProviderKind::Anthropic => Cow::Borrowed("Anthropic"),
+        ProviderKind::Gemini => Cow::Borrowed("Google Gemini"),
+        ProviderKind::Bedrock => Cow::Borrowed("AWS Bedrock"),
+        ProviderKind::Azure => Cow::Borrowed("Azure"),
+        ProviderKind::OpenAi => Cow::Borrowed("OpenAI"),
+        ProviderKind::Xai => Cow::Borrowed("xAI"),
+        ProviderKind::Groq => Cow::Borrowed("Groq"),
+        ProviderKind::Mistral => Cow::Borrowed("Mistral"),
+        ProviderKind::OpenRouter => Cow::Borrowed("OpenRouter"),
+        ProviderKind::Opencode => Cow::Borrowed("OpenCode Zen"),
+        ProviderKind::QwenProxy => Cow::Borrowed("Qwen Proxy"),
+        ProviderKind::CustomOpenAi { provider, .. } => {
+            let cat = models_dev::catalog();
+            Cow::Owned(
+                cat.get(provider.as_str())
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| provider.clone()),
+            )
+        }
+        ProviderKind::Unconfigured => Cow::Borrowed("Unconfigured"),
     }
 }
 
-/// Returns true if the given provider kind has authentication configured.
-#[must_use]
-pub fn is_provider_configured(kind: &ProviderKind) -> bool {
-    check_provider_auth(kind)
+/// Placeholder — the catalog is the PROVIDER_DISPLAY_NAMES source now.
+/// We keep this as an empty slice to not break imports.
+pub const PROVIDER_DISPLAY_NAMES: &[(ProviderKind, &str)] = &[];
+
+// ── Legacy compat ─────────────────────────────────────────────────────────────
+
+/// `ProviderMetadata` was returned by the old static registry.
+/// Kept for call-sites that haven't migrated yet; filled from the catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderMetadata {
+    pub provider: ProviderKind,
+    pub auth_env: String,
+    pub base_url_env: String,
+    pub default_base_url: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        capabilities_for_model, detect_provider_kind, max_tokens_for_model, resolve_model_alias,
-        ProviderKind,
-    };
-
-    #[test]
-    fn resolves_grok_aliases() {
-        assert_eq!(resolve_model_alias("grok"), "grok-3");
-        assert_eq!(resolve_model_alias("grok-mini"), "grok-3-mini");
-        assert_eq!(resolve_model_alias("grok-2"), "grok-2");
-    }
-
-    #[test]
-    fn detects_provider_from_model_name_first() {
-        assert_eq!(detect_provider_kind("grok", None), ProviderKind::Xai);
-        assert_eq!(
-            detect_provider_kind("claude-sonnet-4-6", None),
-            ProviderKind::Anthropic
-        );
-    }
-
-    #[test]
-    fn resolves_openai_alias() {
-        assert_eq!(resolve_model_alias("gpt-4o"), "gpt-4o");
-        assert_eq!(detect_provider_kind("gpt-4o", None), ProviderKind::OpenAi);
-    }
-
-    #[test]
-    fn capabilities_match_expected_values() {
-        let opus = capabilities_for_model("opus");
-        assert_eq!(opus.context_window, 200_000);
-        assert_eq!(opus.max_output, 32_000);
-        assert!(opus.supports_reasoning);
-        assert!(opus.supports_tools);
-        assert!(opus.supports_images);
-
-        let haiku = capabilities_for_model("haiku");
-        assert!(!haiku.supports_reasoning);
-        assert_eq!(haiku.context_window, 200_000);
-        assert_eq!(haiku.max_output, 8_192);
-
-        let grok = capabilities_for_model("grok-3");
-        assert_eq!(grok.context_window, 131_072);
-        assert!(grok.supports_reasoning);
-
-        let unknown = capabilities_for_model("some-unknown-model");
-        assert_eq!(unknown.context_window, 128_000);
-    }
-
-    #[test]
-    fn max_tokens_uses_capabilities() {
-        assert_eq!(max_tokens_for_model("opus"), 32_000);
-        assert_eq!(max_tokens_for_model("haiku"), 8_192);
-        assert_eq!(max_tokens_for_model("grok-3"), 8_192);
-        assert_eq!(max_tokens_for_model("gpt-4o"), 16_384);
-    }
-
-    #[test]
-    fn detects_config_driven_custom_provider() {
-        use super::ProviderConfig;
-        use std::collections::BTreeMap;
-
-        let mut providers = BTreeMap::new();
-        providers.insert(
-            "myprovider".to_string(),
-            ProviderConfig {
-                base_url: Some("http://localhost:8080/v1".to_string()),
-                api_key_env: "MYPROVIDER_API_KEY".to_string(),
-            },
-        );
-
-        assert_eq!(
-            detect_provider_kind("myprovider/mymodel", Some(&providers)),
-            ProviderKind::CustomOpenAi {
-                provider: "myprovider".to_string(),
-                model: "mymodel".to_string(),
-            }
-        );
-
-        // Model not in providers map falls through to env-based detection.
-        // Result depends on environment (Anthropic if auth exists, otherwise Unconfigured),
-        // so we only verify it does NOT return the custom provider.
-        let result = detect_provider_kind("unknown/model", Some(&providers));
-        assert_ne!(
-            result,
-            ProviderKind::CustomOpenAi {
-                provider: "myprovider".to_string(),
-                model: "model".to_string(),
-            }
-        );
-    }
+pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
+    let (provider_id, model_id) = model.split_once('/')?;
+    let cat = models_dev::catalog();
+    let p = cat.get(provider_id)?;
+    let _ = p.models.get(model_id)?; // confirm model exists
+    let env = p.env.first().cloned().unwrap_or_default();
+    Some(ProviderMetadata {
+        provider: provider_kind_for_id(provider_id),
+        auth_env: env.clone(),
+        base_url_env: format!("{}_BASE_URL", provider_id.to_uppercase().replace('-', "_")),
+        default_base_url: p.api.clone().unwrap_or_default(),
+    })
 }

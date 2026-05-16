@@ -742,6 +742,12 @@ impl MessageList {
                                 expanded,
                                 ..
                             } => {
+                                let dur = msg
+                                    .tool_timeline
+                                    .iter()
+                                    .find(|(n, _, _)| n == name)
+                                    .map(|(_, _, d)| *d)
+                                    .unwrap_or(0);
                                 let data = ToolCallData {
                                     name: name.clone(),
                                     status: *status,
@@ -749,7 +755,7 @@ impl MessageList {
                                     output: output.clone(),
                                     expanded: *expanded,
                                     timestamp: msg.timestamp,
-                                    duration_ms: 0,
+                                    duration_ms: dur,
                                 };
                                 let has_output = data.output.is_some()
                                     && !data
@@ -875,12 +881,12 @@ impl MessageList {
             return total_lines;
         }
 
-        let scroll = if state.scroll_offset.is_none() {
+        let scroll = if state.auto_scroll {
             total_lines.saturating_sub(visible_lines)
         } else {
             state
                 .scroll_offset
-                .unwrap()
+                .unwrap_or(0)
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
@@ -1193,7 +1199,7 @@ fn build_timeline_spans(
     )];
 
     let total = timeline.len();
-    for (i, (name, success, _dur)) in timeline.iter().enumerate() {
+    for (i, (name, success, dur)) in timeline.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" | ", Style::default().fg(theme.text_muted)));
         }
@@ -1208,6 +1214,17 @@ fn build_timeline_spans(
             Style::default().fg(theme.text_muted),
         ));
         spans.push(status_span);
+        if *dur > 0 {
+            let dur_str = if *dur >= 1000 {
+                format!(" {:.1}s", *dur as f64 / 1000.0)
+            } else {
+                format!(" {}ms", dur)
+            };
+            spans.push(Span::styled(
+                dur_str,
+                Style::default().fg(theme.text_muted),
+            ));
+        }
     }
 
     let dur = if turn_duration_ms > 0 {

@@ -27,10 +27,21 @@ pub enum Command {
     DumpManifests,
     /// Print the current bootstrap phase skeleton
     BootstrapPlan,
-    /// Start the OAuth login flow
-    Login,
-    /// Clear saved OAuth credentials
-    Logout,
+    /// Login to a provider (with optional --provider and --api-key)
+    Login {
+        /// Provider name (e.g. anthropic, openai, xai, opencode)
+        #[arg(long)]
+        provider: Option<String>,
+        /// API key to store for the provider
+        #[arg(long)]
+        api_key: Option<String>,
+    },
+    /// Clear saved credentials (optionally for a specific provider)
+    Logout {
+        /// Provider name to clear, or all if omitted
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// Run a non-interactive prompt and exit
     Prompt { prompt: Vec<String> },
     /// Start the HTTP server daemon

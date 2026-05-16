@@ -1,5 +1,5 @@
 use crate::tui::app::{self, AppMode, AppState, MessagePart, MessageRole, ToastKind};
-use tracing::trace;
+use tracing::{error, trace};
 use crate::tui::autocomplete::AutocompleteMode;
 use crate::tui::command_palette::{find_slash_command_action, CommandAction};
 use crate::tui::event::{Event, EventLoop, ParsedKey};
@@ -79,6 +79,7 @@ impl Tui {
         state.prompt.set_models(models);
         state.prompt.set_cwd(cwd.to_string());
         state.sessions_dialog.load_sessions();
+        state.user_commands = crate::tui::user_commands::load_user_commands();
         let sessions: Vec<String> = state
             .sessions_dialog
             .sessions
@@ -126,6 +127,10 @@ impl Tui {
             self.terminal.draw(|frame| {
                 render_ui(frame, &mut self.state, self.theme);
             })?;
+
+            // Poll turn events eagerly so streaming content renders without
+            // waiting for the next tick (every 250ms).
+            self.poll_turn_events();
 
             match self.event_loop.next() {
                 Ok(Event::Key(key)) => {
@@ -272,7 +277,7 @@ impl Tui {
                 ActiveModal::ExportOptions(s) => {
                     self.handle_export_options_action_from_modal(key, s)
                 }
-                ActiveModal::DebugPanel(s) => self.handle_debug_panel_action_from_modal(key, s),
+                ActiveModal::DebugPanel(_) => self.handle_debug_panel_key(key),
                 ActiveModal::Provider(s) => self.handle_provider_action_from_modal(key, s),
                 ActiveModal::Workspace(s) => self.handle_workspace_action_from_modal(key, s),
                 ActiveModal::DiffView(s) => self.handle_diff_view_action_from_modal(key, s),
@@ -405,7 +410,9 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
                 if self.terminal.size().is_ok() {
-                    let _ = self.terminal.clear();
+                    if let Err(e) = self.terminal.clear() {
+                        error!("Failed to clear terminal: {e}");
+                    }
                     // Force immediate redraw so the user doesn't see a blank screen
                     let _ = self.terminal.draw(|frame| {
                         render_ui(frame, &mut self.state, self.theme);
@@ -897,6 +904,24 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
                 self.state.model_picker.toggle_favorite();
+                None
+            }
+            (_, KeyCode::Char('l') | KeyCode::Char('L')) => {
+                // Login to the provider of the currently highlighted model
+                if let Some(kind) = self.state.model_picker.current_entry_provider() {
+                    self.state.model_picker.close();
+                    self.state.provider_dialog.open();
+                    // Pre-select the matching provider in the dialog
+                    if let Some(pos) = self
+                        .state
+                        .provider_dialog
+                        .filtered
+                        .iter()
+                        .position(|&idx| self.state.provider_dialog.providers[idx].kind == kind)
+                    {
+                        self.state.provider_dialog.selected = pos;
+                    }
+                }
                 None
             }
             (_, KeyCode::Char('/')) => {
@@ -1403,6 +1428,24 @@ impl Tui {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
                 s.toggle_favorite();
+                None
+            }
+            (_, KeyCode::Char('l') | KeyCode::Char('L')) => {
+                // Login to the provider of the currently highlighted model
+                if let Some(kind) = s.current_entry_provider() {
+                    self.state.close_modal();
+                    self.state.provider_dialog.open();
+                    // Pre-select the matching provider in the dialog
+                    if let Some(pos) = self
+                        .state
+                        .provider_dialog
+                        .filtered
+                        .iter()
+                        .position(|&idx| self.state.provider_dialog.providers[idx].kind == kind)
+                    {
+                        self.state.provider_dialog.selected = pos;
+                    }
+                }
                 None
             }
             (_, KeyCode::Char('/')) => {
@@ -2463,6 +2506,34 @@ impl Tui {
                 };
                 self.state.add_toast(msg, kind);
             }
+            _ if !self.state.user_commands.is_empty() => {
+                let cmd_name = cmd.strip_prefix('/').unwrap_or(cmd);
+                let parts: Vec<&str> = cmd_name.split_whitespace().collect();
+                let name = parts.first().copied().unwrap_or("");
+                if self.state.user_commands.contains(name) {
+                    let args: Vec<&str> = parts.iter().skip(1).copied().collect();
+                    let args_refs: Vec<&str> = args.iter().copied().collect();
+                    if let Some(resolved) = self.state.user_commands.resolve_template(name, &args_refs) {
+                        if args_refs.is_empty() && resolved.contains("$ARGUMENTS") {
+                            self.state.add_toast(
+                                format!("/{name} requires arguments. Usage: /{name} <text>"),
+                                ToastKind::Warning,
+                            );
+                        } else if let Some(cmd) = self.state.user_commands.get(name) {
+                            let cursor = resolved.len();
+                            self.state.prompt.value = resolved;
+                            self.state.prompt.cursor = cursor;
+                            self.state.add_toast(
+                                format!("/{name}: {} loaded into prompt", cmd.description),
+                                ToastKind::Success,
+                            );
+                        }
+                    }
+                } else {
+                    self.state
+                        .add_toast(format!("Unknown command: {cmd}"), ToastKind::Warning);
+                }
+            }
             _ => {
                 self.state
                     .add_toast(format!("Unknown command: {cmd}"), ToastKind::Warning);
@@ -2652,6 +2723,9 @@ impl Tui {
                 input_tokens,
                 output_tokens,
             } => {
+                if matches!(self.state.mode, AppMode::Loading) {
+                    self.state.mode = AppMode::Normal;
+                }
                 self.state.end_thinking();
                 let turn_dur = self.state.turn_started_at.take().map(|s| s.elapsed());
                 let dur_ms = turn_dur.map_or(0, |d| d.as_millis() as u64);
@@ -2766,12 +2840,12 @@ impl Tui {
             return None;
         }
 
-        let scroll = if self.state.scroll_offset.is_none() {
+        let scroll = if self.state.auto_scroll {
             total_lines.saturating_sub(visible_lines)
         } else {
             self.state
                 .scroll_offset
-                .unwrap()
+                .unwrap_or(0)
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
@@ -3142,12 +3216,12 @@ impl Tui {
             return None;
         }
 
-        let scroll = if self.state.scroll_offset.is_none() {
+        let scroll = if self.state.auto_scroll {
             total_lines.saturating_sub(visible_lines)
         } else {
             self.state
                 .scroll_offset
-                .unwrap()
+                .unwrap_or(0)
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
@@ -3359,12 +3433,12 @@ impl Tui {
             return String::new();
         }
 
-        let scroll = if self.state.scroll_offset.is_none() {
+        let scroll = if self.state.auto_scroll {
             total_lines.saturating_sub(visible_lines)
         } else {
             self.state
                 .scroll_offset
-                .unwrap()
+                .unwrap_or(0)
                 .min(total_lines.saturating_sub(visible_lines))
         };
 
@@ -3433,9 +3507,15 @@ impl Drop for Tui {
                 let _ = store.save();
             }
         }
-        let _ = KittyKeyboard::disable();
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        if let Err(e) = KittyKeyboard::disable() {
+            error!("Failed to disable Kitty keyboard: {e}");
+        }
+        if let Err(e) = disable_raw_mode() {
+            error!("Failed to disable raw mode: {e}");
+        }
+        if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture) {
+            error!("Failed to leave alternate screen: {e}");
+        }
     }
 }
 

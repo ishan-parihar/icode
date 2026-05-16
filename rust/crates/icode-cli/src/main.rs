@@ -288,8 +288,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             LiveCli::new(model, true, allowed_tools, permission_mode)?
                 .run_turn_with_output(&prompt, output_format)?;
         }
-        CliAction::Login => run_login()?,
-        CliAction::Logout => run_logout()?,
+        CliAction::Login { provider, api_key } => run_login(provider, api_key)?,
+        CliAction::Logout { provider } => run_logout(provider)?,
         CliAction::Init => run_init()?,
         CliAction::Repl {
             model,
@@ -339,8 +339,13 @@ enum CliAction {
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
     },
-    Login,
-    Logout,
+    Login {
+        provider: Option<String>,
+        api_key: Option<String>,
+    },
+    Logout {
+        provider: Option<String>,
+    },
     Init,
     Repl {
         model: String,
@@ -569,8 +574,41 @@ fn parse_args(args: &[String]) -> Result<(CliAction, Option<String>), String> {
             log_level,
         )),
         "system-prompt" => parse_system_prompt_args(&rest[1..]).map(|a| (a, log_level)),
-        "login" => Ok((CliAction::Login, log_level)),
-        "logout" => Ok((CliAction::Logout, log_level)),
+        "login" => {
+            let sub = &rest[1..];
+            let mut provider = None;
+            let mut api_key = None;
+            let mut i = 0;
+            while i < sub.len() {
+                match sub[i].as_str() {
+                    "--provider" => {
+                        provider = Some(sub.get(i + 1).ok_or_else(|| "missing value for --provider".to_string())?.clone());
+                        i += 2;
+                    }
+                    "--api-key" => {
+                        api_key = Some(sub.get(i + 1).ok_or_else(|| "missing value for --api-key".to_string())?.clone());
+                        i += 2;
+                    }
+                    other => return Err(format!("unexpected argument for login: {other}")),
+                }
+            }
+            Ok((CliAction::Login { provider, api_key }, log_level))
+        }
+        "logout" => {
+            let sub = &rest[1..];
+            let mut provider = None;
+            let mut i = 0;
+            while i < sub.len() {
+                match sub[i].as_str() {
+                    "--provider" => {
+                        provider = Some(sub.get(i + 1).ok_or_else(|| "missing value for --provider".to_string())?.clone());
+                        i += 2;
+                    }
+                    other => return Err(format!("unexpected argument for logout: {other}")),
+                }
+            }
+            Ok((CliAction::Logout { provider }, log_level))
+        }
         "init" => Ok((CliAction::Init, log_level)),
         "prompt" => {
             let prompt = rest[1..].join(" ");
@@ -1054,7 +1092,30 @@ fn default_oauth_config() -> OAuthConfig {
     }
 }
 
-fn run_login() -> Result<(), Box<dyn std::error::Error>> {
+fn run_login(
+    provider: Option<String>,
+    api_key: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(key) = api_key {
+        let provider_name = provider
+            .clone()
+            .unwrap_or_else(|| "opencode".to_string());
+        let mut store = runtime::AuthStore::load();
+        store.set_api_key(provider_name.clone(), key);
+        store.save()?;
+        println!("API key saved for provider: {provider_name}");
+        return Ok(());
+    }
+
+    if let Some(ref name) = provider {
+        let mut store = runtime::AuthStore::load();
+        store.set_api_key(name.clone(), String::new());
+        store.save()?;
+        println!("Provider '{name}' registered. Set the API key via:");
+        println!("  icode login --provider {name} --api-key <your-key>");
+        return Ok(());
+    }
+
     let cwd = env::current_dir()?;
     let config = ConfigLoader::default_for(&cwd).load()?;
     let default_oauth = default_oauth_config();
@@ -1106,9 +1167,20 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_logout() -> Result<(), Box<dyn std::error::Error>> {
-    clear_oauth_credentials()?;
-    println!("Claude OAuth credentials cleared.");
+fn run_logout(provider: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(name) = provider {
+        let mut store = runtime::AuthStore::load();
+        store.remove_api_key(&name);
+        store.save()?;
+        println!("Credentials cleared for provider: {name}");
+    } else {
+        clear_oauth_credentials()?;
+        let mut store = runtime::AuthStore::load();
+        store.api_keys.clear();
+        store.oauth_tokens.clear();
+        store.save()?;
+        println!("All credentials cleared.");
+    }
     Ok(())
 }
 
@@ -3101,6 +3173,8 @@ impl LiveCli {
         let allowed_tools = self.allowed_tools.clone();
         let permission_mode = self.permission_mode;
 
+        let tool_timing: Arc<Mutex<Vec<(String, Instant)>>> = Arc::new(Mutex::new(Vec::new()));
+
         thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _enter = tokio_handle.enter();
@@ -3125,10 +3199,14 @@ impl LiveCli {
                 let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
 
                 let progress_tx = tx.clone();
+                let timing_cb = tool_timing.clone();
                 let progress_callback = |event: AssistantEvent| {
                     let turn_event = match event {
                         AssistantEvent::TextDelta(text) => Some(TurnEvent::TokenDelta(text)),
                         AssistantEvent::ToolUse { id, name, input } => {
+                            if let Ok(mut v) = timing_cb.lock() {
+                                v.push((name.clone(), Instant::now()));
+                            }
                             Some(TurnEvent::ToolCallStarted { name, input })
                         }
                         AssistantEvent::Usage(_) => None,
@@ -3229,6 +3307,13 @@ impl LiveCli {
                             _ => None,
                         })
                         .collect();
+                    for tc in &tool_calls {
+                        let _ = tx.send(TurnEvent::ToolCallCompleted {
+                            name: tc.name.clone(),
+                            output: tc.output.clone(),
+                            success: tc.success,
+                        });
+                    }
                     let _ = tx.send(TurnEvent::TurnCompleted {
                         text,
                         tool_calls,
@@ -7515,13 +7600,16 @@ mod tests {
             parse_args(&["login".to_string()])
                 .expect("login should parse")
                 .0,
-            CliAction::Login
+            CliAction::Login {
+                provider: None,
+                api_key: None,
+            }
         );
         assert_eq!(
             parse_args(&["logout".to_string()])
                 .expect("logout should parse")
                 .0,
-            CliAction::Logout
+            CliAction::Logout { provider: None }
         );
         assert_eq!(
             parse_args(&["init".to_string()])

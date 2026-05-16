@@ -1,7 +1,7 @@
 use crate::tui::app::{AppMode, AppState, ToastKind};
 use crate::tui::autocomplete::render_autocomplete_overlay;
 use crate::tui::command_palette::render_command_palette;
-use crate::tui::debug_panel::render_debug_panel_ext;
+use crate::tui::debug_panel::render_debug_panel;
 use crate::tui::dialog_context_viz::render_context_viz_dialog;
 use crate::tui::dialog_export_options::render_export_options_dialog;
 use crate::tui::dialog_help::render_help_dialog;
@@ -126,6 +126,9 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     if state.is_modal_blocking() {
         crate::tui::popup_utils::render_backdrop(frame, area, theme);
     }
+    // Render debug panel outside modal match (needs &AppState, conflicts with mutable borrow of active_modal)
+    let show_debug = state.debug_panel.open;
+
     if let Some(ref mut modal) = state.active_modal {
         match modal {
             ActiveModal::Permission(s) => render_permission_dialog(frame, s, area, theme),
@@ -162,32 +165,7 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             ActiveModal::SessionBranching(s) => render_session_branching(frame, s, area, theme),
             ActiveModal::PromptStash(s) => render_prompt_stash_dialog(frame, s, area, theme),
             ActiveModal::ExportOptions(s) => render_export_options_dialog(frame, s, area, theme),
-            ActiveModal::DebugPanel(s) => {
-                let model = state.session.model.clone();
-                let input_tokens = state.session.input_tokens;
-                let output_tokens = state.session.output_tokens;
-                let context_window = state.context_window;
-                let turns = state.session.turns;
-                let message_count = state.session.message_count;
-                let is_streaming = state.is_streaming;
-                let connected = state.connected;
-                let mode = state.mode.clone();
-                render_debug_panel_ext(
-                    frame,
-                    s,
-                    area,
-                    theme,
-                    &model,
-                    input_tokens,
-                    output_tokens,
-                    context_window,
-                    turns,
-                    message_count,
-                    is_streaming,
-                    connected,
-                    &mode,
-                );
-            }
+            ActiveModal::DebugPanel(_) => {} // rendered below to avoid borrow conflict
             ActiveModal::Provider(s) => render_provider_dialog(frame, s, area, theme),
             ActiveModal::Workspace(s) => render_workspace_dialog(frame, s, area, theme),
             ActiveModal::DiffView(s) => render_diff_view_overlay(frame, s, area, &theme),
@@ -203,6 +181,10 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
             }
             ActiveModal::Autocomplete(s) => render_autocomplete_overlay(frame, s, area, theme),
         }
+    }
+
+    if show_debug {
+        render_debug_panel(frame, &state.debug_panel, area, theme, &state);
     }
 }
 
