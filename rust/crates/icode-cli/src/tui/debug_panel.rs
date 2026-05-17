@@ -554,14 +554,13 @@ fn render_performance_tab(frame: &mut Frame, area: Rect, theme: Theme, app: &App
 
             let bar_len = tool
                 .duration_ms
-                .map(|ms| {
+                .map_or(0, |ms| {
                     if max_dur > 0 {
                         ((ms as f64 / max_dur as f64) * bar_area as f64).round() as usize
                     } else {
                         0
                     }
                 })
-                .unwrap_or(0)
                 .min(bar_area);
 
             let bar = "▓".repeat(bar_len);

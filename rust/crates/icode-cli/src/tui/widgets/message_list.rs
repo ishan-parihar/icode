@@ -746,8 +746,7 @@ impl MessageList {
                                     .tool_timeline
                                     .iter()
                                     .find(|(n, _, _)| n == name)
-                                    .map(|(_, _, d)| *d)
-                                    .unwrap_or(0);
+                                    .map_or(0, |(_, _, d)| *d);
                                 let data = ToolCallData {
                                     name: name.clone(),
                                     status: *status,
@@ -1218,7 +1217,7 @@ fn build_timeline_spans(
             let dur_str = if *dur >= 1000 {
                 format!(" {:.1}s", *dur as f64 / 1000.0)
             } else {
-                format!(" {}ms", dur)
+                format!(" {dur}ms")
             };
             spans.push(Span::styled(
                 dur_str,

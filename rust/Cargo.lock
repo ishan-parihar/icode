@@ -1370,6 +1370,7 @@ dependencies = [
  "strum",
  "syntect",
  "telemetry",
+ "tempfile",
  "textwrap",
  "tokio",
  "tools",

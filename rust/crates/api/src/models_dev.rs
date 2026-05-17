@@ -1,8 +1,8 @@
-/// Live model catalog from https://models.dev/api.json
+/// Live model catalog from <https://models.dev/api.json>
 ///
 /// This is icode's port of opencode's packages/core/src/models.ts.
 /// It is the single source of truth for all providers and models.
-/// The static MODEL_REGISTRY is gone — everything comes from here.
+/// The static `MODEL_REGISTRY` is gone — everything comes from here.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
@@ -194,6 +194,7 @@ pub fn catalog() -> RawCatalog {
 
 /// Return all active models from the catalog, as flat entries.
 /// Mirrors opencode's `list_all_models` behavior (drops deprecated/alpha).
+#[must_use] 
 pub fn list_models() -> Vec<ModelEntry> {
     let cat = catalog();
     let mut entries: Vec<ModelEntry> = Vec::new();
@@ -216,8 +217,7 @@ pub fn list_models() -> Vec<ModelEntry> {
             let supports_images = model
                 .modalities
                 .as_ref()
-                .map(|m| m.input.iter().any(|s| s == "image"))
-                .unwrap_or(false);
+                .is_some_and(|m| m.input.iter().any(|s| s == "image"));
 
             entries.push(ModelEntry {
                 provider_id: provider.id.clone(),
@@ -231,8 +231,8 @@ pub fn list_models() -> Vec<ModelEntry> {
                 supports_reasoning: model.reasoning,
                 context_window: model.limit.context,
                 max_output: model.limit.output,
-                cost_input: model.cost.as_ref().map(|c| c.input).unwrap_or(0.0),
-                cost_output: model.cost.as_ref().map(|c| c.output).unwrap_or(0.0),
+                cost_input: model.cost.as_ref().map_or(0.0, |c| c.input),
+                cost_output: model.cost.as_ref().map_or(0.0, |c| c.output),
             });
         }
     }
@@ -242,11 +242,13 @@ pub fn list_models() -> Vec<ModelEntry> {
 }
 
 /// Look up the provider entry for a given provider ID.
+#[must_use] 
 pub fn provider(id: &str) -> Option<RawProvider> {
     catalog().remove(id)
 }
 
-/// Check if a provider has auth via env vars or AuthStore.
+/// Check if a provider has auth via env vars or `AuthStore`.
+#[must_use] 
 pub fn provider_has_auth(p: &RawProvider) -> bool {
     if p.id == "amazon-bedrock" {
         return ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE", "AWS_BEARER_TOKEN_BEDROCK"]
@@ -272,6 +274,7 @@ pub fn primary_env_var(p: &RawProvider) -> Option<&str> {
 }
 
 /// Look up a model by `"provider_id/model_id"` string.
+#[must_use] 
 pub fn find_model(model_str: &str) -> Option<(RawProvider, RawModel)> {
     let (provider_id, model_id) = model_str.split_once('/')?;
     let cat = catalog();
@@ -282,6 +285,7 @@ pub fn find_model(model_str: &str) -> Option<(RawProvider, RawModel)> {
 
 /// Given a `"provider_id/model_id"` string, determine the base URL to use.
 /// Falls back to provider-level URL.
+#[must_use] 
 pub fn base_url_for(model_str: &str) -> Option<String> {
     let (provider, model) = find_model(model_str)?;
     Some(

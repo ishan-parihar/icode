@@ -906,7 +906,7 @@ impl Tui {
                 self.state.model_picker.toggle_favorite();
                 None
             }
-            (_, KeyCode::Char('l') | KeyCode::Char('L')) => {
+            (_, KeyCode::Char('l' | 'L')) => {
                 // Login to the provider of the currently highlighted model
                 if let Some(kind) = self.state.model_picker.current_entry_provider() {
                     self.state.model_picker.close();
@@ -1430,7 +1430,7 @@ impl Tui {
                 s.toggle_favorite();
                 None
             }
-            (_, KeyCode::Char('l') | KeyCode::Char('L')) => {
+            (_, KeyCode::Char('l' | 'L')) => {
                 // Login to the provider of the currently highlighted model
                 if let Some(kind) = s.current_entry_provider() {
                     self.state.close_modal();
@@ -2512,9 +2512,8 @@ impl Tui {
                 let name = parts.first().copied().unwrap_or("");
                 if self.state.user_commands.contains(name) {
                     let args: Vec<&str> = parts.iter().skip(1).copied().collect();
-                    let args_refs: Vec<&str> = args.iter().copied().collect();
-                    if let Some(resolved) = self.state.user_commands.resolve_template(name, &args_refs) {
-                        if args_refs.is_empty() && resolved.contains("$ARGUMENTS") {
+                    if let Some(resolved) = self.state.user_commands.resolve_template(name, &args) {
+                        if args.is_empty() && resolved.contains("$ARGUMENTS") {
                             self.state.add_toast(
                                 format!("/{name} requires arguments. Usage: /{name} <text>"),
                                 ToastKind::Warning,
@@ -2682,10 +2681,10 @@ impl Tui {
             TurnEvent::TokenDelta(text) => trace!(len = text.len(), "turn: token delta"),
             TurnEvent::ToolCallStarted { name, .. } => trace!(%name, "turn: tool call started"),
             TurnEvent::ToolCallCompleted { name, success, .. } => {
-                trace!(%name, success, "turn: tool call completed")
+                trace!(%name, success, "turn: tool call completed");
             }
             TurnEvent::TurnCompleted { tool_calls, .. } => {
-                trace!(count = tool_calls.len(), "turn: completed")
+                trace!(count = tool_calls.len(), "turn: completed");
             }
             TurnEvent::TurnError(msg) => trace!(%msg, "turn: error"),
             TurnEvent::PermissionRequested { .. } => trace!("turn: permission requested"),

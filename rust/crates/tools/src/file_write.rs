@@ -47,10 +47,21 @@ pub fn execute_write_file(input: &WriteFileInput) -> Result<String, String> {
         return Err(format!("Path '{}' escapes workspace boundary", input.path));
     }
 
+    // Read existing content before overwrite (to return in JSON response).
+    let (write_type, original_file) = if canonical_path.exists() {
+        let original = fs::read_to_string(&canonical_path).unwrap_or_default();
+        ("update", original)
+    } else {
+        ("create", String::new())
+    };
+
     fs::write(&canonical_path, &input.content).map_err(|e| format!("Failed to write file: {e}"))?;
-    Ok(format!(
-        "Wrote {} ({} bytes)",
-        input.path,
-        input.content.len()
-    ))
+
+    let response = serde_json::json!({
+        "type": write_type,
+        "path": input.path,
+        "bytes": input.content.len(),
+        "originalFile": original_file,
+    });
+    serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {e}"))
 }

@@ -26,7 +26,7 @@ pub enum ProviderClient {
     OpenRouter(OpenRouterClient),
     Mistral(MistralClient),
     Groq(GroqClient),
-    /// OpenCode Zen provider.
+    /// `OpenCode` Zen provider.
     Opencode(OpenAiCompatClient),
     /// Custom OpenAI-compatible provider configured via settings.json.
     CustomOpenAi(OpenAiCompatClient),

@@ -184,7 +184,7 @@ pub fn render_ui(frame: &mut Frame, state: &mut AppState, theme: Theme) {
     }
 
     if show_debug {
-        render_debug_panel(frame, &state.debug_panel, area, theme, &state);
+        render_debug_panel(frame, &state.debug_panel, area, theme, state);
     }
 }
 

@@ -273,6 +273,10 @@ impl TruncationPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serializes tests that mutate ICODE_TRUNCATION_MAX_CHARS env var.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn repeat_char(c: char, n: usize) -> String {
         std::iter::repeat_n(c, n).collect()
@@ -382,6 +386,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn from_env_parsing() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("ICODE_TRUNCATION_MAX_CHARS", "50000");
         let policy = TruncationPolicy::from_env();
         std::env::remove_var("ICODE_TRUNCATION_MAX_CHARS");
@@ -395,6 +400,7 @@ mod tests {
 
     #[test]
     fn from_env_returns_none_for_invalid() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("ICODE_TRUNCATION_MAX_CHARS", "not_a_number");
         let policy = TruncationPolicy::from_env();
         std::env::remove_var("ICODE_TRUNCATION_MAX_CHARS");
@@ -403,6 +409,7 @@ mod tests {
 
     #[test]
     fn from_env_returns_none_for_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ICODE_TRUNCATION_MAX_CHARS");
         let policy = TruncationPolicy::from_env();
         assert!(policy.is_none());

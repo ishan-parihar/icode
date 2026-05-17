@@ -515,7 +515,7 @@ impl AppState {
         let now = Instant::now();
         let idx = self.tools.len();
         self.tool_started_at
-            .insert(format!("{}:{}", name, idx), now);
+            .insert(format!("{name}:{idx}"), now);
         self.tools.push(ToolEvent {
             name: name.into(),
             status: ToolStatus::Running,
@@ -541,7 +541,7 @@ impl AppState {
         // Use the tool's vector index to avoid name collisions in the timing map
         let tool_idx = self.tools.iter().rposition(|t| t.name == name);
         let elapsed_ms = tool_idx
-            .and_then(|i| self.tool_started_at.remove(&format!("{}:{}", name, i)))
+            .and_then(|i| self.tool_started_at.remove(&format!("{name}:{i}")))
             .map(|started| {
                 let d = started.elapsed();
                 d.as_millis() as u64

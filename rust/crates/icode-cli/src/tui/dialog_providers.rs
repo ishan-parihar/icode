@@ -93,7 +93,7 @@ impl ProviderDialogState {
             models_by_provider
                 .entry(entry.provider.clone())
                 .or_default()
-                .push(entry.alias.to_string());
+                .push(entry.alias.clone());
         }
 
         auth_statuses

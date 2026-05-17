@@ -480,12 +480,20 @@ mod tests {
 
     #[test]
     fn completes_file_paths() {
+        // Use a tempdir with a known file so the test is CWD-independent.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("Cargo.toml"), b"").expect("write");
+        let orig_dir = std::env::current_dir().ok();
+        std::env::set_current_dir(dir.path()).expect("set_current_dir");
+
         let helper = SlashCommandHelper::new(vec!["/export".to_string()]);
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
         let (_start, matches) = helper
             .complete("/export Cargo", 13, &ctx)
             .expect("completion should work");
+
+        if let Some(d) = orig_dir { let _ = std::env::set_current_dir(d); }
 
         let replacements: Vec<_> = matches.into_iter().map(|c| c.replacement).collect();
         assert!(replacements.iter().any(|r| r.starts_with("Cargo")));

@@ -237,7 +237,10 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("batch_edit_{test_name}_{n}"));
+        // Must be inside workspace (CWD) to pass is_within_workspace check.
+        let dir = std::env::current_dir()
+            .unwrap_or_default()
+            .join(format!(".test_batch_edit_{test_name}_{n}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("failed to create temp dir");
         dir.to_string_lossy().to_string()

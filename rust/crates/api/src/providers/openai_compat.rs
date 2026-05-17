@@ -205,10 +205,10 @@ impl OpenAiCompatClient {
         });
 
         let Some(api_key) = api_key else {
-            let hint = if !canonical_env.is_empty() {
-                format!(" (use {canonical_env})")
-            } else {
+            let hint = if canonical_env.is_empty() {
                 String::new()
+            } else {
+                format!(" (use {canonical_env})")
             };
             return Err(ApiError::Auth(format!(
                 "Model requires '{provider}' credentials{hint}. Set {env_key} env var or save a key to ~/.icode/auth.json."
@@ -719,8 +719,10 @@ impl ToolCallState {
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
-    id: String,
-    model: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
     choices: Vec<ChatChoice>,
     #[serde(default)]
     usage: Option<OpenAiUsage>,
@@ -971,11 +973,11 @@ fn normalize_response(
     }
 
     Ok(MessageResponse {
-        id: response.id,
+        id: response.id.unwrap_or_default(),
         kind: "message".to_string(),
         role: choice.message.role,
         content,
-        model: response.model.if_empty_then(model.to_string()),
+        model: response.model.unwrap_or_default().if_empty_then(model.to_string()),
         stop_reason: choice
             .finish_reason
             .map(|value| normalize_finish_reason(&value)),

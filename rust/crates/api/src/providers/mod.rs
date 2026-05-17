@@ -1,16 +1,16 @@
 /// Provider routing module.
 ///
 /// All model/provider knowledge comes from the live models.dev catalog
-/// (crate::models_dev). There is no static MODEL_REGISTRY anymore.
+/// (`crate::models_dev`). There is no static `MODEL_REGISTRY` anymore.
 ///
 /// Routing logic (which wire protocol to use) maps provider IDs to clients:
-/// - "anthropic"           → AnthropicClient  (Anthropic Messages API)
-/// - "google" / "gemini"   → GeminiClient
-/// - "amazon-bedrock"      → BedrockClient
-/// - "azure"               → AzureClient
-/// - everything else       → OpenAiCompatClient  (OpenAI-compatible)
+/// - "anthropic"           → `AnthropicClient`  (Anthropic Messages API)
+/// - "google" / "gemini"   → `GeminiClient`
+/// - "amazon-bedrock"      → `BedrockClient`
+/// - "azure"               → `AzureClient`
+/// - everything else       → `OpenAiCompatClient`  (OpenAI-compatible)
 ///
-/// This matches opencode's BUNDLED_PROVIDERS pattern where every non-Anthropic
+/// This matches opencode's `BUNDLED_PROVIDERS` pattern where every non-Anthropic
 /// provider is reached via the OpenAI-compatible chat/completions endpoint.
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
@@ -72,6 +72,7 @@ pub enum ProviderKind {
 
 impl ProviderKind {
     /// Return the catalog provider ID for this kind.
+    #[must_use] 
     pub fn catalog_id(&self) -> &str {
         match self {
             Self::Anthropic => "anthropic",
@@ -91,6 +92,7 @@ impl ProviderKind {
     }
 
     /// True if this kind uses the OpenAI-compatible wire protocol.
+    #[must_use] 
     pub fn is_openai_compat(&self) -> bool {
         !matches!(self, Self::Anthropic | Self::Gemini | Self::Bedrock | Self::Azure | Self::Unconfigured)
     }
@@ -114,6 +116,7 @@ pub struct ModelCapabilities {
 
 impl ModelCapabilities {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         context_window: u32,
         max_output: u32,
@@ -154,8 +157,8 @@ impl ModelCapabilities {
 
 // ── RegistryEntry shim ────────────────────────────────────────────────────────
 
-/// Thin wrapper that presents catalog data in the shape that model_picker.rs,
-/// dialog_providers.rs, and other TUI code expect.
+/// Thin wrapper that presents catalog data in the shape that `model_picker.rs`,
+/// `dialog_providers.rs`, and other TUI code expect.
 pub struct RegistryEntry {
     pub alias: String,
     pub canonical: String,
@@ -177,6 +180,7 @@ impl RegistryEntry {
 // ── Provider-kind detection ───────────────────────────────────────────────────
 
 /// Map a catalog provider ID to its wire-protocol kind.
+#[must_use] 
 pub fn provider_kind_for_id(provider_id: &str) -> ProviderKind {
     match provider_id {
         "anthropic" => ProviderKind::Anthropic,
@@ -292,7 +296,7 @@ pub fn list_all_models() -> impl Iterator<Item = RegistryEntry> {
 #[must_use]
 pub fn capabilities_for_model(model: &str) -> ModelCapabilities {
     // Strip provider prefix to find the model in the catalog.
-    let model_id = model.split_once('/').map(|(_, m)| m).unwrap_or(model);
+    let model_id = model.split_once('/').map_or(model, |(_, m)| m);
     let cat = models_dev::catalog();
     for p in cat.values() {
         if let Some(m) = p.models.get(model_id).or_else(|| p.models.get(model)) {
@@ -304,10 +308,9 @@ pub fn capabilities_for_model(model: &str) -> ModelCapabilities {
                 supports_images: m
                     .modalities
                     .as_ref()
-                    .map(|mo| mo.input.iter().any(|s| s == "image"))
-                    .unwrap_or(false),
-                cost_input_per_million: m.cost.as_ref().map(|c| c.input).unwrap_or(0.0),
-                cost_output_per_million: m.cost.as_ref().map(|c| c.output).unwrap_or(0.0),
+                    .is_some_and(|mo| mo.input.iter().any(|s| s == "image")),
+                cost_input_per_million: m.cost.as_ref().map_or(0.0, |c| c.input),
+                cost_output_per_million: m.cost.as_ref().map_or(0.0, |c| c.output),
                 ..Default::default()
             };
         }
@@ -443,16 +446,14 @@ pub fn provider_display_name(kind: &ProviderKind) -> Cow<'_, str> {
         ProviderKind::CustomOpenAi { provider, .. } => {
             let cat = models_dev::catalog();
             Cow::Owned(
-                cat.get(provider.as_str())
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| provider.clone()),
+                cat.get(provider.as_str()).map_or_else(|| provider.clone(), |p| p.name.clone()),
             )
         }
         ProviderKind::Unconfigured => Cow::Borrowed("Unconfigured"),
     }
 }
 
-/// Placeholder — the catalog is the PROVIDER_DISPLAY_NAMES source now.
+/// Placeholder — the catalog is the `PROVIDER_DISPLAY_NAMES` source now.
 /// We keep this as an empty slice to not break imports.
 pub const PROVIDER_DISPLAY_NAMES: &[(ProviderKind, &str)] = &[];
 
@@ -468,6 +469,7 @@ pub struct ProviderMetadata {
     pub default_base_url: String,
 }
 
+#[must_use] 
 pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     let (provider_id, model_id) = model.split_once('/')?;
     let cat = models_dev::catalog();

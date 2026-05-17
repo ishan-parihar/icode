@@ -363,7 +363,11 @@ impl WorkerRegistry {
 
         if !matches!(
             worker.status,
-            WorkerStatus::Blocked | WorkerStatus::Failed | WorkerStatus::Finished
+            WorkerStatus::Blocked
+                | WorkerStatus::Failed
+                | WorkerStatus::Finished
+                | WorkerStatus::PromptAccepted
+                | WorkerStatus::Running
         ) {
             return Err(format!(
                 "worker cannot be restarted from state: {:?}",

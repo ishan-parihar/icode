@@ -68,11 +68,8 @@ pub fn load_user_commands() -> UserCommandRegistry {
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
             continue;
         }
-        match parse_command_file(&path) {
-            Some(cmd) => {
-                registry.commands.insert(cmd.name.clone(), cmd);
-            }
-            None => {}
+        if let Some(cmd) = parse_command_file(&path) {
+            registry.commands.insert(cmd.name.clone(), cmd);
         }
     }
 

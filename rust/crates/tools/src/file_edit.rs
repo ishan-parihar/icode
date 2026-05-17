@@ -31,8 +31,11 @@ pub fn execute_edit_file(input: &EditFileInput) -> Result<String, String> {
     }
     let content =
         fs::read_to_string(&canonical_path).map_err(|e| format!("Failed to read file: {e}"))?;
+    if input.old_string == input.new_string {
+        return Err(String::from("old_string and new_string must differ"));
+    }
     if !content.contains(&input.old_string) {
-        return Err(format!("String not found in {}", input.path));
+        return Err(format!("old_string not found in '{}'", input.path));
     }
     let new_content = if input.replace_all {
         content.replace(&input.old_string, &input.new_string)
@@ -40,9 +43,10 @@ pub fn execute_edit_file(input: &EditFileInput) -> Result<String, String> {
         content.replacen(&input.old_string, &input.new_string, 1)
     };
     fs::write(&path, &new_content).map_err(|e| format!("Failed to write file: {e}"))?;
-    let replacements = if input.replace_all { "all" } else { "first" };
-    Ok(format!(
-        "Edited {} (replaced {} occurrence of old_string)",
-        input.path, replacements
-    ))
+
+    let response = serde_json::json!({
+        "path": input.path,
+        "replaceAll": input.replace_all,
+    });
+    serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {e}"))
 }
