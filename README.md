@@ -1,5 +1,13 @@
 # icode 🛠️
 
+> ⚠️ **DEPRECATED / INACTIVE** — archived for reference. Prototype exploration into
+> hardened agent runtimes; no further development is planned. Successors:
+> [`operant`](https://github.com/ishan-parihar/operant) and
+> [`automaton`](https://github.com/ishan-parihar/automaton) for graph-native agent
+> orchestration.
+
+[![Status: Archived](https://img.shields.io/badge/Status-Archived-6b7280.svg)]
+
 **The Hardened Runtime for AI Coding Agents.**
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
