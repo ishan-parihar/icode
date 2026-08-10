@@ -30,3 +30,5 @@ archive/
 
 # Cloned reference projects for gap analysis
 /rust/references/
+
+.claude.json
